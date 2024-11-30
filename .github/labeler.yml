@@ -1,0 +1,11 @@
+# See https://github.com/actions/labeler
+"documentation":
+  - docs/**
+
+"devops":
+  - .github/**
+  - .vscode/**
+  - .zed/**
+  - .editorconfig
+  - .gitignore
+  - pnpm-workspace.yaml

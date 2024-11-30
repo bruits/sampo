@@ -1,0 +1,32 @@
+name: "Bug Report"
+description: Report an issue or possible bug
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ##  Quick Checklist
+        Thank you for taking the time to file a bug report! Please fill out this form as completely as possible. If you're not sure how to fill out a section, do your best and we'll help you along the way.
+  # TODO: When the extensions and the crates will be published, we should add a block to ask the versions concerned by the bug.
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: bug-expectation
+    attributes:
+      label: What's the expected result?
+      description: Describe what you expect to happen.
+    validations:
+      required: true
+  - type: checkboxes
+    id: will-pr
+    attributes:
+      label: Participation
+      options:
+        - label: I am willing to submit a pull request for this issue.
+          required: false
