@@ -108,5 +108,5 @@ pub fn generate_file_name(rng: &mut ThreadRng) -> String {
     let title = TITLE.choose(rng).unwrap();
     let name = NAME.choose(rng).unwrap();
     let adjective = ADJECTIVE.choose(rng).unwrap();
-    format!("{}-{}-{}", adjective, title, name)
+    format!("{adjective}-{title}-{name}")
 }

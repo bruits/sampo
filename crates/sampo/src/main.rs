@@ -30,14 +30,14 @@ fn main() -> ExitCode {
                     }
                 }
                 Err(e) => {
-                    eprintln!("init error: {}", e);
+                    eprintln!("init error: {e}");
                     return ExitCode::from(1);
                 }
             }
         }
         Commands::Add(args) => {
             if let Err(e) = add::run(&args) {
-                eprintln!("add error: {}", e);
+                eprintln!("add error: {e}");
                 return ExitCode::from(1);
             }
         }
@@ -59,7 +59,7 @@ fn main() -> ExitCode {
                     }
                 }
                 Err(e) => {
-                    eprintln!("workspace error: {}", e);
+                    eprintln!("workspace error: {e}");
                     return ExitCode::from(1);
                 }
             }

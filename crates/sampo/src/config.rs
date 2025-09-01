@@ -23,14 +23,16 @@ impl Config {
         let value: toml::Value = text.parse().map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid config.toml: {}", e),
+                format!("invalid config.toml: {e}"),
             )
         })?;
 
         let version = value
             .get("version")
-            .and_then(|v| v.as_integer())
-            .unwrap_or(1) as u64;
+            .and_then(toml::Value::as_integer)
+            .unwrap_or(1);
+
+        let version = u64::try_from(version).unwrap_or(1);
 
         let dir_str = value
             .get("changesets")

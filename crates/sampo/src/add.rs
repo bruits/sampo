@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::names;
 use crate::workspace::Workspace;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub fn run(args: &AddArgs) -> io::Result<()> {
@@ -23,10 +23,10 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
     ensure_dir(&cfg.changesets_dir)?;
 
     // Collect inputs, prefilling from CLI args if provided
-    let selected_packages = if !args.package.is_empty() {
-        args.package.clone()
-    } else {
+    let selected_packages = if args.package.is_empty() {
         prompt_packages(&packages)?
+    } else {
+        args.package.clone()
     };
 
     let bump = prompt_bump()?;
@@ -53,10 +53,35 @@ fn ensure_dir(dir: &PathBuf) -> io::Result<()> {
 }
 
 fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
-    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout();
 
-    if !available.is_empty() {
+    if available.is_empty() {
+        loop {
+            write!(
+                stdout,
+                "No packages detected. Enter package names (comma-separated): "
+            )?;
+            stdout.flush()?;
+            let mut line = String::new();
+            io::stdin().read_line(&mut line)?;
+            let items: Vec<String> = line
+                .split([',', ' ', '\t', '\n', '\r'])
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .collect();
+            if !items.is_empty() {
+                // de-duplicate
+                let mut seen = std::collections::BTreeSet::new();
+                let mut out = Vec::new();
+                for it in items {
+                    if seen.insert(it.clone()) {
+                        out.push(it);
+                    }
+                }
+                return Ok(out);
+            }
+        }
+    } else {
         writeln!(stdout, "Detected workspace packages:")?;
         for (i, name) in available.iter().enumerate() {
             writeln!(stdout, "  {}. {}", i + 1, name)?;
@@ -68,7 +93,7 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
             )?;
             stdout.flush()?;
             let mut line = String::new();
-            stdin.read_line(&mut line)?;
+            io::stdin().read_line(&mut line)?;
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -89,9 +114,8 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
                     out.push(name.clone());
                     continue 'outer;
                 }
-                writeln!(stdout, "Unknown: '{}' - try again.", raw)?;
+                writeln!(stdout, "Unknown: '{raw}' - try again.")?;
                 out.clear();
-                continue;
             }
             if !out.is_empty() {
                 // de-duplicate preserving order
@@ -100,43 +124,16 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
                 return Ok(out);
             }
         }
-    } else {
-        loop {
-            write!(
-                stdout,
-                "No packages detected. Enter package names (comma-separated): "
-            )?;
-            stdout.flush()?;
-            let mut line = String::new();
-            stdin.read_line(&mut line)?;
-            let items: Vec<String> = line
-                .split([',', ' ', '\t', '\n', '\r'])
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.trim().to_string())
-                .collect();
-            if !items.is_empty() {
-                // de-duplicate
-                let mut seen = std::collections::BTreeSet::new();
-                let mut out = Vec::new();
-                for it in items {
-                    if seen.insert(it.clone()) {
-                        out.push(it);
-                    }
-                }
-                return Ok(out);
-            }
-        }
     }
 }
 
 fn prompt_bump() -> io::Result<String> {
-    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout();
     loop {
         write!(stdout, "Release type (patch/minor/major) [patch]: ")?;
         stdout.flush()?;
         let mut line = String::new();
-        stdin.read_line(&mut line)?;
+        io::stdin().read_line(&mut line)?;
         let l = line.trim().to_lowercase();
         if l.is_empty() || l == "p" || l == "patch" {
             return Ok("patch".to_string());
@@ -151,13 +148,12 @@ fn prompt_bump() -> io::Result<String> {
 }
 
 fn prompt_message() -> io::Result<String> {
-    let mut stdin = io::stdin().lock();
     let mut stdout = io::stdout();
     loop {
         write!(stdout, "Changeset message: ")?;
         stdout.flush()?;
         let mut line = String::new();
-        stdin.read_line(&mut line)?;
+        io::stdin().read_line(&mut line)?;
         let msg = line.trim();
         if !msg.is_empty() {
             return Ok(msg.to_string());
@@ -166,13 +162,14 @@ fn prompt_message() -> io::Result<String> {
 }
 
 fn render_markdown(packages: &[String], bump: &str, message: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str("packages:\n");
     for p in packages {
-        out.push_str(&format!("  - {}\n", p));
+        writeln!(out, "  - {p}").unwrap();
     }
-    out.push_str(&format!("release: {}\n", bump));
+    writeln!(out, "release: {bump}").unwrap();
     out.push_str("---\n\n");
     out.push_str(message);
     out.push('\n');
@@ -182,12 +179,12 @@ fn render_markdown(packages: &[String], bump: &str, message: &str) -> String {
 fn unique_changeset_path(dir: &Path) -> PathBuf {
     let mut rng = rand::thread_rng();
     let base = names::generate_file_name(&mut rng);
-    let mut candidate = dir.join(format!("{}.md", base));
+    let mut candidate = dir.join(format!("{base}.md"));
     // If somehow exists, add counter suffix
     let mut i = 1u32;
     while candidate.exists() {
-        let name_with_counter = format!("{}-{}", base, i);
-        candidate = dir.join(format!("{}.md", name_with_counter));
+        let name_with_counter = format!("{base}-{i}");
+        candidate = dir.join(format!("{name_with_counter}.md"));
         i += 1;
     }
     candidate

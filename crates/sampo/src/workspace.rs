@@ -29,10 +29,10 @@ pub enum WorkspaceError {
 impl Display for WorkspaceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WorkspaceError::Io(e) => write!(f, "IO error: {}", e),
-            WorkspaceError::NotFound => write!(f, "No Cargo.toml with [workspace] found"),
-            WorkspaceError::InvalidToml(msg) => write!(f, "Invalid Cargo.toml: {}", msg),
-            WorkspaceError::InvalidWorkspace(msg) => write!(f, "Invalid workspace: {}", msg),
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::NotFound => write!(f, "No Cargo.toml with [workspace] found"),
+            Self::InvalidToml(msg) => write!(f, "Invalid Cargo.toml: {msg}"),
+            Self::InvalidWorkspace(msg) => write!(f, "Invalid workspace: {msg}"),
         }
     }
 }
@@ -40,7 +40,7 @@ impl Display for WorkspaceError {
 impl std::error::Error for WorkspaceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            WorkspaceError::Io(e) => Some(e),
+            Self::Io(e) => Some(e),
             _ => None,
         }
     }
@@ -108,7 +108,7 @@ impl Workspace {
             });
         }
 
-        Ok(Workspace { root, members: out })
+        Ok(Self { root, members: out })
     }
 }
 
@@ -183,8 +183,7 @@ fn expand_member_pattern(root: &Path, pat: &str, out: &mut Vec<PathBuf>) -> Resu
     }
 
     Err(WorkspaceError::InvalidWorkspace(format!(
-        "unsupported workspace member pattern: {}",
-        pat
+        "unsupported workspace member pattern: {pat}"
     )))
 }
 
@@ -196,7 +195,7 @@ fn collect_internal_deps(
     let mut internal = BTreeSet::new();
     for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
-            for (dep_name, dep_val) in tbl.iter() {
+            for (dep_name, dep_val) in tbl {
                 if is_internal_dep(crate_dir, name_to_path, dep_val) {
                     internal.insert(dep_name.clone());
                 }
@@ -212,10 +211,9 @@ fn is_internal_dep(
     dep_val: &toml::Value,
 ) -> bool {
     match dep_val {
-        toml::Value::String(_) => false,
         toml::Value::Table(t) => {
             if t.get("workspace")
-                .and_then(|v| v.as_bool())
+                .and_then(toml::Value::as_bool)
                 .unwrap_or(false)
             {
                 return true;
