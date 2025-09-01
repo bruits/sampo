@@ -1,3 +1,4 @@
+use crate::changeset::{Bump, render_markdown};
 use crate::cli::AddArgs;
 use crate::config::Config;
 use crate::names;
@@ -37,7 +38,7 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
     };
 
     // Compose file contents
-    let contents = render_markdown(&selected_packages, &bump, &message);
+    let contents = render_markdown(&selected_packages, bump, &message);
     let path = unique_changeset_path(&cfg.changesets_dir);
     fs::write(&path, contents)?;
 
@@ -103,11 +104,12 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
             }
             let mut out: Vec<String> = Vec::new();
             'outer: for raw in line.split([',', ' ', '\t']).filter(|s| !s.is_empty()) {
-                if let Ok(idx) = raw.parse::<usize>() {
-                    if idx >= 1 && idx <= available.len() {
-                        out.push(available[idx - 1].clone());
-                        continue 'outer;
-                    }
+                if let Ok(idx) = raw.parse::<usize>()
+                    && idx >= 1
+                    && idx <= available.len()
+                {
+                    out.push(available[idx - 1].clone());
+                    continue 'outer;
                 }
                 // match by name
                 if let Some(name) = available.iter().find(|n| n.as_str() == raw) {
@@ -127,22 +129,19 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
     }
 }
 
-fn prompt_bump() -> io::Result<String> {
+fn prompt_bump() -> io::Result<Bump> {
     let mut stdout = io::stdout();
     loop {
         write!(stdout, "Release type (patch/minor/major) [patch]: ")?;
         stdout.flush()?;
         let mut line = String::new();
         io::stdin().read_line(&mut line)?;
-        let l = line.trim().to_lowercase();
-        if l.is_empty() || l == "p" || l == "patch" {
-            return Ok("patch".to_string());
+        let l = line.trim();
+        if l.is_empty() {
+            return Ok(Bump::Patch);
         }
-        if l == "minor" || l == "mi" {
-            return Ok("minor".to_string());
-        }
-        if l == "major" || l == "ma" {
-            return Ok("major".to_string());
+        if let Some(b) = Bump::from_str(l) {
+            return Ok(b);
         }
     }
 }
@@ -159,21 +158,6 @@ fn prompt_message() -> io::Result<String> {
             return Ok(msg.to_string());
         }
     }
-}
-
-fn render_markdown(packages: &[String], bump: &str, message: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::new();
-    out.push_str("---\n");
-    out.push_str("packages:\n");
-    for p in packages {
-        writeln!(out, "  - {p}").unwrap();
-    }
-    writeln!(out, "release: {bump}").unwrap();
-    out.push_str("---\n\n");
-    out.push_str(message);
-    out.push('\n');
-    out
 }
 
 fn unique_changeset_path(dir: &Path) -> PathBuf {
@@ -197,7 +181,11 @@ mod tests {
 
     #[test]
     fn render_has_frontmatter() {
-        let md = render_markdown(&["a".into(), "b".into()], "minor", "feat: add stuff");
+        let md = crate::changeset::render_markdown(
+            &["a".into(), "b".into()],
+            Bump::Minor,
+            "feat: add stuff",
+        );
         assert!(md.starts_with("---\n"));
         assert!(md.contains("packages:\n  - a\n  - b"));
         assert!(md.contains("release: minor\n"));
@@ -206,7 +194,7 @@ mod tests {
 
     #[test]
     fn render_single_package() {
-        let md = render_markdown(&["single".into()], "patch", "fix: bug");
+        let md = crate::changeset::render_markdown(&["single".into()], Bump::Patch, "fix: bug");
         assert!(md.contains("packages:\n  - single\n"));
         assert!(md.contains("release: patch\n"));
         assert!(md.ends_with("fix: bug\n"));
@@ -214,7 +202,8 @@ mod tests {
 
     #[test]
     fn render_major_release() {
-        let md = render_markdown(&["pkg".into()], "major", "breaking: api change");
+        let md =
+            crate::changeset::render_markdown(&["pkg".into()], Bump::Major, "breaking: api change");
         assert!(md.contains("release: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
     }

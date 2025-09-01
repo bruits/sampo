@@ -28,6 +28,9 @@ pub enum Commands {
 
     /// Publish packages to registries
     Publish(PublishArgs),
+
+    /// Consume changesets, bump versions, update changelogs and tag
+    Release(ReleaseArgs),
 }
 
 #[derive(Debug, Args)]
@@ -51,6 +54,13 @@ pub struct VersionArgs {
 #[derive(Debug, Args, Default)]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct ReleaseArgs {
+    /// Dry-run: compute and show changes without modifying files
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -122,6 +132,15 @@ mod tests {
         let cli = Cli::try_parse_from(["sampo", "publish", "--dry-run"]).unwrap();
         match cli.command {
             Commands::Publish(args) => assert!(args.dry_run),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_release_dry_run() {
+        let cli = Cli::try_parse_from(["sampo", "release", "--dry-run"]).unwrap();
+        match cli.command {
+            Commands::Release(args) => assert!(args.dry_run),
             _ => panic!("wrong variant"),
         }
     }

@@ -11,13 +11,13 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 
 ## Commands
 
-| Command         | Description                                               |
-| --------------- | --------------------------------------------------------- |
-| `sampo help`    | Show commands or the help of the given subcommand(s)      |
-| `sampo init`    | Initialize Sampo in the current repository                |
-| `sampo add`     | Create a new changeset                                    |
-| `sampo status`  | Show pending changesets and planned releases              |
-| `sampo list`    | List workspace crates and internal dependencies           |
-| `sampo version` | Apply version bumps based on changesets                   |
-| `sampo publish` | Publish packages to registries                            |
-| `sampo help`    | Print this message or the help of the given subcommand(s) |
+| Command         | Description                                            |
+| --------------- | ------------------------------------------------------ |
+| `sampo help`    | Show commands or the help of the given subcommand(s)   |
+| `sampo init`    | Initialize Sampo in the current repository             |
+| `sampo add`     | Create a new changeset                                 |
+| `sampo status`  | Show pending changesets and planned releases           |
+| `sampo list`    | List workspace crates and internal dependencies        |
+| `sampo version` | Apply version bumps based on changesets                |
+| `sampo publish` | Publish packages to registries                         |
+| `sampo release` | Consume changesets, bump versions, changelogs, and tag |

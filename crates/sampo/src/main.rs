@@ -1,8 +1,10 @@
 mod add;
+mod changeset;
 mod cli;
 mod config;
 mod init;
 mod names;
+mod release;
 mod workspace;
 
 use clap::Parser;
@@ -69,6 +71,12 @@ fn main() -> ExitCode {
         }
         Commands::Publish(_args) => {
             // TODO: publish packages to registries
+        }
+        Commands::Release(args) => {
+            if let Err(e) = release::run(&args) {
+                eprintln!("release error: {e}");
+                return ExitCode::from(1);
+            }
         }
     }
     ExitCode::SUCCESS
