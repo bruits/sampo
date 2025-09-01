@@ -1,0 +1,3 @@
+# Sampo
+
+*Work in progress*

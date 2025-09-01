@@ -1,5 +1,6 @@
 mod cli;
 mod workspace;
+mod init;
 
 use cli::{Cli, Commands};
 use clap::Parser;
@@ -10,7 +11,20 @@ fn main() -> ExitCode {
 
     match cli.command {
         Commands::Init => {
-            // TODO: initialize sampo in this repository
+            let cwd = std::env::current_dir().unwrap();
+            match init::init_from_cwd(&cwd) {
+                Ok(report) => {
+                    println!("Initialized Sampo at {}", report.root.display());
+                    let dir = report.root.join(".sampo");
+                    if report.created_dir { println!("  created: {}", dir.display()); }
+                    if report.created_readme { println!("  created: {}", dir.join("README.md").display()); }
+                    if report.created_config { println!("  created: {}", dir.join("config.toml").display()); }
+                }
+                Err(e) => {
+                    eprintln!("init error: {}", e);
+                    return ExitCode::from(1);
+                }
+            }
         }
         Commands::Add(_args) => {
             // TODO: create a new changeset

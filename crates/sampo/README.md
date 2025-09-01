@@ -5,22 +5,19 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple registries.
 
-## Subcommands (PoC)
-
-- init: initialize Sampo in the repo
-- add: create a new changeset (-p/--package multiple, -m/--message)
-- status: show pending changesets and planned releases
-- version: apply version bumps (--dry-run)
-- publish: publish artifacts (--dry-run)
-
 ## Usage
 
-From workspace root:
-| Command                                                            | Description                                  |
-| ------------------------------------------------------------------ | -------------------------------------------- |
-| `cargo run -p sampo -- --help`                                     | Show help                                    |
-| `cargo run -p sampo -- init`                                       | Initialize Sampo in the repo                 |
-| `cargo run -p sampo -- add -p pkg-a -p pkg-b -m "feat: something"` | Create a new changeset                       |
-| `cargo run -p sampo -- status`                                     | Show pending changesets and planned releases |
-| `cargo run -p sampo -- version --dry-run`                          | Apply version bumps                          |
-| `cargo run -p sampo -- publish --dry-run`                          | Publish artifacts                            |
+*Basic tutorial*
+
+## Commands
+
+| Command         | Description                                               |
+| --------------- | --------------------------------------------------------- |
+| `sampo help`    | Show commands or the help of the given subcommand(s)      |
+| `sampo init`    | Initialize Sampo in the current repository                |
+| `sampo add`     | Create a new changeset                                    |
+| `sampo status`  | Show pending changesets and planned releases              |
+| `sampo list`    | List workspace crates and internal dependencies           |
+| `sampo version` | Apply version bumps based on changesets                   |
+| `sampo publish` | Publish packages to registries                            |
+| `sampo help`    | Print this message or the help of the given subcommand(s) |
