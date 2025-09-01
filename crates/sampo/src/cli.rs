@@ -20,6 +20,9 @@ pub enum Commands {
     /// Show pending changesets and planned releases
     Status,
 
+    /// List workspace crates and internal dependencies
+    List,
+
     /// Apply version bumps based on changesets
     Version(VersionArgs),
 
@@ -92,6 +95,15 @@ mod tests {
         let cli = Cli::try_parse_from(["sampo", "status"]).unwrap();
         match cli.command {
             Commands::Status => {}
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_list() {
+        let cli = Cli::try_parse_from(["sampo", "list"]).unwrap();
+        match cli.command {
+            Commands::List => {}
             _ => panic!("wrong variant"),
         }
     }

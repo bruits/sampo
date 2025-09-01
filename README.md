@@ -20,7 +20,6 @@ Sampo is a monorepo that contains the following crates (Rust packages):
 | ----- | ---------------------------------------------------- | --------- | ---------------------------------- |
 | sampo | CLI to manage changesets, versioning, and publishing | *WIP*     | [README](./crates/sampo/README.md) |
 
-
 ## Packages
 
 Additionally, Sampo contains the following packages for diverse ecosystems:
