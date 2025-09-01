@@ -8,7 +8,7 @@ on:
 jobs:
   triage:
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'web-lsp'
+    if: github.repository_owner == 'bruits'
     steps:
       - uses: actions/labeler@v4
         with:

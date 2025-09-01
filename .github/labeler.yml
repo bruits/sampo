@@ -1,11 +1,27 @@
-# See https://github.com/actions/labeler
+# Configuration for automatic PR labeling
+# See: https://github.com/actions/labeler
+
+# Add 'documentation' label to any change in documentation
 "documentation":
-  - docs/**
+  - "**/*.md"
+  - "docs/**"
+
+# Add 'ci' label to any change in CI/CD configuration
+"ci":
+  - ".github/**"
+
+# Add 'dependencies' label to dependency changes
+"dependencies":
+  - "**/Cargo.toml"
+  - "**/Cargo.lock"
+
+# Add 'core' label to changes in the main sampo crate
+"core":
+  - "crates/sampo/**"
 
 "devops":
-  - .github/**
-  - .vscode/**
-  - .zed/**
-  - .editorconfig
-  - .gitignore
-  - pnpm-workspace.yaml
+  - ".github/**"
+  - ".vscode/**"
+  - ".zed/**"
+  - ".editorconfig"
+  - ".gitignore"
