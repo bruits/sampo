@@ -1,9 +1,12 @@
+mod add;
 mod cli;
-mod workspace;
+mod config;
 mod init;
+mod names;
+mod workspace;
 
-use cli::{Cli, Commands};
 use clap::Parser;
+use cli::{Cli, Commands};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -16,9 +19,15 @@ fn main() -> ExitCode {
                 Ok(report) => {
                     println!("Initialized Sampo at {}", report.root.display());
                     let dir = report.root.join(".sampo");
-                    if report.created_dir { println!("  created: {}", dir.display()); }
-                    if report.created_readme { println!("  created: {}", dir.join("README.md").display()); }
-                    if report.created_config { println!("  created: {}", dir.join("config.toml").display()); }
+                    if report.created_dir {
+                        println!("  created: {}", dir.display());
+                    }
+                    if report.created_readme {
+                        println!("  created: {}", dir.join("README.md").display());
+                    }
+                    if report.created_config {
+                        println!("  created: {}", dir.join("config.toml").display());
+                    }
                 }
                 Err(e) => {
                     eprintln!("init error: {}", e);
@@ -26,8 +35,11 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Commands::Add(_args) => {
-            // TODO: create a new changeset
+        Commands::Add(args) => {
+            if let Err(e) = add::run(&args) {
+                eprintln!("add error: {}", e);
+                return ExitCode::from(1);
+            }
         }
         Commands::Status => {
             // TODO: show pending releases/changesets

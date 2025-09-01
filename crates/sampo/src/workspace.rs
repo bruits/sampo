@@ -47,7 +47,9 @@ impl std::error::Error for WorkspaceError {
 }
 
 impl From<io::Error> for WorkspaceError {
-    fn from(value: io::Error) -> Self { Self::Io(value) }
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
@@ -63,23 +65,27 @@ impl Workspace {
         for member_dir in &members {
             let manifest_path = member_dir.join("Cargo.toml");
             let text = fs::read_to_string(&manifest_path)?;
-            let value: toml::Value = text
-                .parse()
-                .map_err(|e| WorkspaceError::InvalidToml(format!("{}: {}", manifest_path.display(), e)))?;
+            let value: toml::Value = text.parse().map_err(|e| {
+                WorkspaceError::InvalidToml(format!("{}: {}", manifest_path.display(), e))
+            })?;
             let pkg = value
                 .get("package")
                 .and_then(|v| v.as_table())
-                .ok_or_else(|| WorkspaceError::InvalidToml(format!(
-                    "missing [package] in {}",
-                    manifest_path.display()
-                )))?;
+                .ok_or_else(|| {
+                    WorkspaceError::InvalidToml(format!(
+                        "missing [package] in {}",
+                        manifest_path.display()
+                    ))
+                })?;
             let name = pkg
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| WorkspaceError::InvalidToml(format!(
-                    "missing package.name in {}",
-                    manifest_path.display()
-                )))?
+                .ok_or_else(|| {
+                    WorkspaceError::InvalidToml(format!(
+                        "missing package.name in {}",
+                        manifest_path.display()
+                    ))
+                })?
                 .to_string();
             let version = pkg
                 .get("version")
@@ -94,7 +100,12 @@ impl Workspace {
         let mut out: Vec<CrateInfo> = Vec::new();
         for (name, version, path, manifest) in crates {
             let internal_deps = collect_internal_deps(&path, &name_to_path, &manifest);
-            out.push(CrateInfo { name, version, path, internal_deps });
+            out.push(CrateInfo {
+                name,
+                version,
+                path,
+                internal_deps,
+            });
         }
 
         Ok(Workspace { root, members: out })
@@ -107,9 +118,9 @@ fn find_workspace_root(start_dir: &Path) -> Result<(PathBuf, toml::Value)> {
         let manifest = dir.join("Cargo.toml");
         if manifest.exists() {
             let text = fs::read_to_string(&manifest)?;
-            let value: toml::Value = text
-                .parse()
-                .map_err(|e| WorkspaceError::InvalidToml(format!("{}: {}", manifest.display(), e)))?;
+            let value: toml::Value = text.parse().map_err(|e| {
+                WorkspaceError::InvalidToml(format!("{}: {}", manifest.display(), e))
+            })?;
             if value.get("workspace").is_some() {
                 return Ok((dir.to_path_buf(), value));
             }
@@ -131,7 +142,9 @@ fn parse_members(root: &Path, root_toml: &toml::Value) -> Result<Vec<PathBuf>> {
     let members = ws
         .get("members")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| WorkspaceError::InvalidWorkspace("missing workspace.members array".into()))?;
+        .ok_or_else(|| {
+            WorkspaceError::InvalidWorkspace("missing workspace.members array".into())
+        })?;
 
     let mut out = Vec::new();
     for m in members {
@@ -201,8 +214,7 @@ fn is_internal_dep(
     match dep_val {
         toml::Value::String(_) => false,
         toml::Value::Table(t) => {
-            if t
-                .get("workspace")
+            if t.get("workspace")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
@@ -233,7 +245,10 @@ fn clean_path(p: &Path) -> PathBuf {
             Component::CurDir => {}
             Component::ParentDir => {
                 // pop only normal components; keep root prefixes
-                if !matches!(out.components().next_back(), Some(Component::RootDir | Component::Prefix(_))) {
+                if !matches!(
+                    out.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                ) {
                     out.pop();
                 }
             }

@@ -41,7 +41,12 @@ fn init_at_root(root: &Path) -> io::Result<InitReport> {
         created_config = true;
     }
 
-    Ok(InitReport { root: root.to_path_buf(), created_dir, created_readme, created_config })
+    Ok(InitReport {
+        root: root.to_path_buf(),
+        created_dir,
+        created_readme,
+        created_config,
+    })
 }
 
 const DEFAULT_README: &str = r"# Sampo Workspace Configuration
