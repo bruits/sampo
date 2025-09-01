@@ -1,0 +1,9 @@
+[package]
+name = "sampo"
+version = "0.0.0"
+edition = "2024"
+readme = "README.md"
+description = "Sampo CLI: automate changelogs, versioning, and publishing"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
