@@ -1,0 +1,21 @@
+[package]
+name = "sampo-github-bot"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "GitHub App to inspect PRs and ask for changesets if needed"
+readme = "README.md"
+
+[dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+octocrab = "0.39"
+hmac = "0.12"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+http = "1"
+thiserror = "1"
+
