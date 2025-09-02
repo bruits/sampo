@@ -305,6 +305,38 @@ mod tests {
     }
 
     #[test]
+    fn glob_skips_non_crate_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // Workspace with glob pattern
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let crates_dir = root.join("crates");
+        // One valid crate
+        fs::create_dir_all(crates_dir.join("real")).unwrap();
+        fs::write(
+            crates_dir.join("real/Cargo.toml"),
+            "[package]\nname=\"real\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+        // One non-crate directory (no Cargo.toml)
+        fs::create_dir_all(crates_dir.join("noncrate")).unwrap();
+
+        let (_root, root_toml) = super::find_workspace_root(root).unwrap();
+        let members = super::parse_members(root, &root_toml).unwrap();
+        let mut names: Vec<_> = members
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
     fn internal_deps_detect_path_and_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();

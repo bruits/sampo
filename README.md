@@ -8,7 +8,7 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 ## Ideas
 
 - `sampo`, a CLI to generate changeset files. (Clap?) (How to distribute to other package registries?)
-- `sampo-github-bot`, inspect PRs and ask for changesets. (Typescript?)
+- `sampo-github-bot`, inspect PRs and ask for changesets.
 - `sampo-github-action`, open PRs to consume changesets, generate changelogs, bump versions, and publish packages.
 - utils crate for common functionality. Probably multiple so each package can depend on only what it needs.
 

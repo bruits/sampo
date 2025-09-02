@@ -17,15 +17,6 @@ pub enum Commands {
     /// Create a new changeset
     Add(AddArgs),
 
-    /// Show pending changesets and planned releases
-    Status,
-
-    /// List workspace crates and internal dependencies
-    List,
-
-    /// Apply version bumps based on changesets
-    Version(VersionArgs),
-
     /// Publish packages to registries
     Publish(PublishArgs),
 
@@ -42,13 +33,6 @@ pub struct AddArgs {
     /// Optional summary message for the changeset
     #[arg(short, long)]
     pub message: Option<String>,
-}
-
-#[derive(Debug, Args, Default)]
-pub struct VersionArgs {
-    /// Dry-run: compute versions without modifying files
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 #[derive(Debug, Args, Default)]
@@ -96,33 +80,6 @@ mod tests {
                 assert_eq!(args.package, vec!["pkg-a", "pkg-b"]);
                 assert_eq!(args.message.as_deref(), Some("feat: message"));
             }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn parses_status() {
-        let cli = Cli::try_parse_from(["sampo", "status"]).unwrap();
-        match cli.command {
-            Commands::Status => {}
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn parses_list() {
-        let cli = Cli::try_parse_from(["sampo", "list"]).unwrap();
-        match cli.command {
-            Commands::List => {}
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn parses_version_dry_run() {
-        let cli = Cli::try_parse_from(["sampo", "version", "--dry-run"]).unwrap();
-        match cli.command {
-            Commands::Version(args) => assert!(args.dry_run),
             _ => panic!("wrong variant"),
         }
     }
