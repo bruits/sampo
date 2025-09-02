@@ -5,6 +5,7 @@ license = "MIT"
 edition = "2024"
 readme = "README.md"
 description = "Sampo CLI: automate changelogs, versioning, and publishing"
+repository = "https://github.com/bruits/sampo"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

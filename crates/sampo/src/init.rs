@@ -31,7 +31,7 @@ fn init_at_root(root: &Path) -> io::Result<InitReport> {
 
     let readme_path = dir.join("README.md");
     if !readme_path.exists() {
-        fs::write(&readme_path, DEFAULT_README)?;
+        fs::write(&readme_path, CRATE_README)?;
         created_readme = true;
     }
 
@@ -49,14 +49,9 @@ fn init_at_root(root: &Path) -> io::Result<InitReport> {
     })
 }
 
-const DEFAULT_README: &str = r"# Sampo Workspace Configuration
-
-This directory contains Sampo configuration and metadata.
-
-- `config.toml`: main configuration file
-
-You can keep this directory under version control.
-";
+// Embed the crate's README so `sampo init` can copy it into `.sampo/README.md`
+// regardless of how the binary is installed.
+const CRATE_README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
 
 const DEFAULT_CONFIG: &str = r#"# Sampo configuration
 version = 1

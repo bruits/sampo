@@ -277,8 +277,8 @@ async fn pr_has_changeset(
     loop {
         for f in &page {
             let filename = f.filename.as_str();
-            let not_removed = !matches!(f.status, DiffEntryStatus::Removed);
-            if filename.starts_with(dir_prefix) && filename.ends_with(".md") && not_removed {
+            // Only consider newly added changeset files in this PR
+            if is_new_changeset_in_pr(filename, &f.status, dir_prefix) {
                 any = true;
                 break;
             }
@@ -296,6 +296,12 @@ async fn pr_has_changeset(
         }
     }
     Ok(any)
+}
+
+fn is_new_changeset_in_pr(filename: &str, status: &DiffEntryStatus, dir_prefix: &str) -> bool {
+    filename.starts_with(dir_prefix)
+        && filename.ends_with(".md")
+        && matches!(status, DiffEntryStatus::Added)
 }
 
 async fn upsert_sticky_comment(
@@ -716,5 +722,52 @@ mod tests {
         assert!(without_changeset.contains(MARKER));
         assert!(without_changeset.contains("⚠️ No changeset detected"));
         assert!(without_changeset.contains("add a changeset"));
+    }
+
+    #[test]
+    fn detect_new_changeset_in_pr_only_for_added_md_files() {
+        let dir = ".sampo/changesets/";
+
+        // Added changeset markdown in the right directory -> true
+        assert!(is_new_changeset_in_pr(
+            ".sampo/changesets/some-change.md",
+            &DiffEntryStatus::Added,
+            dir
+        ));
+
+        // Modified file should not count
+        assert!(!is_new_changeset_in_pr(
+            ".sampo/changesets/edited-change.md",
+            &DiffEntryStatus::Modified,
+            dir
+        ));
+
+        // Removed file should not count
+        assert!(!is_new_changeset_in_pr(
+            ".sampo/changesets/old-change.md",
+            &DiffEntryStatus::Removed,
+            dir
+        ));
+
+        // Added non-markdown should not count
+        assert!(!is_new_changeset_in_pr(
+            ".sampo/changesets/note.txt",
+            &DiffEntryStatus::Added,
+            dir
+        ));
+
+        // Added markdown outside directory should not count
+        assert!(!is_new_changeset_in_pr(
+            "docs/changesets/new.md",
+            &DiffEntryStatus::Added,
+            dir
+        ));
+
+        // Added markdown in nested path under directory should count
+        assert!(is_new_changeset_in_pr(
+            ".sampo/changesets/nested/new.md",
+            &DiffEntryStatus::Added,
+            dir
+        ));
     }
 }

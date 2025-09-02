@@ -1,10 +1,12 @@
 [package]
 name = "sampo-github-bot"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2024"
 license = "MIT"
 description = "GitHub App to inspect PRs and ask for changesets if needed"
 readme = "README.md"
+repository = "https://github.com/bruits/sampo"
+homepage = "https://github.com/apps/sampo-s-bot"
 
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }

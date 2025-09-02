@@ -1,10 +1,9 @@
 {
-	"biome.enabled": false,
-	"rust-analyzer.cargo.features": ["wasm"],
-	"files.readonlyInclude": {
-		"**/generated/**/*": true,
-	},
-	"files.readonlyExclude": {
-		"**/generated/**/*.md": true,
-	}
+  "biome.enabled": false,
+  "files.readonlyInclude": {
+    "**/generated/**/*": true
+  },
+  "files.readonlyExclude": {
+    "**/generated/**/*.md": true
+  }
 }

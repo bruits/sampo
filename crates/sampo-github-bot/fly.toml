@@ -7,6 +7,7 @@ app = 'sampo-gthb-bot'
 primary_region = 'cdg'
 
 [build]
+  dockerfile = "Dockerfile"
 
 [env]
   PORT = '8080'

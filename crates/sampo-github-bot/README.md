@@ -2,12 +2,11 @@
 
 GitHub App server to inspect pull requests and automatically request Sampo changesets when needed.
 
-> [!WARNING]
-> For now, only detects changesets by the presence of `.sampo/changesets/*.md` files.
+If you don't use Sampo yet, please [check it out](https://github.com/bruits/sampo/tree/main/crates/sampo).
 
 ## Usage
 
-Install the [GitHub App](https://github.com/apps/bruits-sampo) on your repository. It will automatically request changesets on new pull requests.
+Install the [GitHub App](https://github.com/apps/sampo-s-bot) on your repository. It will automatically request changesets on new pull requests.
 
 *TODO: Add a detailed usage guide, with screenshots*
 
