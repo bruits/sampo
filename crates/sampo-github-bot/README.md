@@ -21,3 +21,5 @@ GITHUB_TOKEN=... WEBHOOK_SECRET=... cargo run -p sampo-github-bot
 ```
 
 Then configure a webhook to `http://localhost:3000/webhook` via a tunnel (e.g., `ngrok`) for `pull_request` events.
+
+TEST
