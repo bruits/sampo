@@ -171,8 +171,9 @@ fn update_changelog(
         String::new()
     };
     let mut body = existing.trim_start_matches('\u{feff}').to_string();
-    // Ensure we only have one header
-    if body.starts_with("# Changelog") {
+    // Remove existing header if present
+    let package_header = format!("# {}", package);
+    if body.starts_with(&package_header) {
         // keep content after the first header line
         if let Some(idx) = body.find('\n') {
             body = body[idx + 1..].to_string();
@@ -182,14 +183,52 @@ fn update_changelog(
     }
 
     let mut section = String::new();
-    section.push_str("# Changelog\n\n");
-    section.push_str(&format!("## {} {}\n\n", package, new_version));
-    for (msg, _b) in entries {
-        section.push_str("- ");
-        section.push_str(msg);
+    section.push_str(&format!("# {}\n\n", package));
+    section.push_str(&format!("## {}\n\n", new_version));
+
+    // Group entries by bump type
+    let mut major_entries = Vec::new();
+    let mut minor_entries = Vec::new();
+    let mut patch_entries = Vec::new();
+
+    for (msg, bump) in entries {
+        match bump {
+            Bump::Major => major_entries.push(msg),
+            Bump::Minor => minor_entries.push(msg),
+            Bump::Patch => patch_entries.push(msg),
+        }
+    }
+
+    // Add sections in order: Major, Minor, Patch
+    if !major_entries.is_empty() {
+        section.push_str("### Major changes\n\n");
+        for msg in major_entries {
+            section.push_str("- ");
+            section.push_str(msg);
+            section.push('\n');
+        }
         section.push('\n');
     }
-    section.push('\n');
+
+    if !minor_entries.is_empty() {
+        section.push_str("### Minor changes\n\n");
+        for msg in minor_entries {
+            section.push_str("- ");
+            section.push_str(msg);
+            section.push('\n');
+        }
+        section.push('\n');
+    }
+
+    if !patch_entries.is_empty() {
+        section.push_str("### Patch changes\n\n");
+        for msg in patch_entries {
+            section.push_str("- ");
+            section.push_str(msg);
+            section.push('\n');
+        }
+        section.push('\n');
+    }
 
     let combined = if body.trim().is_empty() {
         section
