@@ -2,7 +2,8 @@
 # Stage 1: build the binary via `cargo install`
 FROM rust:1-alpine AS builder
 
-RUN apk add --no-cache musl-dev pkgconfig
+# Build deps; include openssl-dev and openssl-libs-static for static linking
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
 
 # Install the latest published version of the bot from crates.io
 # Intentionally do not use --locked to avoid requiring a Cargo.lock in the crate package
