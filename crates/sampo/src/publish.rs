@@ -48,8 +48,22 @@ pub fn run(args: &PublishArgs) -> io::Result<()> {
         ));
     }
 
+    // Filter to crates that have a release planned (git tag `name-v{version}` exists)
+    let mut planned: BTreeSet<String> = BTreeSet::new();
+    for name in &publishable {
+        let c = name_to_crate.get(name).unwrap();
+        if has_release_tag(&ws.root, &c.name, &c.version)? {
+            planned.insert(name.clone());
+        }
+    }
+
+    if planned.is_empty() {
+        println!("No crates have a release tag for their current version. Nothing to publish.");
+        return Ok(());
+    }
+
     // Compute publish order (topological: deps first)
-    let order = topo_order(&name_to_crate, &publishable).map_err(io::Error::other)?;
+    let order = topo_order(&name_to_crate, &planned).map_err(io::Error::other)?;
 
     println!("Publish plan (crates.io):");
     for name in &order {
@@ -60,6 +74,24 @@ pub fn run(args: &PublishArgs) -> io::Result<()> {
     for name in &order {
         let c = name_to_crate.get(name).unwrap();
         let manifest = c.path.join("Cargo.toml");
+        // Skip if the exact version already exists on crates.io
+        match version_exists_on_crates_io(&c.name, &c.version) {
+            Ok(true) => {
+                println!(
+                    "Skipping {}@{} (already exists on crates.io)",
+                    c.name, c.version
+                );
+                continue;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not check crates.io for {}@{}: {}. Attempting publish…",
+                    c.name, c.version, e
+                );
+            }
+        }
+
         let mut cmd = Command::new("cargo");
         cmd.arg("publish").arg("--manifest-path").arg(&manifest);
         if args.dry_run {
@@ -122,6 +154,64 @@ fn is_publishable_to_crates_io(manifest_path: &Path) -> io::Result<bool> {
 
     // Default case: publishable
     Ok(true)
+}
+
+fn has_release_tag(repo_root: &Path, crate_name: &str, version: &str) -> io::Result<bool> {
+    if !repo_root.join(".git").exists() {
+        // Not a git repo: treat as no planned release
+        return Ok(false);
+    }
+    let tag = format!("{}-v{}", crate_name, version);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("tag")
+        .arg("--list")
+        .arg(&tag)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            Ok(s.lines().any(|l| l.trim() == tag))
+        }
+        Ok(o) => Err(io::Error::other(format!(
+            "failed to run git tag --list (status {})",
+            o.status
+        ))),
+        Err(e) => Err(io::Error::other(format!("failed to invoke git: {}", e))),
+    }
+}
+
+fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Result<bool> {
+    // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
+    // Use `curl` to avoid adding a crate dependency. Only the status code is needed.
+    let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
+    let out = Command::new("curl")
+        .arg("-sS")
+        .arg("-o")
+        .arg("/dev/null")
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg(&url)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            match code.as_str() {
+                "200" => Ok(true),  // version exists
+                "404" => Ok(false), // version not found
+                _ => Err(io::Error::other(format!(
+                    "unexpected HTTP status from crates.io: {}",
+                    code
+                ))),
+            }
+        }
+        Ok(o) => Err(io::Error::other(format!(
+            "curl failed with status {}",
+            o.status
+        ))),
+        Err(e) => Err(io::Error::other(format!("failed to run curl: {}", e))),
+    }
 }
 
 fn topo_order(

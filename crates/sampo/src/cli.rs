@@ -37,7 +37,7 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --allow-dirty\n  sampo publish -- --no-verify\n\nAll arguments after `--` are forwarded to `cargo publish` (separator required).")]
+Examples:\n  sampo publish --dry-run -- --allow-dirty\n  sampo publish -- --no-verify\n\nBehavior:\n  - Publishes only crates that have a git tag of the form <name>-v<version> for their current version.\n  - Skips crates whose current version already exists on crates.io.\n\nAll arguments after `--` are forwarded to `cargo publish` (separator required).")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
