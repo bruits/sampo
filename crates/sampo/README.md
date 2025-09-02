@@ -1,13 +1,10 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/Sampo_logo_dark.svg" />
-  <img alt="Sampo logo" src="./.github/assets/Sampo_logo_light.svg" />
-</picture>
+# Sampo
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple registries.
 
 ## Getting Started
 
-*Quick Start Guide*
+*TODO: Add a quick start guide*
 
 ## Commands
 

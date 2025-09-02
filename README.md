@@ -3,26 +3,24 @@
   <img alt="Sampo logo" src="./.github/assets/Sampo_logo_light.svg" />
 </picture>
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna).
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna). Enforce [Semantic Versioning](https://semver.org/) (SemVer) across all packages.
 
-## Ideas
-
-- `sampo`, a CLI to generate changeset files. (Clap?) (How to distribute to other package registries?)
-- `sampo-github-bot`, inspect PRs and ask for changesets.
-- `sampo-github-action`, open PRs to consume changesets, generate changelogs, bump versions, and publish packages.
-- utils crate for common functionality. Probably multiple so each package can depend on only what it needs.
+> [!WARNING]
+> This project is in early development, most features are not yet implemented, and the API may change dramatically.
 
 ## Crates
 
 Sampo is a monorepo that contains the following crates (Rust packages):
 
-| Name  | Description                                          | Crates.io | README                             |
-| ----- | ---------------------------------------------------- | --------- | ---------------------------------- |
-| sampo | CLI to manage changesets, versioning, and publishing | *WIP*     | [README](./crates/sampo/README.md) |
+| Name                  | Description                                          | Crates.io | README                             |
+| --------------------- | ---------------------------------------------------- | --------- | ---------------------------------- |
+| `sampo`               | CLI to manage changesets, versioning, and publishing | *WIP*     | [README](./crates/sampo/README.md) |
+| `sampo-github-bot`    | GitHub bot to inspect PRs and ask for changesets.    | *WIP*     | *Soon*                             |
+| `sampo-github-action` | GitHub Action to automate the release process.       | *WIP*     | *Soon*                             |
 
 ## Packages
 
 Additionally, Sampo contains the following packages for diverse ecosystems:
 
-| Name | Description | Package Registry | README |
-| ---- | ----------- | ---------------- | ------ |
+| Name | Description | Registries | README |
+| ---- | ----------- | ---------- | ------ |

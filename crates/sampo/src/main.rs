@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod init;
 mod names;
+mod publish;
 mod release;
 mod workspace;
 
@@ -43,8 +44,11 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         }
-        Commands::Publish(_args) => {
-            // TODO: publish packages to registries
+        Commands::Publish(args) => {
+            if let Err(e) = publish::run(&args) {
+                eprintln!("publish error: {e}");
+                return ExitCode::from(1);
+            }
         }
         Commands::Release(args) => {
             if let Err(e) = release::run(&args) {
