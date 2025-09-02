@@ -12,15 +12,15 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 
 Sampo is a monorepo that contains the following crates (Rust packages):
 
-| Name                  | Description                                          | Crates.io                                                   | README                             |
-| --------------------- | ---------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------- |
-| `sampo`               | CLI to manage changesets, versioning, and publishing | ![Crates.io Version](https://img.shields.io/crates/v/sampo) | [README](./crates/sampo/README.md) |
-| `sampo-github-bot`    | GitHub bot to inspect PRs and ask for changesets.    | *WIP*                                                       | *Soon*                             |
-| `sampo-github-action` | GitHub Action to automate the release process.       | *WIP*                                                       | *Soon*                             |
+| Name                  | Description                                          | Link                                                        | README                                        |
+| --------------------- | ---------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------- |
+| `sampo`               | CLI to manage changesets, versioning, and publishing | ![Crates.io Version](https://img.shields.io/crates/v/sampo) | [README](./crates/sampo/README.md)            |
+| `sampo-github-bot`    | GitHub App to inspect PRs and request changesets     | [GitHub App](https://github.com/apps/bruits-sampo)          | [README](./crates/sampo-github-bot/README.md) |
+| `sampo-github-action` | GitHub Action to automate the release process.       | *WIP*                                                       | *Soon*                                        |
 
 ## Packages
 
 Additionally, Sampo contains the following packages for diverse ecosystems:
 
-| Name | Description | Registries | README |
-| ---- | ----------- | ---------- | ------ |
+| Name | Description | Link | README |
+| ---- | ----------- | ---- | ------ |
