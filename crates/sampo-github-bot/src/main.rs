@@ -12,11 +12,22 @@ use sha2::Sha256;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
+use jsonwebtoken::{encode, Header, Algorithm, EncodingKey};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 struct AppState {
     octo: octocrab::Octocrab,
     webhook_secret: Arc<String>,
+    app_id: u64,
+    private_key: Arc<EncodingKey>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    iat: u64,
+    exp: u64,
+    iss: String,
 }
 
 #[tokio::main]
@@ -33,16 +44,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|_| std::env::var("GITHUB_WEBHOOK_SECRET"))
         .expect("WEBHOOK_SECRET env var must be set");
 
-    let octo = match std::env::var("GITHUB_TOKEN") {
-        Ok(token) => octocrab::Octocrab::builder()
-            .personal_token(token)
-            .build()?,
-        Err(_) => octocrab::Octocrab::builder().build()?,
-    };
+    // GitHub App configuration
+    let app_id: u64 = std::env::var("GITHUB_APP_ID")
+        .expect("GITHUB_APP_ID env var must be set")
+        .parse()
+        .expect("GITHUB_APP_ID must be a valid number");
+
+    let private_key_pem = std::env::var("GITHUB_PRIVATE_KEY")
+        .expect("GITHUB_PRIVATE_KEY env var must be set (PEM format)");
+
+    let private_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes())
+        .expect("Invalid private key format");
+
+    // Create octocrab instance (we'll update it per-request with installation tokens)
+    let octo = octocrab::Octocrab::builder().build()?;
 
     let app_state = AppState {
         octo,
         webhook_secret: Arc::new(secret),
+        app_id,
+        private_key: Arc::new(private_key),
     };
 
     let app = Router::new()
@@ -142,8 +163,20 @@ async fn webhook(
 
     info!("PR #{} -> {}/{} action={}", pr_number, owner, repo, action);
 
+    // Get installation token for this repository
+    let installation_octo = match get_installation_client(&state, &owner, &repo).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to get installation token: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to authenticate with repository".into(),
+            ));
+        }
+    };
+
     // Check files in PR for changeset
-    let has_changeset = match pr_has_changeset(&state.octo, &owner, &repo, pr_number).await {
+    let has_changeset = match pr_has_changeset(&installation_octo, &owner, &repo, pr_number).await {
         Ok(v) => v,
         Err(e) => {
             error!("error checking PR files: {}", e);
@@ -169,7 +202,7 @@ async fn webhook(
     };
 
     if let Err(e) =
-        upsert_sticky_comment(&state.octo, &owner, &repo, pr_number, MARKER, &body).await
+        upsert_sticky_comment(&installation_octo, &owner, &repo, pr_number, MARKER, &body).await
     {
         error!("failed to upsert comment: {}", e);
         return Err((
@@ -307,6 +340,104 @@ async fn upsert_sticky_comment(
 
 fn comment_has_marker(c: &Comment, marker: &str) -> bool {
     c.body.as_deref().unwrap_or("").contains(marker)
+}
+
+/// Generate a JWT for GitHub App authentication
+fn create_jwt(app_id: u64, private_key: &EncodingKey) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let claims = Claims {
+        iat: now - 60, // issued 60 seconds ago
+        exp: now + (10 * 60), // expires in 10 minutes
+        iss: app_id.to_string(),
+    };
+
+    let mut header = Header::new(Algorithm::RS256);
+    header.typ = Some("JWT".to_string());
+
+    encode(&header, &claims, private_key)
+}
+
+/// Get installation ID for a repository
+async fn get_installation_id(
+    app_jwt: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::new();
+    let url = format!("https://api.github.com/repos/{}/{}/installation", owner, repo);
+    
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", app_jwt))
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "sampo-github-bot/1.0")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(format!("Failed to get installation: {}", response.status()).into());
+    }
+
+    let installation: serde_json::Value = response.json().await?;
+    installation
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "Installation ID not found".into())
+}
+
+/// Get installation access token
+async fn get_installation_token(
+    app_jwt: &str,
+    installation_id: u64,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let client = reqwest::Client::new();
+    let url = format!("https://api.github.com/app/installations/{}/access_tokens", installation_id);
+    
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", app_jwt))
+        .header("Accept", "application/vnd.github.v3+json")
+        .header("User-Agent", "sampo-github-bot/1.0")
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(format!("Failed to get installation token: {}", response.status()).into());
+    }
+
+    let token_response: serde_json::Value = response.json().await?;
+    token_response
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Installation token not found".into())
+}
+
+/// Create an authenticated octocrab client for a specific repository
+async fn get_installation_client(
+    state: &AppState,
+    owner: &str,
+    repo: &str,
+) -> Result<octocrab::Octocrab, Box<dyn std::error::Error + Send + Sync>> {
+    // Create JWT
+    let jwt = create_jwt(state.app_id, &state.private_key)?;
+    
+    // Get installation ID for this repo
+    let installation_id = get_installation_id(&jwt, owner, repo).await?;
+    
+    // Get installation token
+    let installation_token = get_installation_token(&jwt, installation_id).await?;
+    
+    // Create authenticated octocrab client
+    let client = octocrab::Octocrab::builder()
+        .personal_token(installation_token)
+        .build()?;
+    
+    Ok(client)
 }
 
 #[cfg(test)]
