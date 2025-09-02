@@ -65,6 +65,9 @@ pub fn run(args: &PublishArgs) -> io::Result<()> {
         if args.dry_run {
             cmd.arg("--dry-run");
         }
+        if !args.cargo_args.is_empty() {
+            cmd.args(&args.cargo_args);
+        }
 
         println!(
             "Running: {}",

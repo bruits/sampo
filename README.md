@@ -12,11 +12,11 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 
 Sampo is a monorepo that contains the following crates (Rust packages):
 
-| Name                  | Description                                          | Crates.io | README                             |
-| --------------------- | ---------------------------------------------------- | --------- | ---------------------------------- |
-| `sampo`               | CLI to manage changesets, versioning, and publishing | *WIP*     | [README](./crates/sampo/README.md) |
-| `sampo-github-bot`    | GitHub bot to inspect PRs and ask for changesets.    | *WIP*     | *Soon*                             |
-| `sampo-github-action` | GitHub Action to automate the release process.       | *WIP*     | *Soon*                             |
+| Name                  | Description                                          | Crates.io                                                   | README                             |
+| --------------------- | ---------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------- |
+| `sampo`               | CLI to manage changesets, versioning, and publishing | ![Crates.io Version](https://img.shields.io/crates/v/sampo) | [README](./crates/sampo/README.md) |
+| `sampo-github-bot`    | GitHub bot to inspect PRs and ask for changesets.    | *WIP*                                                       | *Soon*                             |
+| `sampo-github-action` | GitHub Action to automate the release process.       | *WIP*                                                       | *Soon*                             |
 
 ## Packages
 

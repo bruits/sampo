@@ -36,10 +36,16 @@ pub struct AddArgs {
 }
 
 #[derive(Debug, Args, Default)]
+#[command(after_long_help = "\
+Examples:\n  sampo publish --dry-run -- --allow-dirty\n  sampo publish -- --no-verify\n\nAll arguments after `--` are forwarded to `cargo publish` (separator required).")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Extra flags passed through to `cargo publish` (must follow `--`)
+    #[arg(last = true, value_name = "CARGO_ARG")]
+    pub cargo_args: Vec<String>,
 }
 
 #[derive(Debug, Args, Default)]
@@ -91,6 +97,32 @@ mod tests {
             Commands::Publish(args) => assert!(args.dry_run),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn parses_publish_passthrough_flags() {
+        let cli = Cli::try_parse_from([
+            "sampo",
+            "publish",
+            "--dry-run",
+            "--",
+            "--allow-dirty",
+            "--no-verify",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Publish(args) => {
+                assert!(args.dry_run);
+                assert_eq!(args.cargo_args, vec!["--allow-dirty", "--no-verify"]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn publish_rejects_passthrough_without_separator() {
+        let res = Cli::try_parse_from(["sampo", "publish", "--dry-run", "--allow-dirty"]);
+        assert!(res.is_err(), "should require `--` before cargo flags");
     }
 
     #[test]
