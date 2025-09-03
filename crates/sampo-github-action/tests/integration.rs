@@ -50,7 +50,28 @@ fn run_action(
 ) -> std::process::Output {
     let binary = get_action_binary();
     let mut cmd = Command::new(&binary);
-    cmd.args(args).current_dir(working_dir).envs(env_vars);
+    cmd.args(args).current_dir(working_dir);
+
+    // Clear the environment and only set our specified variables
+    cmd.env_clear();
+
+    // Set minimal required environment variables for Rust/cargo to work
+    if let Ok(path) = std::env::var("PATH") {
+        cmd.env("PATH", path);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        cmd.env("HOME", home);
+    }
+    if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+        cmd.env("CARGO_HOME", cargo_home);
+    }
+    if let Ok(rustup_home) = std::env::var("RUSTUP_HOME") {
+        cmd.env("RUSTUP_HOME", rustup_home);
+    }
+
+    // Add our test-specific environment variables
+    cmd.envs(env_vars);
+
     cmd.output().expect("Failed to execute action binary")
 }
 
