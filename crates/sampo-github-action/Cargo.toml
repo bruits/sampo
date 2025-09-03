@@ -9,9 +9,7 @@ repository = "https://github.com/bruits/sampo"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 
 [dev-dependencies]
 tempfile = "3.0"
-

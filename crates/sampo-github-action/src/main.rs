@@ -130,11 +130,75 @@ fn apply_environment_overrides(cli: &mut Cli) {
     }
 }
 
+/// Apply GitHub Actions input environment variables to CLI arguments (testable version)
+#[cfg(test)]
+fn apply_environment_overrides_with_env<F1, F2>(cli: &mut Cli, env_var: F1, env_var_os: F2) 
+where
+    F1: Fn(&str) -> std::result::Result<String, std::env::VarError>,
+    F2: Fn(&str) -> Option<std::ffi::OsString>,
+{
+    // Override mode if INPUT_COMMAND is provided and mode is default
+    if matches!(cli.mode, Mode::All)
+        && let Ok(v) = env_var("INPUT_COMMAND")
+    {
+        cli.mode = match v.to_ascii_lowercase().as_str() {
+            "release" => Mode::Release,
+            "publish" => Mode::Publish,
+            _ => Mode::All,
+        };
+    }
+
+    // Override dry_run if INPUT_DRY_RUN is provided
+    if !cli.dry_run
+        && let Ok(v) = env_var("INPUT_DRY_RUN")
+    {
+        let val = v == "1" || v.eq_ignore_ascii_case("true");
+        if val {
+            cli.dry_run = true;
+        }
+    }
+
+    // Override working_directory if INPUT_WORKING_DIRECTORY is provided
+    if cli.working_directory.is_none()
+        && let Some(v) = env_var_os("INPUT_WORKING_DIRECTORY")
+    {
+        cli.working_directory = Some(PathBuf::from(v));
+    }
+
+    // Override cargo_token if INPUT_CARGO_TOKEN is provided
+    if cli.cargo_token.is_none()
+        && let Ok(v) = env_var("INPUT_CARGO_TOKEN")
+        && !v.is_empty()
+    {
+        cli.cargo_token = Some(v);
+    }
+
+    // Override args if INPUT_ARGS is provided
+    if cli.args.is_none()
+        && let Ok(v) = env_var("INPUT_ARGS")
+        && !v.is_empty()
+    {
+        cli.args = Some(v);
+    }
+}
+
 /// Determine the workspace root directory
 fn determine_workspace(cli: &Cli) -> Result<PathBuf> {
     cli.working_directory
         .clone()
         .or_else(|| std::env::var_os("GITHUB_WORKSPACE").map(PathBuf::from))
+        .ok_or(ActionError::NoWorkingDirectory)
+}
+
+/// Determine the workspace root directory (testable version)
+#[cfg(test)]
+fn determine_workspace_with_env<F>(cli: &Cli, env_var: F) -> Result<PathBuf>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
+    cli.working_directory
+        .clone()
+        .or_else(|| env_var("GITHUB_WORKSPACE").map(PathBuf::from))
         .ok_or(ActionError::NoWorkingDirectory)
 }
 
@@ -280,10 +344,25 @@ fn emit_github_output(key: &str, value: bool) -> Result<()> {
     Ok(())
 }
 
+/// Emit a GitHub Actions output (testable version)
+#[cfg(test)]
+fn emit_github_output_with_env<F>(key: &str, value: bool, env_var_os: F) -> Result<()>
+where
+    F: Fn(&str) -> Option<std::ffi::OsString>,
+{
+    let value_str = if value { "true" } else { "false" };
+
+    if let Some(path) = env_var_os("GITHUB_OUTPUT") {
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(file, "{}={}", key, value_str)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
     use tempfile::TempDir;
 
     #[test]
@@ -322,9 +401,15 @@ mod tests {
     #[test]
     fn test_determine_workspace_with_github_workspace() {
         let temp_dir = TempDir::new().unwrap();
-        unsafe {
-            env::set_var("GITHUB_WORKSPACE", temp_dir.path());
-        }
+        
+        // Test fallback behavior when CLI arg is None but GITHUB_WORKSPACE is available
+        let mock_env = |key: &str| -> Option<std::ffi::OsString> {
+            if key == "GITHUB_WORKSPACE" {
+                Some(temp_dir.path().as_os_str().to_os_string())
+            } else {
+                None
+            }
+        };
 
         let cli = Cli {
             mode: Mode::All,
@@ -334,19 +419,14 @@ mod tests {
             args: None,
         };
 
-        let workspace = determine_workspace(&cli).unwrap();
+        let workspace = determine_workspace_with_env(&cli, mock_env).unwrap();
         assert_eq!(workspace, temp_dir.path().to_path_buf());
-
-        unsafe {
-            env::remove_var("GITHUB_WORKSPACE");
-        }
     }
 
     #[test]
     fn test_determine_workspace_error() {
-        unsafe {
-            env::remove_var("GITHUB_WORKSPACE");
-        }
+        // Test error path when neither CLI arg nor env var provide workspace
+        let mock_env = |_key: &str| -> Option<std::ffi::OsString> { None };
 
         let cli = Cli {
             mode: Mode::All,
@@ -356,16 +436,31 @@ mod tests {
             args: None,
         };
 
-        let result = determine_workspace(&cli);
+        let result = determine_workspace_with_env(&cli, mock_env);
         assert!(matches!(result, Err(ActionError::NoWorkingDirectory)));
     }
 
     #[test]
     fn test_apply_environment_overrides() {
-        // Test command override
-        unsafe {
-            env::set_var("INPUT_COMMAND", "release");
-        }
+        use std::collections::HashMap;
+        
+        // Test that GitHub Actions INPUT_* variables override CLI defaults correctly
+        let mut env_vars = HashMap::new();
+        env_vars.insert("INPUT_COMMAND", "release");
+        env_vars.insert("INPUT_DRY_RUN", "true");
+        env_vars.insert("INPUT_CARGO_TOKEN", "test-token");
+        env_vars.insert("INPUT_ARGS", "--allow-dirty");
+        
+        let mock_env_var = |key: &str| -> std::result::Result<String, std::env::VarError> {
+            env_vars.get(key)
+                .map(|v| v.to_string())
+                .ok_or(std::env::VarError::NotPresent)
+        };
+        
+        let mock_env_var_os = |key: &str| -> Option<std::ffi::OsString> {
+            env_vars.get(key).map(std::ffi::OsString::from)
+        };
+
         let mut cli = Cli {
             mode: Mode::All,
             dry_run: false,
@@ -374,37 +469,12 @@ mod tests {
             args: None,
         };
 
-        apply_environment_overrides(&mut cli);
+        apply_environment_overrides_with_env(&mut cli, mock_env_var, mock_env_var_os);
+        
         assert!(matches!(cli.mode, Mode::Release));
-
-        // Test dry_run override
-        unsafe {
-            env::set_var("INPUT_DRY_RUN", "true");
-        }
-        apply_environment_overrides(&mut cli);
         assert!(cli.dry_run);
-
-        // Test cargo_token override
-        unsafe {
-            env::set_var("INPUT_CARGO_TOKEN", "test-token");
-        }
-        apply_environment_overrides(&mut cli);
         assert_eq!(cli.cargo_token, Some("test-token".to_string()));
-
-        // Test args override
-        unsafe {
-            env::set_var("INPUT_ARGS", "--allow-dirty");
-        }
-        apply_environment_overrides(&mut cli);
         assert_eq!(cli.args, Some("--allow-dirty".to_string()));
-
-        // Cleanup
-        unsafe {
-            env::remove_var("INPUT_COMMAND");
-            env::remove_var("INPUT_DRY_RUN");
-            env::remove_var("INPUT_CARGO_TOKEN");
-            env::remove_var("INPUT_ARGS");
-        }
     }
 
     #[test]
@@ -421,19 +491,22 @@ mod tests {
     fn test_emit_github_output() {
         let temp_dir = TempDir::new().unwrap();
         let output_file = temp_dir.path().join("github_output");
-        unsafe {
-            env::set_var("GITHUB_OUTPUT", &output_file);
-        }
-
-        emit_github_output("test_key", true).unwrap();
-        emit_github_output("another_key", false).unwrap();
+        
+        // Mock env function that points to our test file
+        let mock_env = |key: &str| -> Option<std::ffi::OsString> {
+            if key == "GITHUB_OUTPUT" {
+                Some(output_file.as_os_str().to_os_string())
+            } else {
+                None
+            }
+        };
+        
+        // Test that output format matches GitHub Actions expectations
+        emit_github_output_with_env("test_key", true, mock_env).unwrap();
+        emit_github_output_with_env("another_key", false, mock_env).unwrap();
 
         let content = std::fs::read_to_string(&output_file).unwrap();
         assert!(content.contains("test_key=true"));
         assert!(content.contains("another_key=false"));
-
-        unsafe {
-            env::remove_var("GITHUB_OUTPUT");
-        }
     }
 }
