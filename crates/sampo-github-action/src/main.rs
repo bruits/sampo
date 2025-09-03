@@ -132,7 +132,7 @@ fn apply_environment_overrides(cli: &mut Cli) {
 
 /// Apply GitHub Actions input environment variables to CLI arguments (testable version)
 #[cfg(test)]
-fn apply_environment_overrides_with_env<F1, F2>(cli: &mut Cli, env_var: F1, env_var_os: F2) 
+fn apply_environment_overrides_with_env<F1, F2>(cli: &mut Cli, env_var: F1, env_var_os: F2)
 where
     F1: Fn(&str) -> std::result::Result<String, std::env::VarError>,
     F2: Fn(&str) -> Option<std::ffi::OsString>,
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn test_determine_workspace_with_github_workspace() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Test fallback behavior when CLI arg is None but GITHUB_WORKSPACE is available
         let mock_env = |key: &str| -> Option<std::ffi::OsString> {
             if key == "GITHUB_WORKSPACE" {
@@ -443,20 +443,21 @@ mod tests {
     #[test]
     fn test_apply_environment_overrides() {
         use std::collections::HashMap;
-        
+
         // Test that GitHub Actions INPUT_* variables override CLI defaults correctly
         let mut env_vars = HashMap::new();
         env_vars.insert("INPUT_COMMAND", "release");
         env_vars.insert("INPUT_DRY_RUN", "true");
         env_vars.insert("INPUT_CARGO_TOKEN", "test-token");
         env_vars.insert("INPUT_ARGS", "--allow-dirty");
-        
+
         let mock_env_var = |key: &str| -> std::result::Result<String, std::env::VarError> {
-            env_vars.get(key)
+            env_vars
+                .get(key)
                 .map(|v| v.to_string())
                 .ok_or(std::env::VarError::NotPresent)
         };
-        
+
         let mock_env_var_os = |key: &str| -> Option<std::ffi::OsString> {
             env_vars.get(key).map(std::ffi::OsString::from)
         };
@@ -470,7 +471,7 @@ mod tests {
         };
 
         apply_environment_overrides_with_env(&mut cli, mock_env_var, mock_env_var_os);
-        
+
         assert!(matches!(cli.mode, Mode::Release));
         assert!(cli.dry_run);
         assert_eq!(cli.cargo_token, Some("test-token".to_string()));
@@ -491,7 +492,7 @@ mod tests {
     fn test_emit_github_output() {
         let temp_dir = TempDir::new().unwrap();
         let output_file = temp_dir.path().join("github_output");
-        
+
         // Mock env function that points to our test file
         let mock_env = |key: &str| -> Option<std::ffi::OsString> {
             if key == "GITHUB_OUTPUT" {
@@ -500,7 +501,7 @@ mod tests {
                 None
             }
         };
-        
+
         // Test that output format matches GitHub Actions expectations
         emit_github_output_with_env("test_key", true, mock_env).unwrap();
         emit_github_output_with_env("another_key", false, mock_env).unwrap();
