@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::Command;
 
 pub fn run(args: &ReleaseArgs) -> io::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -86,7 +85,7 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         return Ok(());
     }
 
-    // Apply: update Cargo.toml, update CHANGELOG, create tag
+    // Apply: update Cargo.toml and CHANGELOG
     for (name, _old, newv) in &releases {
         let info = by_name.get(name.as_str()).unwrap();
         let manifest_path = info.path.join("Cargo.toml");
@@ -94,12 +93,8 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         let updated = update_package_version_in_toml(&text, newv)?;
         fs::write(&manifest_path, updated)?;
 
-        // Update changelog
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
         update_changelog(&info.path, name, newv, &messages)?;
-
-        // Git tag
-        maybe_tag(&ws.root, name, newv)?;
     }
 
     // Remove consumed changesets
@@ -171,10 +166,9 @@ fn update_changelog(
         String::new()
     };
     let mut body = existing.trim_start_matches('\u{feff}').to_string();
-    // Remove existing header if present
+    // Remove existing top package header if present
     let package_header = format!("# {}", package);
     if body.starts_with(&package_header) {
-        // keep content after the first header line
         if let Some(idx) = body.find('\n') {
             body = body[idx + 1..].to_string();
         } else {
@@ -182,47 +176,98 @@ fn update_changelog(
         }
     }
 
+    // Parse and merge the current top section (unpublished section), if present
+    let mut merged_major: Vec<String> = Vec::new();
+    let mut merged_minor: Vec<String> = Vec::new();
+    let mut merged_patch: Vec<String> = Vec::new();
+
+    // helper to push without duplicates (preserve append order)
+    let push_unique = |list: &mut Vec<String>, msg: &str| {
+        if !list.iter().any(|m| m == msg) {
+            list.push(msg.to_string());
+        }
+    };
+
+    // Collect new entries
+    for (msg, bump) in entries {
+        match bump {
+            Bump::Major => push_unique(&mut merged_major, msg),
+            Bump::Minor => push_unique(&mut merged_minor, msg),
+            Bump::Patch => push_unique(&mut merged_patch, msg),
+        }
+    }
+
+    // If body starts with a previous top section (## ...), parse and merge its bullets,
+    // then strip that section from body so we re-write a single aggregated top section.
+    let trimmed = body.trim_start();
+    let leading_ws_len = body.len() - trimmed.len();
+    if trimmed.starts_with("## ") {
+        let search = trimmed;
+        let next_idx_opt = search
+            .find('\n')
+            .map(|first_nl| &search[first_nl + 1..])
+            .and_then(|rest| rest.find("\n## "))
+            .map(|i| i + 1)
+            .map(|i| leading_ws_len + i + 1);
+
+        let (section_text, rest_body) = match next_idx_opt {
+            Some(next_abs) => body.split_at(next_abs),
+            None => (body.as_str(), ""),
+        };
+
+        let mut current = None::<&str>;
+        for line in section_text.lines() {
+            let t = line.trim();
+            if t.eq_ignore_ascii_case("### Major changes") {
+                current = Some("major");
+                continue;
+            } else if t.eq_ignore_ascii_case("### Minor changes") {
+                current = Some("minor");
+                continue;
+            } else if t.eq_ignore_ascii_case("### Patch changes") {
+                current = Some("patch");
+                continue;
+            }
+            if t.starts_with("- ") {
+                let msg = t.trim_start_matches("- ").trim();
+                match current {
+                    Some("major") => push_unique(&mut merged_major, msg),
+                    Some("minor") => push_unique(&mut merged_minor, msg),
+                    Some("patch") => push_unique(&mut merged_patch, msg),
+                    _ => {}
+                }
+            }
+        }
+
+        body = rest_body.to_string();
+    }
+
+    // Build new aggregated top section
     let mut section = String::new();
     section.push_str(&format!("# {}\n\n", package));
     section.push_str(&format!("## {}\n\n", new_version));
 
-    // Group entries by bump type
-    let mut major_entries = Vec::new();
-    let mut minor_entries = Vec::new();
-    let mut patch_entries = Vec::new();
-
-    for (msg, bump) in entries {
-        match bump {
-            Bump::Major => major_entries.push(msg),
-            Bump::Minor => minor_entries.push(msg),
-            Bump::Patch => patch_entries.push(msg),
-        }
-    }
-
-    // Add sections in order: Major, Minor, Patch
-    if !major_entries.is_empty() {
+    if !merged_major.is_empty() {
         section.push_str("### Major changes\n\n");
-        for msg in major_entries {
+        for msg in &merged_major {
             section.push_str("- ");
             section.push_str(msg);
             section.push('\n');
         }
         section.push('\n');
     }
-
-    if !minor_entries.is_empty() {
+    if !merged_minor.is_empty() {
         section.push_str("### Minor changes\n\n");
-        for msg in minor_entries {
+        for msg in &merged_minor {
             section.push_str("- ");
             section.push_str(msg);
             section.push('\n');
         }
         section.push('\n');
     }
-
-    if !patch_entries.is_empty() {
+    if !merged_patch.is_empty() {
         section.push_str("### Patch changes\n\n");
-        for msg in patch_entries {
+        for msg in &merged_patch {
             section.push_str("- ");
             section.push_str(msg);
             section.push('\n');
@@ -238,34 +283,7 @@ fn update_changelog(
     fs::write(&path, combined)
 }
 
-fn maybe_tag(repo_root: &Path, package: &str, version: &str) -> io::Result<()> {
-    if !repo_root.join(".git").exists() {
-        // Not a git repo, skip
-        return Ok(());
-    }
-    let tag = format!("{}-v{}", package, version);
-    let msg = format!("Release {} {}", package, version);
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("tag")
-        .arg("-a")
-        .arg(&tag)
-        .arg("-m")
-        .arg(&msg)
-        .status();
-    match status {
-        Ok(s) if s.success() => {
-            println!("Created tag {}", tag);
-            Ok(())
-        }
-        Ok(s) => Err(io::Error::other(format!(
-            "git tag failed with status {}",
-            s
-        ))),
-        Err(e) => Err(io::Error::other(format!("failed to invoke git: {}", e))),
-    }
-}
+// (tags are created during publish)
 
 #[cfg(test)]
 mod tests {
@@ -317,5 +335,60 @@ mod tests {
 
         // No changelog created
         assert!(!Path::new(&cdir.join("CHANGELOG.md")).exists());
+    }
+
+    #[test]
+    fn changelog_top_section_is_merged_and_reheaded() {
+        use crate::cli::ReleaseArgs;
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // workspace
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        // crate x @ 0.1.0
+        let cdir = root.join("crates/x");
+        fs::create_dir_all(&cdir).unwrap();
+        fs::write(
+            cdir.join("Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // initial changelog with an unpublished section 0.1.1
+        fs::write(
+            cdir.join("CHANGELOG.md"),
+            "# x\n\n## 0.1.1\n\n### Patch changes\n\n- fix: a bug\n\n",
+        )
+        .unwrap();
+
+        // Configure .sampo changesets
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        // add a minor changeset -> should rehead to 0.2.0 and merge entries
+        fs::write(
+            csdir.join("one.md"),
+            "---\npackages:\n  - x\nrelease: minor\n---\n\nfeat: new thing\n",
+        )
+        .unwrap();
+
+        // run release (not dry-run)
+        super::run_in(root, &ReleaseArgs { dry_run: false }).unwrap();
+
+        let log = fs::read_to_string(cdir.join("CHANGELOG.md")).unwrap();
+        assert!(log.contains("# x"));
+        assert!(log.contains("## 0.2.0"), "should rehead to next version");
+        assert!(log.contains("### Minor changes"));
+        assert!(log.contains("feat: new thing"));
+        assert!(log.contains("### Patch changes"));
+        assert!(log.contains("fix: a bug"));
+
+        // ensure only one top section, and previous 0.1.1 header is gone
+        assert!(!log.contains("## 0.1.1\n"));
     }
 }

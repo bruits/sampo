@@ -44,9 +44,11 @@ An helpful description of the changes.
 
 **Creating a changeset**: Use `sampo add` to create a new changeset file. The command guides you through selecting packages and describing changes. Use [Sampo GitHub bot](https://github.com/bruits/sampo/tree/main/crates/sampo-github-bot) to get reminders on each PR without a changeset.
 
-**Consuming changesets**: Run `sampo release` to process all pending changesets, bump package versions, and update changelogs. This can be automated in CI/CD pipelines using [Sampo GitHub Action](#) (*Coming soon*).
+**Consuming changesets**: Run `sampo release` to process all pending changesets, bump package versions, and update changelogs. This can be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
 
-**Releasing**: After running `sampo release`, use `sampo publish` to publish updated packages to their respective registries. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](#) (*Coming soon*).
+As long as the release is not finalized, you can continue to add changesets and re-run the `sampo release` command. Sampo will update package versions and pending changelogs accordingly.
+
+**Publishing**: After running `sampo release`, use `sampo publish` to publish updated packages to their respective registries and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
 
 ### Sampo folder structure
 
@@ -67,12 +69,12 @@ An helpful description of the changes.
 
 All commands should be run from the root of the repository:
 
-| Command         | Description                                            |
-| --------------- | ------------------------------------------------------ |
-| `sampo help`    | Show commands or the help of the given subcommand(s)   |
-| `sampo init`    | Initialize Sampo in the current repository             |
-| `sampo add`     | Create a new changeset                                 |
-| `sampo release` | Consume changesets, bump versions, changelogs, and tag |
-| `sampo publish` | Publish packages to registries                         |
+| Command         | Description                                                               |
+| --------------- | ------------------------------------------------------------------------- |
+| `sampo help`    | Show commands or the help of the given subcommand(s)                      |
+| `sampo init`    | Initialize Sampo in the current repository                                |
+| `sampo add`     | Create a new changeset                                                    |
+| `sampo release` | Consume changesets, and prepare release(s) (bump versions and changelogs) |
+| `sampo publish` | Publish packages to registries and tag current versions                   |
 
 For detailed command options, use `sampo help <command>` or `sampo <command> --help`.

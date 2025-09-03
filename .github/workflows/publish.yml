@@ -1,0 +1,30 @@
+name: Publish After Merge
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Publish crates (tag + publish)
+        uses: bruits/sampo/crates/sampo-github-action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          command: post-merge-publish
+          cargo-token: ${{ secrets.CRATES_IO_TOKEN }}
+          # Optional: also create GitHub Releases for new tags
+          # create-github-release: true
+          # Optional: pass flags to cargo publish
+          # args: --allow-dirty --no-verify
+

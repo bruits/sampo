@@ -23,6 +23,12 @@ enum Mode {
     Publish,
     #[value(alias = "release-and-publish")]
     All,
+    /// Detect changesets and open/update a Release PR (no tags)
+    #[value(alias = "prepare-pr", alias = "release-pr", alias = "open-pr")]
+    PreparePr,
+    /// After merge to main: create tags for current versions, push, and publish
+    #[value(alias = "post-merge-publish", alias = "finalize")]
+    PostMergePublish,
 }
 
 /// Sampo GitHub Action entrypoint
@@ -53,6 +59,22 @@ struct Cli {
     /// Accepts a single string that will be split on whitespace.
     #[arg(long)]
     args: Option<String>,
+
+    /// Base branch for the Release PR (default: current ref name or 'main')
+    #[arg(long)]
+    base_branch: Option<String>,
+
+    /// Branch name to use for the Release PR (default: 'release/sampo')
+    #[arg(long)]
+    pr_branch: Option<String>,
+
+    /// Title to use for the Release PR (default: 'Release')
+    #[arg(long)]
+    pr_title: Option<String>,
+
+    /// Create GitHub releases for newly created tags during publish
+    #[arg(long, action = ArgAction::SetTrue)]
+    create_github_release: bool,
 }
 
 fn main() -> ExitCode {
@@ -127,6 +149,35 @@ fn apply_environment_overrides(cli: &mut Cli) {
         && !v.is_empty()
     {
         cli.args = Some(v);
+    }
+
+    // Override base_branch/pr_branch/pr_title if provided
+    if cli.base_branch.is_none()
+        && let Ok(v) = std::env::var("INPUT_BASE_BRANCH")
+        && !v.is_empty()
+    {
+        cli.base_branch = Some(v);
+    }
+    if cli.pr_branch.is_none()
+        && let Ok(v) = std::env::var("INPUT_PR_BRANCH")
+        && !v.is_empty()
+    {
+        cli.pr_branch = Some(v);
+    }
+    if cli.pr_title.is_none()
+        && let Ok(v) = std::env::var("INPUT_PR_TITLE")
+        && !v.is_empty()
+    {
+        cli.pr_title = Some(v);
+    }
+
+    if !cli.create_github_release
+        && let Ok(v) = std::env::var("INPUT_CREATE_GITHUB_RELEASE")
+    {
+        let val = v == "1" || v.eq_ignore_ascii_case("true");
+        if val {
+            cli.create_github_release = true;
+        }
     }
 }
 
@@ -230,6 +281,19 @@ fn execute_operations(cli: &Cli, workspace: &Path) -> Result<(bool, bool)> {
                 cli.dry_run,
                 cli.args.as_deref(),
                 cli.cargo_token.as_deref(),
+            )?;
+            published = true;
+        }
+        Mode::PreparePr => {
+            prepare_release_pr(workspace, cli)?;
+        }
+        Mode::PostMergePublish => {
+            post_merge_publish(
+                workspace,
+                cli.dry_run,
+                cli.args.as_deref(),
+                cli.cargo_token.as_deref(),
+                cli.create_github_release,
             )?;
             published = true;
         }
@@ -344,6 +408,313 @@ fn emit_github_output(key: &str, value: bool) -> Result<()> {
     Ok(())
 }
 
+// ---------- Release PR flow ----------
+
+fn prepare_release_pr(workspace: &Path, cli: &Cli) -> Result<()> {
+    // First, run a dry-run release to see if there are changes.
+    let plan = capture_sampo_release_plan(workspace)?;
+    if plan.no_changes {
+        println!("No changesets detected. Skipping PR preparation.");
+        return Ok(());
+    }
+
+    // Compute configuration
+    let base_branch = cli
+        .base_branch
+        .clone()
+        .or_else(|| std::env::var("GITHUB_REF_NAME").ok())
+        .unwrap_or_else(|| "main".into());
+    let pr_branch = cli
+        .pr_branch
+        .clone()
+        .unwrap_or_else(|| "release/sampo".into());
+    let pr_title = cli.pr_title.clone().unwrap_or_else(|| "Release".into());
+
+    // Ensure git configured
+    git(
+        &[
+            "config",
+            "user.email",
+            "github-actions[bot]@users.noreply.github.com",
+        ],
+        Some(workspace),
+    )?;
+    git(
+        &["config", "user.name", "github-actions[bot]"],
+        Some(workspace),
+    )?;
+    git(&["fetch", "origin", "--prune"], Some(workspace))?;
+
+    // Reset PR branch from base
+    git(
+        &[
+            "checkout",
+            "-B",
+            &pr_branch,
+            &format!("origin/{}", base_branch),
+        ],
+        Some(workspace),
+    )?;
+
+    // Apply release (no tags)
+    run_sampo_release(workspace, false, cli.cargo_token.as_deref())?;
+
+    // Check for changes
+    if !git_has_changes(workspace)? {
+        println!("No file changes after release. Skipping commit/PR.");
+        return Ok(());
+    }
+
+    // Commit and push
+    git(&["add", "-A"], Some(workspace))?;
+    git(
+        &[
+            "commit",
+            "-m",
+            "chore(release): bump versions and changelogs",
+        ],
+        Some(workspace),
+    )?;
+    git(
+        &["push", "origin", &format!("HEAD:{}", pr_branch)],
+        Some(workspace),
+    )?;
+
+    // Create or update PR
+    let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
+    let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+    if repo.is_empty() || token.is_empty() {
+        eprintln!("Warning: GITHUB_REPOSITORY or GITHUB_TOKEN not set. Cannot create/update PR.");
+        return Ok(());
+    }
+
+    let pr_body = format!(
+        "Automated release PR.\n\n{}\n\nThis PR was generated by Sampo.",
+        plan.text
+    );
+
+    ensure_pr(&repo, &token, &pr_branch, &base_branch, &pr_title, &pr_body)?;
+
+    Ok(())
+}
+
+struct ReleasePlan {
+    no_changes: bool,
+    text: String,
+}
+
+fn capture_sampo_release_plan(workspace: &Path) -> Result<ReleasePlan> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("run")
+        .arg("--manifest-path")
+        .arg(workspace.join("Cargo.toml"))
+        .arg("-p")
+        .arg("sampo")
+        .arg("--")
+        .arg("release")
+        .arg("--dry-run")
+        .arg("--skip-tag");
+    println!("Running: {}", display_command(&cmd));
+    let out = cmd.output()?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "release(dry-run)".into(),
+            message: format!("{}\n{}", stdout, stderr),
+        });
+    }
+    let no_changes = stdout.contains("No changesets found");
+    Ok(ReleasePlan {
+        no_changes,
+        text: stdout,
+    })
+}
+
+fn git(args: &[&str], cwd: Option<&Path>) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    println!("Running: {}", display_command(&cmd));
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "git".into(),
+            message: format!("git {:?} failed with status {}", args, status),
+        });
+    }
+    Ok(())
+}
+
+fn git_has_changes(cwd: &Path) -> Result<bool> {
+    let out = Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(cwd)
+        .output()?;
+    if !out.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "git status".into(),
+            message: format!("status {}", out.status),
+        });
+    }
+    Ok(!String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+fn ensure_pr(
+    repo: &str,
+    token: &str,
+    head_branch: &str,
+    base_branch: &str,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    let api = format!("https://api.github.com/repos/{repo}/pulls");
+
+    // Try to create PR (idempotent enough for our use-case)
+    let payload = format!(
+        "{{\n  \"title\": \"{}\",\n  \"head\": \"{}\",\n  \"base\": \"{}\",\n  \"body\": {}\n}}",
+        escape_json(title),
+        head_branch,
+        base_branch,
+        json_string(body)
+    );
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-X",
+            "POST",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "User-Agent: sampo-action",
+            &api,
+            "-d",
+            &payload,
+        ])
+        .output()?;
+    if !out.status.success() {
+        eprintln!(
+            "Warning: failed to create/update PR: status {} body: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    Ok(())
+}
+
+fn escape_json(s: &str) -> String {
+    s.replace('"', "\\\"")
+}
+fn json_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\\\"").replace('\n', "\\n"))
+}
+
+// ---------- Post-merge publish flow ----------
+
+fn post_merge_publish(
+    workspace: &Path,
+    dry_run: bool,
+    args: Option<&str>,
+    cargo_token: Option<&str>,
+    create_github_release: bool,
+) -> Result<()> {
+    // Tags are created by `sampo publish` after each successful publish.
+    // Capture tags before publishing, run publish, then diff and push new tags.
+    let before_tags = list_all_tags(workspace)?;
+
+    // Publish
+    run_sampo_publish(workspace, dry_run, args, cargo_token)?;
+
+    // Compute new tags created by publish
+    let after_tags = list_all_tags(workspace)?;
+    let new_tags: Vec<String> = after_tags
+        .into_iter()
+        .filter(|t| !before_tags.contains(t))
+        .collect();
+
+    // Push tags
+    if !new_tags.is_empty() {
+        git(&["push", "--tags"], Some(workspace))?;
+    }
+
+    // Optionally create GitHub releases for new tags
+    if create_github_release {
+        let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
+        let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+        if !repo.is_empty() && !token.is_empty() {
+            for tag in new_tags {
+                create_github_release_for_tag(&repo, &token, &tag)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn list_all_tags(cwd: &Path) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(cwd)
+        .output()?;
+    if !out.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "git tag --list".into(),
+            message: out.status.to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+fn create_github_release_for_tag(repo: &str, token: &str, tag: &str) -> Result<()> {
+    let api = format!("https://api.github.com/repos/{repo}/releases");
+    let name = tag.to_string();
+    let body = format!("Automated release for tag {}", tag);
+    let payload = format!(
+        "{{\n  \"tag_name\": \"{}\",\n  \"name\": \"{}\",\n  \"body\": {}\n}}",
+        escape_json(tag),
+        escape_json(&name),
+        json_string(&body)
+    );
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-X",
+            "POST",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "User-Agent: sampo-action",
+            &api,
+            "-d",
+            &payload,
+        ])
+        .output()?;
+    if !out.status.success() {
+        eprintln!(
+            "Warning: failed to create GitHub release for {}: status {} body {}",
+            tag,
+            out.status,
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    Ok(())
+}
+
 /// Emit a GitHub Actions output (testable version)
 #[cfg(test)]
 fn emit_github_output_with_env<F>(key: &str, value: bool, env_var_os: F) -> Result<()>
@@ -392,6 +763,10 @@ mod tests {
             working_directory: Some(temp_dir.path().to_path_buf()),
             cargo_token: None,
             args: None,
+            base_branch: None,
+            pr_branch: None,
+            pr_title: None,
+            create_github_release: false,
         };
 
         let workspace = determine_workspace(&cli).unwrap();
@@ -417,6 +792,10 @@ mod tests {
             working_directory: None,
             cargo_token: None,
             args: None,
+            base_branch: None,
+            pr_branch: None,
+            pr_title: None,
+            create_github_release: false,
         };
 
         let workspace = determine_workspace_with_env(&cli, mock_env).unwrap();
@@ -434,6 +813,10 @@ mod tests {
             working_directory: None,
             cargo_token: None,
             args: None,
+            base_branch: None,
+            pr_branch: None,
+            pr_title: None,
+            create_github_release: false,
         };
 
         let result = determine_workspace_with_env(&cli, mock_env);
@@ -468,6 +851,10 @@ mod tests {
             working_directory: None,
             cargo_token: None,
             args: None,
+            base_branch: None,
+            pr_branch: None,
+            pr_title: None,
+            create_github_release: false,
         };
 
         apply_environment_overrides_with_env(&mut cli, mock_env_var, mock_env_var_os);
