@@ -156,7 +156,7 @@ fn extract_pr_number(response: &str) -> Option<u64> {
         // Skip whitespace and find the actual number
         let trimmed = number_part.trim_start();
         let end = trimmed.find(',').or_else(|| trimmed.find('}'))?;
-        let number_str = &trimmed[..end].trim();
+        let number_str = trimmed[..end].trim();
 
         number_str.parse().ok()
     } else {

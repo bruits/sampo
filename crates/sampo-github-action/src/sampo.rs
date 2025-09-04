@@ -341,10 +341,6 @@ fn parse_changeset(text: &str, _path: &Path) -> Option<Changeset> {
 ///
 /// Looks for lines like "package-name: 0.1.0 -> 0.2.0" and parses them
 /// into a map of package name to (old_version, new_version) pairs.
-/// Extract planned release information from sampo dry-run output.
-///
-/// Looks for lines like "package-name: 0.1.0 -> 0.2.0" and parses them
-/// into a map of package name to (old_version, new_version) pairs.
 fn parse_planned_releases(stdout: &str) -> BTreeMap<String, (String, String)> {
     // Extract lines like: "  name: 0.1.0 -> 0.2.0"
     let mut map = BTreeMap::new();
