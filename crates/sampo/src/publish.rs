@@ -48,22 +48,8 @@ pub fn run(args: &PublishArgs) -> io::Result<()> {
         ));
     }
 
-    // Filter to crates that have a release planned (git tag `name-v{version}` exists)
-    let mut planned: BTreeSet<String> = BTreeSet::new();
-    for name in &publishable {
-        let c = name_to_crate.get(name).unwrap();
-        if has_release_tag(&ws.root, &c.name, &c.version)? {
-            planned.insert(name.clone());
-        }
-    }
-
-    if planned.is_empty() {
-        println!("No crates have a release tag for their current version. Nothing to publish.");
-        return Ok(());
-    }
-
-    // Compute publish order (topological: deps first)
-    let order = topo_order(&name_to_crate, &planned).map_err(io::Error::other)?;
+    // Compute publish order (topological: deps first) for all publishable crates.
+    let order = topo_order(&name_to_crate, &publishable).map_err(io::Error::other)?;
 
     println!("Publish plan (crates.io):");
     for name in &order {
@@ -113,6 +99,16 @@ pub fn run(args: &PublishArgs) -> io::Result<()> {
                 name, status
             )));
         }
+
+        // Create an annotated git tag after successful publish (not in dry-run)
+        if !args.dry_run
+            && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version)
+        {
+            eprintln!(
+                "Warning: failed to create tag for {}@{}: {}",
+                c.name, c.version, e
+            );
+        }
     }
 
     if args.dry_run {
@@ -156,29 +152,44 @@ fn is_publishable_to_crates_io(manifest_path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-fn has_release_tag(repo_root: &Path, crate_name: &str, version: &str) -> io::Result<bool> {
+fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) -> io::Result<()> {
     if !repo_root.join(".git").exists() {
-        // Not a git repo: treat as no planned release
-        return Ok(false);
+        // Not a git repo, skip
+        return Ok(());
     }
     let tag = format!("{}-v{}", crate_name, version);
+    // If tag already exists, do not recreate
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .arg("tag")
         .arg("--list")
         .arg(&tag)
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            Ok(s.lines().any(|l| l.trim() == tag))
+        .output()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if s.lines().any(|l| l.trim() == tag) {
+            return Ok(());
         }
-        Ok(o) => Err(io::Error::other(format!(
-            "failed to run git tag --list (status {})",
-            o.status
-        ))),
-        Err(e) => Err(io::Error::other(format!("failed to invoke git: {}", e))),
+    }
+
+    let msg = format!("Release {} {}", crate_name, version);
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("tag")
+        .arg("-a")
+        .arg(&tag)
+        .arg("-m")
+        .arg(&msg)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "git tag failed with status {}",
+            status
+        )))
     }
 }
 

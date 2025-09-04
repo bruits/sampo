@@ -1,0 +1,133 @@
+name: "Sampo GitHub Action"
+description: "Run Sampo release and/or publish in CI"
+author: "bruits"
+
+inputs:
+  command:
+    description: "Operation: release | publish | release-and-publish | prepare-pr | post-merge-publish"
+    required: false
+    default: "release-and-publish"
+  dry-run:
+    description: "Simulate actions without modifying files or publishing"
+    required: false
+    default: "false"
+  working-directory:
+    description: "Path to repository root (defaults to GITHUB_WORKSPACE)"
+    required: false
+  cargo-token:
+    description: "crates.io token (exported as CARGO_REGISTRY_TOKEN)"
+    required: false
+  args:
+    description: "Extra flags forwarded to cargo publish via `sampo publish -- …`"
+    required: false
+  base-branch:
+    description: "Base branch for the Release PR (prepare-pr mode)"
+    required: false
+  pr-branch:
+    description: "Branch name for the Release PR (prepare-pr mode)"
+    required: false
+  pr-title:
+    description: "Title for the Release PR (prepare-pr mode)"
+    required: false
+  create-github-release:
+    description: "If true, create GitHub releases for new tags (post-merge-publish mode)"
+    required: false
+    default: "false"
+  github-token:
+    description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"
+    required: false
+
+outputs:
+  released:
+    description: "Whether the release step ran successfully"
+    value: ${{ steps.run.outputs.released }}
+  published:
+    description: "Whether the publish step ran successfully"
+    value: ${{ steps.run.outputs.published }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      name: Run Sampo
+      shell: bash
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_DRY_RUN: ${{ inputs['dry-run'] }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs['working-directory'] }}
+        INPUT_CARGO_TOKEN: ${{ inputs['cargo-token'] }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_BASE_BRANCH: ${{ inputs['base-branch'] }}
+        INPUT_PR_BRANCH: ${{ inputs['pr-branch'] }}
+        INPUT_PR_TITLE: ${{ inputs['pr-title'] }}
+        INPUT_CREATE_GITHUB_RELEASE: ${{ inputs['create-github-release'] }}
+        INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}
+      run: |
+        set -euo pipefail
+
+        # Ensure Rust available
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "Installing Rust toolchain..."
+          if ! command -v curl >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+              echo "Installing curl..."
+              sudo apt-get update -y
+              sudo apt-get install -y curl
+            else
+              echo "curl is required to install Rust and was not found." >&2
+              exit 1
+            fi
+          fi
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          source "$HOME/.cargo/env"
+        fi
+
+        # Ensure git available (needed for tags and pushing)
+        if ! command -v git >/dev/null 2>&1; then
+          echo "Installing git..."
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y git
+          else
+            echo "git is required by this action and was not found." >&2
+            exit 1
+          fi
+        fi
+
+        # Determine workspace root
+        WORKDIR="${INPUT_WORKING_DIRECTORY:-${GITHUB_WORKSPACE:-.}}"
+        echo "Using workspace: ${WORKDIR}"
+        if [[ ! -d "${WORKDIR}" ]]; then
+          echo "Workspace directory does not exist: ${WORKDIR}" >&2
+          exit 1
+        fi
+
+        # Build and run the action binary from the workspace
+        # Compute boolean flags based on explicit true values
+        DRY_FLAG=""
+        if [[ "${INPUT_DRY_RUN:-}" == "true" || "${INPUT_DRY_RUN:-}" == "1" ]]; then
+          DRY_FLAG="--dry-run"
+        fi
+
+        CREATE_GH_RELEASE_FLAG=""
+        if [[ "${INPUT_CREATE_GITHUB_RELEASE:-}" == "true" || "${INPUT_CREATE_GITHUB_RELEASE:-}" == "1" ]]; then
+          CREATE_GH_RELEASE_FLAG="--create-github-release"
+        fi
+
+        cargo run --manifest-path "${WORKDIR}/Cargo.toml" -p sampo-github-action -- \
+          --mode "${INPUT_COMMAND}" \
+          ${DRY_FLAG} \
+          ${INPUT_WORKING_DIRECTORY:+--working-directory "${INPUT_WORKING_DIRECTORY}"} \
+          ${INPUT_CARGO_TOKEN:+--cargo-token "${INPUT_CARGO_TOKEN}"} \
+          ${INPUT_ARGS:+--args "${INPUT_ARGS}"} \
+          ${INPUT_BASE_BRANCH:+--base-branch "${INPUT_BASE_BRANCH}"} \
+          ${INPUT_PR_BRANCH:+--pr-branch "${INPUT_PR_BRANCH}"} \
+          ${INPUT_PR_TITLE:+--pr-title "${INPUT_PR_TITLE}"} \
+          ${CREATE_GH_RELEASE_FLAG}
+
+        # Capture outputs exposed by the binary via GITHUB_OUTPUT
+        # (Already written by the binary)
+
+branding:
+  icon: "upload-cloud"
+  color: "blue"

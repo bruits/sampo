@@ -17,10 +17,10 @@ pub enum Commands {
     /// Create a new changeset
     Add(AddArgs),
 
-    /// Publish packages to registries
+    /// Publish packages to registries (creates tags on success)
     Publish(PublishArgs),
 
-    /// Consume changesets, bump versions, update changelogs and tag
+    /// Consume changesets, bump versions, and update changelogs to prepare for release.
     Release(ReleaseArgs),
 }
 

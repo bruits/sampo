@@ -1567,6 +1567,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampo-github-action"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "sampo-github-bot"
 version = "0.1.0"
 dependencies = [

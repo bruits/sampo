@@ -1,0 +1,29 @@
+name: Prepare Release PR
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release_pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Open/refresh Release PR
+        uses: bruits/sampo/crates/sampo-github-action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          command: prepare-pr
+          # Optional overrides (defaults shown):
+          # base-branch: main
+          # pr-branch: release/sampo
+          # pr-title: Release

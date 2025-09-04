@@ -1,4 +1,4 @@
-# sampo-github-bot
+# Sampo's GitHub Bot
 
 GitHub App server to inspect pull requests and automatically request Sampo changesets when needed.
 
