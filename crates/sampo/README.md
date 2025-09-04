@@ -20,7 +20,7 @@ sampo init
 
 **Version bump**: Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate the nature of changes in each release. Versions follow the `MAJOR.MINOR.PATCH` format where:
 - **patch**: Bug fixes and backwards-compatible changes
-- **minor**: New features that are backwards-compatible  
+- **minor**: New features that are backwards-compatible
 - **major**: Breaking changes that are not backwards-compatible
 
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
