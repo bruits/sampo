@@ -1,8 +1,6 @@
-## Sampo GitHub Action
+## Sampo's GitHub Action
 
-Run Sampo (release and/or publish) in GitHub Actions.
-
-This action drives the existing `sampo` CLI within the repository workspace. It can bump versions and changelogs from changesets, and publish crates to crates.io. Git tags are created during the publish step.
+GitHub Action to run Sampo (release and/or publish) in GitHub Actions.
 
 ### Usage
 

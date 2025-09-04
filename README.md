@@ -16,11 +16,11 @@ Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... More co
 
 Sampo is a monorepo that contains the following crates (Rust packages):
 
-| Name                  | Description                                          | Registry                                                                                                                                                      | README                                        |
-| --------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `sampo`               | CLI to manage changesets, versioning, and publishing | <a href="https://crates.io/crates/sampo"><img alt="Sampo Crates.io Version" src="https://img.shields.io/crates/v/sampo"></a>                                  | [README](./crates/sampo/README.md)            |
-| `sampo-github-bot`    | GitHub App to inspect PRs and request changesets     | <a href="https://crates.io/crates/sampo-github-bot"><img alt="Sampo GitHub Bot Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-bot"></a> | [README](./crates/sampo-github-bot/README.md) |
-| `sampo-github-action` | GitHub Action to automate the release process.       | *WIP*                                                                                                                                                         | *Soon*                                        |
+| Name                  | Description                                                   | Registry                                                                                                                                                               | README                                           |
+| --------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `sampo`               | CLI to manage changesets, versioning, and publishing          | <a href="https://crates.io/crates/sampo"><img alt="Sampo Crates.io Version" src="https://img.shields.io/crates/v/sampo"></a>                                           | [README](./crates/sampo/README.md)               |
+| `sampo-github-bot`    | GitHub App to inspect PRs and request changesets              | <a href="https://crates.io/crates/sampo-github-bot"><img alt="Sampo GitHub Bot Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-bot"></a>          | [README](./crates/sampo-github-bot/README.md)    |
+| `sampo-github-action` | GitHub Action to automate the release and publishing process. | <a href="https://crates.io/crates/sampo-github-action"><img alt="Sampo GitHub Action Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-action"></a> | [README](./crates/sampo-github-action/README.md) |
 
 ## Packages
 
