@@ -6,10 +6,12 @@
 //! - Special badges for first-time contributors
 //!
 //! The enrichment is designed to be graceful: if Git or GitHub information is unavailable,
-//! the original message is returned unchanged.
+//! the original message is returned unchanged. GitHub API calls are made using the reqwest
+//! HTTP client for reliability and portability.
 
 use std::path::Path;
 use std::process::Command;
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -46,10 +48,29 @@ pub fn enrich_changeset_message(
     repo_slug: Option<&str>,
     github_token: Option<&str>,
 ) -> String {
+    // Create a tokio runtime for this blocking call
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(enrich_changeset_message_async(
+        repo_root,
+        changeset_path,
+        message,
+        repo_slug,
+        github_token,
+    ))
+}
+
+/// Async version of enrich_changeset_message for internal use.
+async fn enrich_changeset_message_async(
+    repo_root: &Path,
+    changeset_path: &Path,
+    message: &str,
+    repo_slug: Option<&str>,
+    github_token: Option<&str>,
+) -> String {
     let commit = get_commit_info_for_path(repo_root, changeset_path);
 
     let commit_prefix = build_commit_prefix(&commit, repo_slug);
-    let acknowledgment_suffix = build_acknowledgment_suffix(&commit, repo_slug, github_token);
+    let acknowledgment_suffix = build_acknowledgment_suffix(&commit, repo_slug, github_token).await;
 
     format_enriched_message(message, &commit_prefix, &acknowledgment_suffix)
 }
@@ -66,25 +87,28 @@ fn get_commit_info_for_path(repo_root: &Path, path: &Path) -> Option<CommitInfo>
             "log",
             "--diff-filter=A", // Only show commits that added the file
             "--follow",
-            "-n", "1", // Get only the first (adding) commit
+            "-n",
+            "1", // Get only the first (adding) commit
             &format!("--pretty=format:{}", format_string),
             "--",
             &relative_path_str,
         ])
         .output()
         .ok()?;
-    
+
     if !output.status.success() {
         return None;
     }
-    
+
     let output_str = String::from_utf8_lossy(&output.stdout);
     let line = output_str.lines().next()?;
     let parts: Vec<&str> = line.split('\u{001F}').collect();
-    
+
     if parts.len() < 3 {
         return None;
-    }    Some(CommitInfo {
+    }
+
+    Some(CommitInfo {
         sha: parts[0].to_string(),
         short_sha: parts[1].to_string(),
         author_name: parts[2].to_string(),
@@ -100,9 +124,7 @@ fn build_commit_prefix(commit: &Option<CommitInfo>, repo_slug: Option<&str>) -> 
     if let Some(slug) = repo_slug {
         format!(
             "[`{}`](https://github.com/{}/commit/{}) ",
-            commit_info.short_sha,
-            slug,
-            commit_info.sha
+            commit_info.short_sha, slug, commit_info.sha
         )
     } else {
         format!("`{}` ", commit_info.short_sha)
@@ -110,7 +132,7 @@ fn build_commit_prefix(commit: &Option<CommitInfo>, repo_slug: Option<&str>) -> 
 }
 
 /// Build the acknowledgment suffix for the enriched message.
-fn build_acknowledgment_suffix(
+async fn build_acknowledgment_suffix(
     commit: &Option<CommitInfo>,
     repo_slug: Option<&str>,
     github_token: Option<&str>,
@@ -121,7 +143,7 @@ fn build_acknowledgment_suffix(
 
     // Try to get GitHub user info if we have both repo slug and token
     let github_user = match (repo_slug, github_token) {
-        (Some(slug), Some(token)) => lookup_github_user_info(slug, token, &commit_info.sha),
+        (Some(slug), Some(token)) => lookup_github_user_info(slug, token, &commit_info.sha).await,
         _ => None,
     };
 
@@ -159,9 +181,9 @@ fn format_enriched_message(message: &str, prefix: &str, suffix: &str) -> String 
 }
 
 /// Lookup GitHub user information for a specific commit.
-fn lookup_github_user_info(repo_slug: &str, token: &str, sha: &str) -> Option<GitHubUserInfo> {
-    let login = lookup_github_login_for_commit(repo_slug, token, sha)?;
-    let is_first_contribution = is_first_contribution(repo_slug, token, &login).unwrap_or(false);
+async fn lookup_github_user_info(repo_slug: &str, token: &str, sha: &str) -> Option<GitHubUserInfo> {
+    let login = lookup_github_login_for_commit(repo_slug, token, sha).await?;
+    let is_first_contribution = is_first_contribution(repo_slug, token, &login).await.unwrap_or(false);
 
     Some(GitHubUserInfo {
         login,
@@ -170,65 +192,66 @@ fn lookup_github_user_info(repo_slug: &str, token: &str, sha: &str) -> Option<Gi
 }
 
 /// Get the GitHub login for the author of a specific commit.
-fn lookup_github_login_for_commit(repo_slug: &str, token: &str, sha: &str) -> Option<String> {
+async fn lookup_github_login_for_commit(repo_slug: &str, token: &str, sha: &str) -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/commits/{}", repo_slug, sha);
-    let output = Command::new("curl")
-        .args([
-            "-sS",
-            "-H", &format!("Authorization: Bearer {}", token),
-            "-H", "Accept: application/vnd.github+json",
-            &url,
-        ])
-        .output()
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "sampo-github-action")
+        .send()
+        .await
         .ok()?;
 
-    if !output.status.success() {
+    if !response.status().is_success() {
         return None;
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
+    let body = response.text().await.ok()?;
     parse_github_login_from_response(&body)
 }
 
 /// Parse GitHub login from API response JSON.
 fn parse_github_login_from_response(response_body: &str) -> Option<String> {
-    // Simple JSON parsing: look for "login": "username"
-    let start_pattern = "\"login\":\"";
-    let start_pos = response_body.find(start_pattern)? + start_pattern.len();
-    let end_pos = response_body[start_pos..].find('"')?;
-    let login = &response_body[start_pos..start_pos + end_pos];
-
-    if login.is_empty() {
-        None
-    } else {
-        Some(login.to_string())
-    }
+    let json: Value = serde_json::from_str(response_body).ok()?;
+    
+    // Navigate to author.login in the JSON structure
+    json.get("author")?
+        .get("login")?
+        .as_str()
+        .filter(|login| !login.is_empty())
+        .map(|login| login.to_string())
 }
 
 /// Check if this is the user's first contribution to the repository.
-fn is_first_contribution(repo_slug: &str, token: &str, login: &str) -> Option<bool> {
+async fn is_first_contribution(repo_slug: &str, token: &str, login: &str) -> Option<bool> {
     let url = format!(
         "https://api.github.com/repos/{}/commits?author={}&per_page=2",
         repo_slug, login
     );
-    let output = Command::new("curl")
-        .args([
-            "-sS",
-            "-H", &format!("Authorization: Bearer {}", token),
-            "-H", "Accept: application/vnd.github+json",
-            &url,
-        ])
-        .output()
+    
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "sampo-github-action")
+        .send()
+        .await
         .ok()?;
 
-    if !output.status.success() {
+    if !response.status().is_success() {
         return None;
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
-    // Count SHA occurrences to determine commit count
-    let commit_count = body.matches("\"sha\"").count();
-    Some(commit_count <= 1)
+    let body = response.text().await.ok()?;
+    let json: Value = serde_json::from_str(&body).ok()?;
+    
+    // Parse the JSON array and count commits
+    let commits = json.as_array()?;
+    Some(commits.len() <= 1)
 }
 
 /// Detect GitHub repository slug from environment or git remote.
@@ -269,9 +292,7 @@ fn parse_github_slug_from_url(url: &str) -> Option<String> {
     // Handle HTTPS format: https://github.com/owner/repo.git
     if let Some(pos) = url.find("github.com/") {
         let rest = &url[pos + "github.com/".len()..];
-        let slug = rest
-            .trim_end_matches('/')
-            .trim_end_matches(".git");
+        let slug = rest.trim_end_matches('/').trim_end_matches(".git");
 
         let parts: Vec<&str> = slug.split('/').collect();
         if parts.len() >= 2 {
@@ -289,28 +310,52 @@ mod tests {
     #[test]
     fn test_parse_github_slug_ssh() {
         let url = "git@github.com:owner/repo.git";
-        assert_eq!(parse_github_slug_from_url(url), Some("owner/repo".to_string()));
+        assert_eq!(
+            parse_github_slug_from_url(url),
+            Some("owner/repo".to_string())
+        );
 
         let url_no_git = "git@github.com:owner/repo";
-        assert_eq!(parse_github_slug_from_url(url_no_git), Some("owner/repo".to_string()));
+        assert_eq!(
+            parse_github_slug_from_url(url_no_git),
+            Some("owner/repo".to_string())
+        );
     }
 
     #[test]
     fn test_parse_github_slug_https() {
         let url = "https://github.com/owner/repo.git";
-        assert_eq!(parse_github_slug_from_url(url), Some("owner/repo".to_string()));
+        assert_eq!(
+            parse_github_slug_from_url(url),
+            Some("owner/repo".to_string())
+        );
 
         let url_no_git = "https://github.com/owner/repo";
-        assert_eq!(parse_github_slug_from_url(url_no_git), Some("owner/repo".to_string()));
+        assert_eq!(
+            parse_github_slug_from_url(url_no_git),
+            Some("owner/repo".to_string())
+        );
     }
 
     #[test]
     fn test_parse_github_login_from_response() {
         let response = r#"{"author":{"login":"testuser","id":123}}"#;
-        assert_eq!(parse_github_login_from_response(response), Some("testuser".to_string()));
+        assert_eq!(
+            parse_github_login_from_response(response),
+            Some("testuser".to_string())
+        );
 
         let empty_response = r#"{"author":null}"#;
         assert_eq!(parse_github_login_from_response(empty_response), None);
+
+        let no_author_response = r#"{"message":"Not Found"}"#;
+        assert_eq!(parse_github_login_from_response(no_author_response), None);
+
+        let empty_login_response = r#"{"author":{"login":"","id":123}}"#;
+        assert_eq!(parse_github_login_from_response(empty_login_response), None);
+
+        let invalid_json = "not json";
+        assert_eq!(parse_github_login_from_response(invalid_json), None);
     }
 
     #[test]
@@ -324,9 +369,62 @@ mod tests {
             "`abc123` Add new feature — Thanks @user!"
         );
 
+        assert_eq!(format_enriched_message(message, "", ""), "Add new feature");
+    }
+
+    #[test]
+    fn test_first_contribution_detection() {
+        // Test cases for is_first_contribution JSON parsing logic
+        // Note: These test the parsing logic, not the actual API calls
+        
+        // Single commit (first contribution)
+        let single_commit_response = r#"[{"sha":"abc123","commit":{"message":"Initial commit"}}]"#;
+        let json: Value = serde_json::from_str(single_commit_response).unwrap();
+        let commits = json.as_array().unwrap();
+        assert!(commits.len() <= 1);
+
+        // Multiple commits (not first contribution)
+        let multiple_commits_response = r#"[
+            {"sha":"abc123","commit":{"message":"First commit"}},
+            {"sha":"def456","commit":{"message":"Second commit"}}
+        ]"#;
+        let json: Value = serde_json::from_str(multiple_commits_response).unwrap();
+        let commits = json.as_array().unwrap();
+        assert!(commits.len() > 1);
+
+        // Empty array (no commits)
+        let empty_response = r#"[]"#;
+        let json: Value = serde_json::from_str(empty_response).unwrap();
+        let commits = json.as_array().unwrap();
+        assert!(commits.len() <= 1);
+    }
+
+    #[tokio::test]
+    async fn test_reqwest_client_configuration() {
+        // Test that we can create a reqwest client with proper headers
+        // This doesn't make an actual HTTP request, just verifies the client setup
+        
+        let client = reqwest::Client::new();
+        let request = client
+            .get("https://api.github.com/repos/owner/repo/commits/abc123")
+            .header("Authorization", "Bearer fake_token")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "sampo-github-action")
+            .build()
+            .expect("Should be able to build request");
+
+        // Verify headers are set correctly
+        assert!(request.headers().contains_key("authorization"));
+        assert!(request.headers().contains_key("accept"));
+        assert!(request.headers().contains_key("user-agent"));
+        
         assert_eq!(
-            format_enriched_message(message, "", ""),
-            "Add new feature"
+            request.headers().get("accept").unwrap(),
+            "application/vnd.github+json"
+        );
+        assert_eq!(
+            request.headers().get("user-agent").unwrap(),
+            "sampo-github-action"
         );
     }
 }

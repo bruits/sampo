@@ -6,17 +6,14 @@ use tempfile::TempDir;
 
 /// Build the sampo-github-action binary and return its path
 fn get_action_binary() -> std::path::PathBuf {
-    // Find workspace root first
-    let mut workspace_root = std::env::current_dir().expect("Failed to get current dir");
-    while !workspace_root.join("Cargo.toml").exists() || !workspace_root.join("crates").exists() {
-        if let Some(parent) = workspace_root.parent() {
-            workspace_root = parent.to_path_buf();
-        } else {
-            // Fallback - assume we're already at root
-            workspace_root = std::env::current_dir().expect("Failed to get current dir");
-            break;
-        }
-    }
+    // Use CARGO_MANIFEST_DIR to find our crate directory, then navigate to workspace root
+    let crate_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set during tests");
+    let workspace_root = std::path::Path::new(&crate_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("Expected to find workspace root")
+        .to_path_buf();
 
     // Build from workspace root
     let output = Command::new("cargo")

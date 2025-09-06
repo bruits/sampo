@@ -1,5 +1,5 @@
 use crate::{ActionError, Result};
-use sampo::{enrich_changeset_message, detect_github_repo_slug};
+use sampo::{detect_github_repo_slug, enrich_changeset_message};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -146,7 +146,7 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     let github_token = std::env::var("GITHUB_TOKEN")
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
-    
+
     for cs in &changesets {
         for pkg in &cs.packages {
             if releases.contains_key(pkg) {
@@ -188,11 +188,18 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
         let mut patch_changes = Vec::new();
 
         if let Some(changeset_list) = messages_by_pkg.get(&name) {
+            // Helper to push without duplicates (preserve append order)
+            let push_unique = |list: &mut Vec<String>, msg: &str| {
+                if !list.iter().any(|m| m == msg) {
+                    list.push(msg.to_string());
+                }
+            };
+
             for (message, bump_type) in changeset_list {
                 match bump_type {
-                    Bump::Major => major_changes.push(message.clone()),
-                    Bump::Minor => minor_changes.push(message.clone()),
-                    Bump::Patch => patch_changes.push(message.clone()),
+                    Bump::Major => push_unique(&mut major_changes, message),
+                    Bump::Minor => push_unique(&mut minor_changes, message),
+                    Bump::Patch => push_unique(&mut patch_changes, message),
                 }
             }
         }
@@ -481,5 +488,28 @@ Missing release field";
         append_changes_section(&mut output, "Major changes", &changes);
 
         assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_no_duplicate_messages_in_changelog() {
+        // Test that duplicate messages are filtered out properly
+        let mut major_changes: Vec<String> = Vec::new();
+
+        // Helper function that mimics the one used in build_release_pr_body_from_stdout
+        let push_unique = |list: &mut Vec<String>, msg: &str| {
+            if !list.iter().any(|m| m == msg) {
+                list.push(msg.to_string());
+            }
+        };
+
+        // Simulate adding the same message multiple times
+        push_unique(&mut major_changes, "Fix critical bug");
+        push_unique(&mut major_changes, "Fix critical bug"); // duplicate
+        push_unique(&mut major_changes, "Add new feature");
+        push_unique(&mut major_changes, "Fix critical bug"); // another duplicate
+
+        // Should only have 2 unique messages
+        assert_eq!(major_changes.len(), 2);
+        assert_eq!(major_changes, vec!["Fix critical bug", "Add new feature"]);
     }
 }
