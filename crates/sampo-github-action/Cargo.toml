@@ -1,6 +1,6 @@
 [package]
 name = "sampo-github-action"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "GitHub Action runner for Sampo CLI (release/publish orchestrator)"
