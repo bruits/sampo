@@ -190,7 +190,6 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     output.push_str("[Sampo GitHub Action](https://github.com/bruits/sampo/blob/main/crates/sampo-github-action/README.md).");
     output.push_str(" When you're ready to do a release, you can merge this and the packages will be published automatically. ");
     output.push_str("Not ready yet? Just keep adding changesets to the default branch, and this PR will stay up to date.\n\n");
-    output.push_str("----\n\n");
 
     // Deterministic crate order by name
     let mut crate_names: Vec<_> = releases.keys().cloned().collect();
