@@ -61,9 +61,28 @@ As long as the release is not finalized, you can continue to add changesets and 
 └─ README.md <- A copy of this documentation
 ```
 
-### Sampo configuration
+## Configuration
 
-*Work in progress*
+The `.sampo/config.toml` file allows you to customize Sampo's behavior. Example configuration:
+
+```toml
+[github]
+repository = "owner/repo"
+
+[changelog]
+show_commit_hash = true
+show_acknowledgments = true
+```
+
+### `[github]` section
+
+`repository`: The GitHub repository slug in the format "owner/repo". If not set, Sampo uses the `GITHUB_REPOSITORY` environment variable or attempts to detect it from the `origin` git remote. This setting is used to enrich changelog messages with commit hash links and author acknowledgments, especially for first-time contributors.
+
+### `[changelog]` section
+
+`show_commit_hash`: Whether to include commit hash links in changelog entries (default: `true`). When enabled, changelog entries include clickable commit hash links that point to the commit on GitHub.
+
+`show_acknowledgments`: Whether to include author acknowledgments in changelog entries (default: `true`). When enabled, changelog entries include author acknowledgments with special messages for first-time contributors.
 
 ## Commands
 

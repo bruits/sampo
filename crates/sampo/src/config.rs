@@ -1,10 +1,12 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct Config {
     #[allow(dead_code)]
     pub version: u64,
-    pub changesets_dir: PathBuf,
+    pub github_repository: Option<String>,
+    pub changelog_show_commit_hash: bool,
+    pub changelog_show_acknowledgments: bool,
 }
 
 impl Config {
@@ -15,7 +17,9 @@ impl Config {
             // default config
             return Ok(Self {
                 version: 1,
-                changesets_dir: base.join("changesets"),
+                github_repository: None,
+                changelog_show_commit_hash: true,
+                changelog_show_acknowledgments: true,
             });
         }
 
@@ -34,16 +38,32 @@ impl Config {
 
         let version = u64::try_from(version).unwrap_or(1);
 
-        let dir_str = value
-            .get("changesets")
+        let github_repository = value
+            .get("github")
             .and_then(|v| v.as_table())
-            .and_then(|t| t.get("dir"))
+            .and_then(|t| t.get("repository"))
             .and_then(|v| v.as_str())
-            .unwrap_or("changesets");
+            .map(|s| s.to_string());
+
+        let changelog_show_commit_hash = value
+            .get("changelog")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("show_commit_hash"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let changelog_show_acknowledgments = value
+            .get("changelog")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("show_acknowledgments"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         Ok(Self {
             version,
-            changesets_dir: base.join(dir_str),
+            github_repository,
+            changelog_show_commit_hash,
+            changelog_show_acknowledgments,
         })
     }
 }
@@ -58,19 +78,53 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = Config::load(tmp.path()).unwrap();
         assert_eq!(cfg.version, 1);
-        assert!(cfg.changesets_dir.ends_with(".sampo/changesets"));
+        assert!(cfg.changelog_show_commit_hash);
+        assert!(cfg.changelog_show_acknowledgments);
+        assert_eq!(cfg.github_repository, None);
     }
 
     #[test]
-    fn reads_changesets_dir() {
+    fn reads_changelog_options() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join(".sampo")).unwrap();
         fs::write(
             tmp.path().join(".sampo/config.toml"),
-            "version=1\n[changesets]\ndir=\"notes\"\n",
+            "version=1\n[changelog]\nshow_commit_hash=false\nshow_acknowledgments=false\n",
         )
         .unwrap();
         let cfg = Config::load(tmp.path()).unwrap();
-        assert!(cfg.changesets_dir.ends_with(".sampo/notes"));
+        assert!(!cfg.changelog_show_commit_hash);
+        assert!(!cfg.changelog_show_acknowledgments);
+        assert_eq!(cfg.github_repository, None);
+    }
+
+    #[test]
+    fn reads_github_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".sampo")).unwrap();
+        fs::write(
+            tmp.path().join(".sampo/config.toml"),
+            "version=1\n[github]\nrepository=\"owner/repo\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path()).unwrap();
+        assert_eq!(cfg.github_repository, Some("owner/repo".to_string()));
+        assert!(cfg.changelog_show_commit_hash); // default
+        assert!(cfg.changelog_show_acknowledgments); // default
+    }
+
+    #[test]
+    fn reads_both_changelog_and_github() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".sampo")).unwrap();
+        fs::write(
+            tmp.path().join(".sampo/config.toml"),
+            "version=1\n[changelog]\nshow_commit_hash=false\n[github]\nrepository=\"owner/repo\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load(tmp.path()).unwrap();
+        assert!(!cfg.changelog_show_commit_hash);
+        assert!(cfg.changelog_show_acknowledgments); // default when not specified
+        assert_eq!(cfg.github_repository, Some("owner/repo".to_string()));
     }
 }

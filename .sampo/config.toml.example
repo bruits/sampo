@@ -1,0 +1,20 @@
+# Example Sampo configuration file
+# Copy this to .sampo/config.toml and modify as needed
+
+# GitHub repository configuration
+[github]
+# Optional: explicitly specify the GitHub repository slug
+# This overrides automatic detection from git remote and environment variables
+# Format: "owner/repository-name"
+repository = "owner/repo"
+
+# If not specified, Sampo will automatically detect the repository from:
+# 1. The GITHUB_REPOSITORY environment variable (useful in GitHub Actions)
+# 2. The git remote origin URL
+
+# Changelog generation options
+[changelog]
+# Whether to include commit hash links in changelog entries (default: true)
+show_commit_hash = true
+# Whether to include author acknowledgments in changelog entries (default: true)
+show_acknowledgments = true

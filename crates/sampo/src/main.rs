@@ -2,6 +2,7 @@ mod add;
 mod changeset;
 mod cli;
 mod config;
+mod enrichment;
 mod init;
 mod names;
 mod publish;

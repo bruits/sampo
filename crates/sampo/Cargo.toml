@@ -7,10 +7,21 @@ readme = "README.md"
 description = "Sampo CLI: automate changelogs, versioning, and publishing"
 repository = "https://github.com/bruits/sampo"
 
+[lib]
+name = "sampo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sampo"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
 toml = "0.8"
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 tempfile = "3"

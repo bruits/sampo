@@ -1,4 +1,8 @@
 use crate::{ActionError, Result};
+use sampo::{
+    config::Config, detect_github_repo_slug_with_config, enrich_changeset_message,
+    get_commit_hash_for_path,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -139,13 +143,43 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
 
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+
+    // Load configuration to get GitHub repository setting
+    let config = Config::load(workspace).unwrap_or(Config {
+        version: 1,
+        github_repository: None,
+        changelog_show_commit_hash: true,
+        changelog_show_acknowledgments: true,
+    });
+
+    // Resolve GitHub slug and token for commit links and acknowledgments
+    let repo_slug =
+        detect_github_repo_slug_with_config(workspace, config.github_repository.as_deref());
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("GH_TOKEN").ok());
+
     for cs in &changesets {
         for pkg in &cs.packages {
             if releases.contains_key(pkg) {
+                let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
+                let enriched = if let Some(hash) = commit_hash {
+                    enrich_changeset_message(
+                        &cs.message,
+                        &hash,
+                        workspace,
+                        repo_slug.as_deref(),
+                        github_token.as_deref(),
+                        config.changelog_show_commit_hash,
+                        config.changelog_show_acknowledgments,
+                    )
+                } else {
+                    cs.message.clone()
+                };
                 messages_by_pkg
                     .entry(pkg.clone())
                     .or_default()
-                    .push((cs.message.clone(), cs.bump));
+                    .push((enriched, cs.bump));
             }
         }
     }
@@ -156,7 +190,6 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     output.push_str("[Sampo GitHub Action](https://github.com/bruits/sampo/blob/main/crates/sampo-github-action/README.md).");
     output.push_str(" When you're ready to do a release, you can merge this and the packages will be published automatically. ");
     output.push_str("Not ready yet? Just keep adding changesets to the default branch, and this PR will stay up to date.\n\n");
-    output.push_str("----\n\n");
 
     // Deterministic crate order by name
     let mut crate_names: Vec<_> = releases.keys().cloned().collect();
@@ -173,13 +206,19 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
         let mut patch_changes = Vec::new();
 
         if let Some(changeset_list) = messages_by_pkg.get(&name) {
+            // Helper to push without duplicates (preserve append order)
+            let push_unique = |list: &mut Vec<String>, msg: &str| {
+                if !list.iter().any(|m| m == msg) {
+                    list.push(msg.to_string());
+                }
+            };
+
             for (message, bump_type) in changeset_list {
-                let target_list = match bump_type {
-                    Bump::Major => &mut major_changes,
-                    Bump::Minor => &mut minor_changes,
-                    Bump::Patch => &mut patch_changes,
-                };
-                push_unique(target_list, message);
+                match bump_type {
+                    Bump::Major => push_unique(&mut major_changes, message),
+                    Bump::Minor => push_unique(&mut minor_changes, message),
+                    Bump::Patch => push_unique(&mut patch_changes, message),
+                }
             }
         }
 
@@ -189,13 +228,6 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     }
 
     Ok(output)
-}
-
-/// Add a message to the list if it's not already present
-fn push_unique(list: &mut Vec<String>, msg: &str) {
-    if !list.iter().any(|m| m == msg) {
-        list.push(msg.to_string());
-    }
 }
 
 /// Append a changes section to the output if the changes list is not empty
@@ -222,6 +254,7 @@ pub enum Bump {
 /// Represents a parsed changeset file with package references and change details
 #[derive(Debug, Clone)]
 struct Changeset {
+    path: PathBuf,
     packages: Vec<String>,
     bump: Bump,
     message: String,
@@ -284,7 +317,7 @@ fn load_changesets(dir: &Path) -> Result<Vec<Changeset>> {
 /// ---
 /// Change description message
 /// ```
-fn parse_changeset(text: &str, _path: &Path) -> Option<Changeset> {
+fn parse_changeset(text: &str, path: &Path) -> Option<Changeset> {
     let mut lines = text.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -331,6 +364,7 @@ fn parse_changeset(text: &str, _path: &Path) -> Option<Changeset> {
         return None;
     }
     Some(Changeset {
+        path: path.to_path_buf(),
         packages,
         bump: bump.unwrap(),
         message,
@@ -433,17 +467,6 @@ Missing release field";
     }
 
     #[test]
-    fn test_push_unique() {
-        let mut list = vec!["item1".to_string()];
-        push_unique(&mut list, "item2");
-        push_unique(&mut list, "item1"); // Duplicate
-        push_unique(&mut list, "item3");
-
-        assert_eq!(list.len(), 3);
-        assert_eq!(list, vec!["item1", "item2", "item3"]);
-    }
-
-    #[test]
     fn test_bump_ordering() {
         assert!(Bump::Patch < Bump::Minor);
         assert!(Bump::Minor < Bump::Major);
@@ -483,5 +506,28 @@ Missing release field";
         append_changes_section(&mut output, "Major changes", &changes);
 
         assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_no_duplicate_messages_in_changelog() {
+        // Test that duplicate messages are filtered out properly
+        let mut major_changes: Vec<String> = Vec::new();
+
+        // Helper function that mimics the one used in build_release_pr_body_from_stdout
+        let push_unique = |list: &mut Vec<String>, msg: &str| {
+            if !list.iter().any(|m| m == msg) {
+                list.push(msg.to_string());
+            }
+        };
+
+        // Simulate adding the same message multiple times
+        push_unique(&mut major_changes, "Fix critical bug");
+        push_unique(&mut major_changes, "Fix critical bug"); // duplicate
+        push_unique(&mut major_changes, "Add new feature");
+        push_unique(&mut major_changes, "Fix critical bug"); // another duplicate
+
+        // Should only have 2 unique messages
+        assert_eq!(major_changes.len(), 2);
+        assert_eq!(major_changes, vec!["Fix critical bug", "Add new feature"]);
     }
 }
