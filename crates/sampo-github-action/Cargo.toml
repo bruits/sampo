@@ -11,7 +11,7 @@ repository = "https://github.com/bruits/sampo"
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "1.0"
 toml = "0.8"
-sampo = { path = "../sampo" }
+sampo = { version = "0.2.0", path = "../sampo" }
 
 [dev-dependencies]
 tempfile = "3.0"
