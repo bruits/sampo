@@ -1,7 +1,7 @@
 name: Publish After Merge
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
     branches:
       - main
@@ -20,6 +20,7 @@ jobs:
         contains(github.event.pull_request.title, 'Release')
       )
     runs-on: ubuntu-latest
+    environment: sampo
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,9 +31,10 @@ jobs:
         uses: bruits/sampo/crates/sampo-github-action@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         with:
           command: post-merge-publish
-          cargo-token: ${{ secrets.CRATES_IO_TOKEN }}
+          cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           create-github-release: true
 
       - name: Check if sampo-github-bot was updated

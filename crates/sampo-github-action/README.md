@@ -39,7 +39,7 @@ jobs:
         uses: bruits/sampo/crates/sampo-github-action@main
         with:
           command: release-and-publish
-          cargo-token: ${{ secrets.CRATES_IO_TOKEN }}
+          cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           # Optional: pass flags to cargo publish (after `--`)
           args: --allow-dirty --no-verify
 ```
@@ -108,7 +108,7 @@ jobs:
         uses: bruits/sampo/crates/sampo-github-action@main
         with:
           command: post-merge-publish
-          cargo-token: ${{ secrets.CRATES_IO_TOKEN }}
+          cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           # optional: also create GitHub Releases for new tags
           create-github-release: true
           # optional: pass flags to cargo publish
