@@ -6,14 +6,23 @@ body:
   - type: markdown
     attributes:
       value: |
-        ##  Quick Checklist
         Thank you for taking the time to file a bug report! Please fill out this form as completely as possible. If you're not sure how to fill out a section, do your best and we'll help you along the way.
-  # TODO: When the extensions and the crates will be published, we should add a block to ask the versions concerned by the bug.
   - type: textarea
     id: bug-description
     attributes:
       label: Describe the Bug
       description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: environment-info
+    attributes:
+      label: Environment Information
+      description: |
+        Please provide the following information:
+        - Sampo crate versions (e.g., sampo v0.2.0, sampo-github-bot v0.1.1)
+        - Operating System (e.g., macOS 14.0, Ubuntu 22.04, Windows 11)
+        - Rust version (run `rustc --version`)
     validations:
       required: true
   - type: textarea
