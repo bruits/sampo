@@ -9,9 +9,9 @@
 //! the original message is returned unchanged. GitHub API calls are made using the reqwest
 //! HTTP client for reliability and portability.
 
+use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
-use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -181,9 +181,15 @@ fn format_enriched_message(message: &str, prefix: &str, suffix: &str) -> String 
 }
 
 /// Lookup GitHub user information for a specific commit.
-async fn lookup_github_user_info(repo_slug: &str, token: &str, sha: &str) -> Option<GitHubUserInfo> {
+async fn lookup_github_user_info(
+    repo_slug: &str,
+    token: &str,
+    sha: &str,
+) -> Option<GitHubUserInfo> {
     let login = lookup_github_login_for_commit(repo_slug, token, sha).await?;
-    let is_first_contribution = is_first_contribution(repo_slug, token, &login).await.unwrap_or(false);
+    let is_first_contribution = is_first_contribution(repo_slug, token, &login)
+        .await
+        .unwrap_or(false);
 
     Some(GitHubUserInfo {
         login,
@@ -194,7 +200,7 @@ async fn lookup_github_user_info(repo_slug: &str, token: &str, sha: &str) -> Opt
 /// Get the GitHub login for the author of a specific commit.
 async fn lookup_github_login_for_commit(repo_slug: &str, token: &str, sha: &str) -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/commits/{}", repo_slug, sha);
-    
+
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
@@ -216,7 +222,7 @@ async fn lookup_github_login_for_commit(repo_slug: &str, token: &str, sha: &str)
 /// Parse GitHub login from API response JSON.
 fn parse_github_login_from_response(response_body: &str) -> Option<String> {
     let json: Value = serde_json::from_str(response_body).ok()?;
-    
+
     // Navigate to author.login in the JSON structure
     json.get("author")?
         .get("login")?
@@ -231,7 +237,7 @@ async fn is_first_contribution(repo_slug: &str, token: &str, login: &str) -> Opt
         "https://api.github.com/repos/{}/commits?author={}&per_page=2",
         repo_slug, login
     );
-    
+
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
@@ -248,7 +254,7 @@ async fn is_first_contribution(repo_slug: &str, token: &str, login: &str) -> Opt
 
     let body = response.text().await.ok()?;
     let json: Value = serde_json::from_str(&body).ok()?;
-    
+
     // Parse the JSON array and count commits
     let commits = json.as_array()?;
     Some(commits.len() <= 1)
@@ -376,7 +382,7 @@ mod tests {
     fn test_first_contribution_detection() {
         // Test cases for is_first_contribution JSON parsing logic
         // Note: These test the parsing logic, not the actual API calls
-        
+
         // Single commit (first contribution)
         let single_commit_response = r#"[{"sha":"abc123","commit":{"message":"Initial commit"}}]"#;
         let json: Value = serde_json::from_str(single_commit_response).unwrap();
@@ -403,7 +409,7 @@ mod tests {
     async fn test_reqwest_client_configuration() {
         // Test that we can create a reqwest client with proper headers
         // This doesn't make an actual HTTP request, just verifies the client setup
-        
+
         let client = reqwest::Client::new();
         let request = client
             .get("https://api.github.com/repos/owner/repo/commits/abc123")
@@ -417,7 +423,7 @@ mod tests {
         assert!(request.headers().contains_key("authorization"));
         assert!(request.headers().contains_key("accept"));
         assert!(request.headers().contains_key("user-agent"));
-        
+
         assert_eq!(
             request.headers().get("accept").unwrap(),
             "application/vnd.github+json"

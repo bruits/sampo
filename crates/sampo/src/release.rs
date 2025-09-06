@@ -1,7 +1,7 @@
 use crate::changeset::{Bump, load_all};
 use crate::cli::ReleaseArgs;
 use crate::config::Config;
-use crate::enrichment::{enrich_changeset_message, detect_github_repo_slug};
+use crate::enrichment::{detect_github_repo_slug, enrich_changeset_message};
 use crate::workspace::{CrateInfo, Workspace};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
