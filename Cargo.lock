@@ -1679,7 +1679,7 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "sampo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "rand",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-action"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "clap",
  "sampo",
@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-bot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
