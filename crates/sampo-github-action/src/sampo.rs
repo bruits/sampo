@@ -139,13 +139,26 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
 
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+
+    // Resolve GitHub slug and token for commit links and acknowledgments
+    let repo_slug = detect_repo_slug(workspace);
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("GH_TOKEN").ok());
     for cs in &changesets {
         for pkg in &cs.packages {
             if releases.contains_key(pkg) {
+                let enriched = enrich_message(
+                    workspace,
+                    &cs.path,
+                    &cs.message,
+                    repo_slug.as_deref(),
+                    github_token.as_deref(),
+                );
                 messages_by_pkg
                     .entry(pkg.clone())
                     .or_default()
-                    .push((cs.message.clone(), cs.bump));
+                    .push((enriched, cs.bump));
             }
         }
     }
@@ -174,12 +187,11 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
 
         if let Some(changeset_list) = messages_by_pkg.get(&name) {
             for (message, bump_type) in changeset_list {
-                let target_list = match bump_type {
-                    Bump::Major => &mut major_changes,
-                    Bump::Minor => &mut minor_changes,
-                    Bump::Patch => &mut patch_changes,
-                };
-                push_unique(target_list, message);
+                match bump_type {
+                    Bump::Major => major_changes.push(message.clone()),
+                    Bump::Minor => minor_changes.push(message.clone()),
+                    Bump::Patch => patch_changes.push(message.clone()),
+                }
             }
         }
 
@@ -222,6 +234,7 @@ pub enum Bump {
 /// Represents a parsed changeset file with package references and change details
 #[derive(Debug, Clone)]
 struct Changeset {
+    path: PathBuf,
     packages: Vec<String>,
     bump: Bump,
     message: String,
@@ -284,7 +297,7 @@ fn load_changesets(dir: &Path) -> Result<Vec<Changeset>> {
 /// ---
 /// Change description message
 /// ```
-fn parse_changeset(text: &str, _path: &Path) -> Option<Changeset> {
+fn parse_changeset(text: &str, path: &Path) -> Option<Changeset> {
     let mut lines = text.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -331,6 +344,7 @@ fn parse_changeset(text: &str, _path: &Path) -> Option<Changeset> {
         return None;
     }
     Some(Changeset {
+        path: path.to_path_buf(),
         packages,
         bump: bump.unwrap(),
         message,
@@ -361,6 +375,202 @@ fn parse_planned_releases(stdout: &str) -> BTreeMap<String, (String, String)> {
         }
     }
     map
+}
+
+#[derive(Debug, Clone)]
+struct CommitInfo {
+    sha: String,
+    short_sha: String,
+    author_login: Option<String>,
+    author_name: Option<String>,
+}
+
+fn detect_repo_slug(workspace: &Path) -> Option<String> {
+    if let Ok(repo) = std::env::var("GITHUB_REPOSITORY") {
+        if !repo.is_empty() && repo.contains('/') {
+            return Some(repo);
+        }
+    }
+    // Fallback to origin remote parsing
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_slug(&url)
+}
+
+fn parse_slug(url: &str) -> Option<String> {
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        return Some(rest.trim_end_matches(".git").to_string());
+    }
+    if let Some(pos) = url.find("github.com/") {
+        let rest = &url[pos + "github.com/".len()..];
+        let slug = rest.trim_end_matches('.').trim_end_matches("git").trim_end_matches('/');
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() >= 2 {
+            return Some(format!("{}/{}", parts[0], parts[1]));
+        }
+    }
+    None
+}
+
+fn get_commit_for_file(workspace: &Path, path: &Path) -> Option<CommitInfo> {
+    let rel = path.strip_prefix(workspace).unwrap_or(path);
+    let rel_str = rel.to_string_lossy();
+    let fmt = "%H\x1f%h\x1f%an"; // full sha, short, author name
+    let arg = format!("--pretty=format:{}", fmt);
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args([
+            "log",
+            "--diff-filter=A",
+            "--follow",
+            "-n",
+            "1",
+            &arg,
+            "--",
+            &rel_str,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&output.stdout);
+    let line = s.lines().next().unwrap_or("");
+    let parts: Vec<&str> = line.split('\u{001F}').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    Some(CommitInfo {
+        sha: parts[0].to_string(),
+        short_sha: parts[1].to_string(),
+        author_login: None,
+        author_name: Some(parts[2].to_string()),
+    })
+}
+
+fn lookup_login_for_commit(repo_slug: &str, token: &str, sha: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{}/commits/{}", repo_slug, sha);
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    if let Some(pos) = body.find("\"login\":\"") {
+        let start = pos + 9;
+        if let Some(end) = body[start..].find('"') {
+            let login = &body[start..start + end];
+            if !login.is_empty() {
+                return Some(login.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_first_contrib(repo_slug: &str, token: &str, login: &str) -> Option<bool> {
+    let url = format!(
+        "https://api.github.com/repos/{}/commits?author={}&per_page=2",
+        repo_slug, login
+    );
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            &url,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let count = body.matches("\"sha\"").count();
+    Some(count <= 1)
+}
+
+fn enrich_message(
+    workspace: &Path,
+    changeset_path: &Path,
+    message: &str,
+    repo_slug: Option<&str>,
+    github_token: Option<&str>,
+) -> String {
+    let commit = get_commit_for_file(workspace, changeset_path);
+
+    let mut prefix = String::new();
+    if let Some(ci) = &commit {
+        if let Some(slug) = repo_slug {
+            prefix.push('[');
+            prefix.push('`');
+            prefix.push_str(&ci.short_sha);
+            prefix.push('`');
+            prefix.push(']');
+            prefix.push('(');
+            prefix.push_str(&format!(
+                "https://github.com/{}/commit/{}",
+                slug, ci.sha
+            ));
+            prefix.push(')');
+            prefix.push(' ');
+        } else {
+            prefix.push('`');
+            prefix.push_str(&ci.short_sha);
+            prefix.push('`');
+            prefix.push(' ');
+        }
+    }
+
+    let mut suffix = String::new();
+    let mut login: Option<String> = None;
+    if let (Some(slug), Some(token), Some(ci)) = (repo_slug, github_token.as_deref(), &commit) {
+        login = lookup_login_for_commit(slug, token, &ci.sha);
+    }
+
+    if let Some(user) = login.clone().or_else(|| commit.as_ref().and_then(|c| c.author_name.clone())) {
+        suffix.push_str(" — Thanks ");
+        if login.is_some() {
+            suffix.push('@');
+        }
+        suffix.push_str(&user);
+        suffix.push(' ');
+
+        if let (Some(slug), Some(token), Some(user_login)) = (repo_slug, github_token.as_deref(), login.as_deref()) {
+            if is_first_contrib(slug, token, user_login).unwrap_or(false) {
+                suffix.push_str("for your first contribution 🎉 ");
+            }
+        }
+        suffix.push('!');
+    }
+
+    if prefix.is_empty() && suffix.is_empty() {
+        message.to_string()
+    } else if suffix.is_empty() {
+        format!("{}{}", prefix, message)
+    } else if prefix.is_empty() {
+        format!("{} {}", message, suffix)
+    } else {
+        format!("{}{} {}", prefix, message, suffix)
+    }
 }
 
 #[cfg(test)]
