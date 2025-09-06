@@ -7,6 +7,14 @@ readme = "README.md"
 description = "Sampo CLI: automate changelogs, versioning, and publishing"
 repository = "https://github.com/bruits/sampo"
 
+[lib]
+name = "sampo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sampo"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
