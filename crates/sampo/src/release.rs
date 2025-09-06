@@ -1,7 +1,9 @@
 use crate::changeset::{Bump, load_all};
 use crate::cli::ReleaseArgs;
 use crate::config::Config;
-use crate::enrichment::{detect_github_repo_slug, enrich_changeset_message};
+use crate::enrichment::{
+    detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
+};
 use crate::workspace::{CrateInfo, Workspace};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,9 +19,12 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
     let ws = Workspace::discover_from(root).map_err(io::Error::other)?;
     let cfg = Config::load(&ws.root)?;
 
-    let changesets = load_all(&cfg.changesets_dir)?;
+    let changesets = load_all(&ws.root.join(".sampo").join("changesets"))?;
     if changesets.is_empty() {
-        println!("No changesets found in {}", cfg.changesets_dir.display());
+        println!(
+            "No changesets found in {}",
+            ws.root.join(".sampo").join("changesets").display()
+        );
         return Ok(());
     }
 
@@ -28,8 +33,8 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
     let mut used_paths: BTreeSet<std::path::PathBuf> = BTreeSet::new();
 
-    // Resolve GitHub repo slug once if available (env or origin remote)
-    let repo_slug = detect_github_repo_slug(&ws.root);
+    // Resolve GitHub repo slug once if available (config, env or origin remote)
+    let repo_slug = detect_github_repo_slug_with_config(&ws.root, cfg.github_repository.as_deref());
     let github_token = std::env::var("GITHUB_TOKEN")
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
@@ -46,13 +51,20 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
                 })
                 .or_insert(cs.bump);
             // Enrich message with commit info and acknowledgments
-            let enriched = enrich_changeset_message(
-                &ws.root,
-                &cs.path,
-                &cs.message,
-                repo_slug.as_deref(),
-                github_token.as_deref(),
-            );
+            let commit_hash = get_commit_hash_for_path(&ws.root, &cs.path);
+            let enriched = if let Some(hash) = commit_hash {
+                enrich_changeset_message(
+                    &cs.message,
+                    &hash,
+                    &ws.root,
+                    repo_slug.as_deref(),
+                    github_token.as_deref(),
+                    cfg.changelog_show_commit_hash,
+                    cfg.changelog_show_acknowledgments,
+                )
+            } else {
+                cs.message.clone()
+            };
 
             messages_by_pkg
                 .entry(pkg.clone())

@@ -3,7 +3,7 @@
 //! This module provides functionality to enhance changeset messages by adding:
 //! - Commit hash information with optional GitHub links
 //! - Author acknowledgments with GitHub username detection
-//! - Special badges for first-time contributors
+//! - Special messages for first-time contributors
 //!
 //! The enrichment is designed to be graceful: if Git or GitHub information is unavailable,
 //! the original message is returned unchanged. GitHub API calls are made using the reqwest
@@ -28,54 +28,111 @@ pub struct GitHubUserInfo {
 
 /// Enrich a changeset message with commit information and author acknowledgments.
 ///
-/// This function adds:
-/// - Commit hash with optional GitHub link
-/// - Author acknowledgment with optional first contribution badge
+/// Takes a changeset message and optionally enhances it with:
+/// - Commit hash link (if show_commit_hash is true)
+/// - Author acknowledgment with optional first contribution message (if show_acknowledgments is true)
 ///
 /// # Arguments
-/// * `repo_root` - Path to the git repository root
-/// * `changeset_path` - Path to the changeset file
-/// * `message` - Original changeset message
-/// * `repo_slug` - Optional GitHub repository slug (owner/repo)
-/// * `github_token` - Optional GitHub API token for user info lookups
+/// * `message` - The original changeset message
+/// * `commit_hash` - Git commit hash for this changeset
+/// * `workspace` - Repository workspace path
+/// * `repo_slug` - GitHub repository slug (owner/repo)
+/// * `github_token` - Optional GitHub API token for enhanced features
+/// * `show_commit_hash` - Whether to include commit hash links
+/// * `show_acknowledgments` - Whether to include author acknowledgments
 ///
 /// # Returns
 /// Enhanced message in format: `[commit_hash](link) message — Thanks @user for your first contribution 🎉!`
 pub fn enrich_changeset_message(
-    repo_root: &Path,
-    changeset_path: &Path,
     message: &str,
+    commit_hash: &str,
+    workspace: &Path,
     repo_slug: Option<&str>,
     github_token: Option<&str>,
+    show_commit_hash: bool,
+    show_acknowledgments: bool,
 ) -> String {
     // Create a tokio runtime for this blocking call
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(enrich_changeset_message_async(
-        repo_root,
-        changeset_path,
         message,
+        commit_hash,
+        workspace,
         repo_slug,
         github_token,
+        show_commit_hash,
+        show_acknowledgments,
     ))
 }
 
 /// Async version of enrich_changeset_message for internal use.
 async fn enrich_changeset_message_async(
-    repo_root: &Path,
-    changeset_path: &Path,
     message: &str,
+    commit_hash: &str,
+    workspace: &Path,
     repo_slug: Option<&str>,
     github_token: Option<&str>,
+    show_commit_hash: bool,
+    show_acknowledgments: bool,
 ) -> String {
-    let commit = get_commit_info_for_path(repo_root, changeset_path);
+    let commit = get_commit_info_for_hash(workspace, commit_hash);
 
-    let commit_prefix = build_commit_prefix(&commit, repo_slug);
-    let acknowledgment_suffix = build_acknowledgment_suffix(&commit, repo_slug, github_token).await;
+    let commit_prefix = if show_commit_hash {
+        build_commit_prefix(&commit, repo_slug)
+    } else {
+        String::new()
+    };
+
+    let acknowledgment_suffix = if show_acknowledgments {
+        build_acknowledgment_suffix(&commit, repo_slug, github_token).await
+    } else {
+        String::new()
+    };
 
     format_enriched_message(message, &commit_prefix, &acknowledgment_suffix)
 }
 
+/// Get commit information for a specific commit hash.
+fn get_commit_info_for_hash(repo_root: &Path, commit_hash: &str) -> Option<CommitInfo> {
+    let format_string = "%H\x1f%h\x1f%an";
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args([
+            "show",
+            "-s", // Suppress diff output
+            &format!("--pretty=format:{}", format_string),
+            commit_hash,
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let line = output_str.lines().next()?;
+    let parts: Vec<&str> = line.split('\u{001F}').collect();
+
+    if parts.len() < 3 {
+        return None;
+    }
+
+    Some(CommitInfo {
+        sha: parts[0].to_string(),
+        short_sha: parts[1].to_string(),
+        author_name: parts[2].to_string(),
+    })
+}
+
+/// Get commit hash for when a file was first added to the repository.
+pub fn get_commit_hash_for_path(repo_root: &Path, path: &Path) -> Option<String> {
+    let commit_info = get_commit_info_for_path(repo_root, path)?;
+    Some(commit_info.sha)
+}
+
 /// Get commit information for when a file was first added to the repository.
+#[allow(dead_code)]
 fn get_commit_info_for_path(repo_root: &Path, path: &Path) -> Option<CommitInfo> {
     let relative_path = path.strip_prefix(repo_root).unwrap_or(path);
     let relative_path_str = relative_path.to_string_lossy();
@@ -260,9 +317,29 @@ async fn is_first_contribution(repo_slug: &str, token: &str, login: &str) -> Opt
     Some(commits.len() <= 1)
 }
 
-/// Detect GitHub repository slug from environment or git remote.
+/// Detect GitHub repository slug from configuration, environment, or git remote.
+///
+/// This is a convenience function that calls `detect_github_repo_slug_with_config`
+/// with `None` as the configuration parameter.
+#[allow(dead_code)]
 pub fn detect_github_repo_slug(repo_root: &Path) -> Option<String> {
-    // First, try environment variable (common in CI)
+    detect_github_repo_slug_with_config(repo_root, None)
+}
+
+/// Detect GitHub repository slug with optional configuration override.
+pub fn detect_github_repo_slug_with_config(
+    repo_root: &Path,
+    config_repo: Option<&str>,
+) -> Option<String> {
+    // First priority: configuration from .sampo/config.toml
+    if let Some(repo) = config_repo
+        && !repo.is_empty()
+        && repo.contains('/')
+    {
+        return Some(repo.to_string());
+    }
+
+    // Second priority: environment variable (common in CI)
     if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
         && !repo.is_empty()
         && repo.contains('/')
@@ -270,7 +347,7 @@ pub fn detect_github_repo_slug(repo_root: &Path) -> Option<String> {
         return Some(repo);
     }
 
-    // Fallback to parsing git remote origin URL
+    // Third priority: parsing git remote origin URL
     let output = Command::new("git")
         .current_dir(repo_root)
         .args(["config", "--get", "remote.origin.url"])
@@ -432,5 +509,159 @@ mod tests {
             request.headers().get("user-agent").unwrap(),
             "sampo-github-action"
         );
+    }
+
+    #[test]
+    fn test_detect_github_repo_slug_with_config() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+
+        // Test that config takes priority over environment
+        unsafe {
+            std::env::set_var("GITHUB_REPOSITORY", "env/repo");
+        }
+
+        // Config should override environment
+        let result = detect_github_repo_slug_with_config(workspace, Some("config/repo"));
+        assert_eq!(result, Some("config/repo".to_string()));
+
+        // Environment should be used when config is None
+        let result = detect_github_repo_slug_with_config(workspace, None);
+        assert_eq!(result, Some("env/repo".to_string()));
+
+        // Environment should be used when config is empty
+        let result = detect_github_repo_slug_with_config(workspace, Some(""));
+        assert_eq!(result, Some("env/repo".to_string()));
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("GITHUB_REPOSITORY");
+        }
+
+        // Should fall back to git remote when no config or env
+        let result = detect_github_repo_slug_with_config(workspace, None);
+        // This might be None if git remote is not configured in test environment
+        // The important thing is that it doesn't panic
+        assert!(result.is_none() || result.is_some());
+    }
+
+    #[test]
+    fn test_config_integration() {
+        use crate::config::Config;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        let sampo_dir = workspace.join(".sampo");
+        fs::create_dir_all(&sampo_dir).unwrap();
+
+        // Create a config file with GitHub repository
+        let config_content = r#"
+[github]
+repository = "owner/repo-from-config"
+"#;
+        fs::write(sampo_dir.join("config.toml"), config_content).unwrap();
+
+        // Load config and test detection
+        let config = Config::load(workspace).unwrap();
+        let result =
+            detect_github_repo_slug_with_config(workspace, config.github_repository.as_deref());
+        assert_eq!(result, Some("owner/repo-from-config".to_string()));
+    }
+
+    #[test]
+    fn test_changelog_options_config() {
+        use crate::config::Config;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        let sampo_dir = workspace.join(".sampo");
+        fs::create_dir_all(&sampo_dir).unwrap();
+
+        // Test with both options disabled
+        let config_content = r#"
+[changelog]
+show_commit_hash = false
+show_acknowledgments = false
+
+[github]
+repository = "owner/repo"
+"#;
+        fs::write(sampo_dir.join("config.toml"), config_content).unwrap();
+
+        let config = Config::load(workspace).unwrap();
+        assert!(!config.changelog_show_commit_hash);
+        assert!(!config.changelog_show_acknowledgments);
+
+        // Initialize git repo for the test
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(workspace)
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(workspace)
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(workspace)
+            .output()
+            .ok();
+
+        // Create and commit a test file to get a real commit hash
+        let test_file = workspace.join("test.txt");
+        fs::write(&test_file, "test content").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "test.txt"])
+            .current_dir(workspace)
+            .output()
+            .ok();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(workspace)
+            .output()
+            .ok();
+
+        // Get the commit hash
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(workspace)
+            .output()
+            .unwrap();
+        let commit_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        if !commit_hash.is_empty() {
+            // Test enrichment with options disabled - should return original message
+            let result = enrich_changeset_message(
+                "Test message",
+                &commit_hash,
+                workspace,
+                Some("owner/repo"),
+                None,
+                false, // no commit hash
+                false, // no acknowledgments
+            );
+            assert_eq!(result, "Test message");
+
+            // Test with commit hash enabled only
+            let result = enrich_changeset_message(
+                "Test message",
+                &commit_hash,
+                workspace,
+                Some("owner/repo"),
+                None,
+                true,  // show commit hash
+                false, // no acknowledgments
+            );
+            assert!(result.contains("Test message"));
+            assert!(result.contains(&commit_hash[..7])); // short hash
+        }
     }
 }

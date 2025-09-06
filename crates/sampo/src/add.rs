@@ -1,6 +1,5 @@
 use crate::changeset::{Bump, render_markdown};
 use crate::cli::AddArgs;
-use crate::config::Config;
 use crate::names;
 use crate::workspace::Workspace;
 use std::fs;
@@ -19,9 +18,9 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
         Err(_) => (cwd.clone(), Vec::new()),
     };
 
-    // Load config to resolve changesets dir
-    let cfg = Config::load(&root)?;
-    ensure_dir(&cfg.changesets_dir)?;
+    // Create changesets directory if it doesn't exist
+    let changesets_dir = root.join(".sampo").join("changesets");
+    ensure_dir(&changesets_dir)?;
 
     // Collect inputs, prefilling from CLI args if provided
     let selected_packages = if args.package.is_empty() {
@@ -39,7 +38,7 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
 
     // Compose file contents
     let contents = render_markdown(&selected_packages, bump, &message);
-    let path = unique_changeset_path(&cfg.changesets_dir);
+    let path = unique_changeset_path(&changesets_dir);
     fs::write(&path, contents)?;
 
     println!("Created: {}", path.display());

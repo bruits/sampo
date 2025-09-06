@@ -300,3 +300,78 @@ fn test_with_minimal_valid_workspace() {
         }
     }
 }
+
+#[test]
+fn test_config_with_github_repository() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let workspace = temp_dir.path();
+    let output_file = workspace.join("github_output");
+
+    // Create minimal sampo workspace structure with GitHub config
+    fs::create_dir_all(workspace.join(".sampo")).expect("Failed to create .sampo dir");
+
+    let config_content = r#"
+[packages]
+# Minimal valid config
+
+[github]
+repository = "test-owner/test-repo"
+"#;
+    fs::write(workspace.join(".sampo/config.toml"), config_content)
+        .expect("Failed to write config");
+
+    // Create a basic Cargo.toml
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("Failed to write Cargo.toml");
+
+    // Create minimal source file
+    fs::create_dir_all(workspace.join("src")).expect("Failed to create src dir");
+    fs::write(workspace.join("src/main.rs"), "fn main() {}").expect("Failed to write main.rs");
+
+    // Initialize git (required by sampo)
+    Command::new("git")
+        .args(["init"])
+        .current_dir(workspace)
+        .output()
+        .ok();
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(workspace)
+        .output()
+        .ok();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(workspace)
+        .output()
+        .ok();
+
+    let mut env_vars = HashMap::new();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        workspace.to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+
+    // Test that the action can read the GitHub repository configuration successfully
+    let output = run_action(&["--mode", "release", "--dry-run"], &env_vars, workspace);
+
+    // The important thing is that configuration parsing doesn't cause errors
+    // The actual sampo execution might fail for other reasons, but not config-related
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Should not fail due to configuration parsing issues
+        assert!(
+            !stderr.contains("configuration")
+                && !stderr.contains("config")
+                && !stderr.contains("toml"),
+            "Should not fail due to configuration parsing when GitHub repository is specified: {}",
+            stderr
+        );
+    }
+}

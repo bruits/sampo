@@ -1,5 +1,8 @@
 use crate::{ActionError, Result};
-use sampo::{detect_github_repo_slug, enrich_changeset_message};
+use sampo::{
+    config::Config, detect_github_repo_slug_with_config, enrich_changeset_message,
+    get_commit_hash_for_path,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -141,8 +144,17 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
 
+    // Load configuration to get GitHub repository setting
+    let config = Config::load(workspace).unwrap_or(Config {
+        version: 1,
+        github_repository: None,
+        changelog_show_commit_hash: true,
+        changelog_show_acknowledgments: true,
+    });
+
     // Resolve GitHub slug and token for commit links and acknowledgments
-    let repo_slug = detect_github_repo_slug(workspace);
+    let repo_slug =
+        detect_github_repo_slug_with_config(workspace, config.github_repository.as_deref());
     let github_token = std::env::var("GITHUB_TOKEN")
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
@@ -150,13 +162,20 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     for cs in &changesets {
         for pkg in &cs.packages {
             if releases.contains_key(pkg) {
-                let enriched = enrich_changeset_message(
-                    workspace,
-                    &cs.path,
-                    &cs.message,
-                    repo_slug.as_deref(),
-                    github_token.as_deref(),
-                );
+                let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
+                let enriched = if let Some(hash) = commit_hash {
+                    enrich_changeset_message(
+                        &cs.message,
+                        &hash,
+                        workspace,
+                        repo_slug.as_deref(),
+                        github_token.as_deref(),
+                        config.changelog_show_commit_hash,
+                        config.changelog_show_acknowledgments,
+                    )
+                } else {
+                    cs.message.clone()
+                };
                 messages_by_pkg
                     .entry(pkg.clone())
                     .or_default()
