@@ -33,7 +33,36 @@ jobs:
         with:
           command: post-merge-publish
           cargo-token: ${{ secrets.CRATES_IO_TOKEN }}
-          # Optional: also create GitHub Releases for new tags
-          # create-github-release: true
-          # Optional: pass flags to cargo publish
-          # args: --allow-dirty --no-verify
+          create-github-release: true
+
+      - name: Check if sampo-github-bot was updated
+        id: check-bot-update
+        run: |
+          # Check if sampo-github-bot was updated in this release
+          if git log --oneline --since="1 day ago" --grep="sampo-github-bot" | grep -q "sampo-github-bot" || \
+             git diff HEAD~5..HEAD --name-only | grep -q "crates/sampo-github-bot/" || \
+             echo "${{ github.event.pull_request.body }}" | grep -q "sampo-github-bot"; then
+            echo "should-deploy=true" >> $GITHUB_OUTPUT
+            echo "sampo-github-bot will be deployed"
+          else
+            echo "should-deploy=false" >> $GITHUB_OUTPUT
+            echo "No sampo-github-bot changes detected"
+          fi
+
+      - name: Setup fly.io CLI
+        if: steps.check-bot-update.outputs.should-deploy == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy sampo-github-bot to fly.io
+        if: steps.check-bot-update.outputs.should-deploy == 'true'
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "Warning: FLY_API_TOKEN secret not configured. Skipping deployment."
+            echo "To enable automatic deployment, add FLY_API_TOKEN to repository secrets."
+            exit 0
+          fi
+          echo "Deploying sampo-github-bot to fly.io..."
+          flyctl deploy --remote-only
+        working-directory: ./crates/sampo-github-bot
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
