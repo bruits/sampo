@@ -235,7 +235,7 @@ mod tests {
         let input = Path::new("/a/../..");
         let expected = PathBuf::from("/");
         assert_eq!(clean_path(input), expected);
-        
+
         // Test with relative paths
         let input = Path::new("a/../..");
         let expected = PathBuf::from("");
