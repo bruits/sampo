@@ -158,7 +158,13 @@ fn clean_path(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                result.pop();
+                // pop only normal components; keep root prefixes
+                if !matches!(
+                    result.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    result.pop();
+                }
             }
             Component::Normal(_) | Component::RootDir | Component::Prefix(_) => {
                 result.push(component);
@@ -220,6 +226,19 @@ mod tests {
     fn clean_path_collapses_segments() {
         let input = Path::new("/a/b/../c/./d");
         let expected = PathBuf::from("/a/c/d");
+        assert_eq!(clean_path(input), expected);
+    }
+
+    #[test]
+    fn clean_path_prevents_escaping_root() {
+        // Test that we can't escape beyond root directory
+        let input = Path::new("/a/../..");
+        let expected = PathBuf::from("/");
+        assert_eq!(clean_path(input), expected);
+        
+        // Test with relative paths
+        let input = Path::new("a/../..");
+        let expected = PathBuf::from("");
         assert_eq!(clean_path(input), expected);
     }
 
