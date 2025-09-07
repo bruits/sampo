@@ -1,11 +1,10 @@
 use crate::{ActionError, Result};
-use sampo::{
-    config::Config, detect_github_repo_slug_with_config, enrich_changeset_message,
-    get_commit_hash_for_path,
+use sampo_core::{
+    Bump, Config, detect_changesets_dir, detect_github_repo_slug_with_config,
+    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Debug)]
@@ -243,134 +242,6 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
     }
 }
 
-/// Semantic version bump types, ordered by impact
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Bump {
-    Patch,
-    Minor,
-    Major,
-}
-
-/// Represents a parsed changeset file with package references and change details
-#[derive(Debug, Clone)]
-struct Changeset {
-    path: PathBuf,
-    packages: Vec<String>,
-    bump: Bump,
-    message: String,
-}
-
-/// Detect the changesets directory, respecting custom configuration.
-///
-/// Reads `.sampo/config.toml` to check for a custom `changesets.dir` setting,
-/// falling back to the default `.sampo/changesets` directory.
-fn detect_changesets_dir(workspace: &Path) -> PathBuf {
-    let base = workspace.join(".sampo");
-    let cfg_path = base.join("config.toml");
-    if cfg_path.exists()
-        && let Ok(text) = std::fs::read_to_string(&cfg_path)
-        && let Ok(value) = text.parse::<toml::Value>()
-        && let Some(dir) = value
-            .get("changesets")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("dir"))
-            .and_then(|v| v.as_str())
-    {
-        return base.join(dir);
-    }
-    base.join("changesets")
-}
-
-/// Load all changeset files from the given directory.
-///
-/// Scans for `.md` files and parses their frontmatter and content.
-fn load_changesets(dir: &Path) -> Result<Vec<Changeset>> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path)?;
-        if let Some(cs) = parse_changeset(&text, &path) {
-            out.push(cs);
-        }
-    }
-    Ok(out)
-}
-
-/// Parse a changeset file, extracting frontmatter and message content.
-///
-/// Expected format:
-/// ```
-/// ---
-/// packages:
-/// - package-name
-/// release: major|minor|patch
-/// ---
-/// Change description message
-/// ```
-fn parse_changeset(text: &str, path: &Path) -> Option<Changeset> {
-    let mut lines = text.lines();
-    if lines.next()?.trim() != "---" {
-        return None;
-    }
-    let mut packages: Vec<String> = Vec::new();
-    let mut bump: Option<Bump> = None;
-    let mut in_packages = false;
-    for line in &mut lines {
-        let l = line.trim();
-        if l == "---" {
-            break;
-        }
-        if l.starts_with("packages:") {
-            in_packages = true;
-            continue;
-        }
-        if in_packages {
-            if let Some(rest) = l.strip_prefix('-') {
-                let name = rest.trim().to_string();
-                if !name.is_empty() {
-                    packages.push(name);
-                }
-                continue;
-            } else if !l.is_empty() {
-                in_packages = false;
-            }
-        }
-        if let Some(v) = l.strip_prefix("release:") {
-            let v = v.trim().to_ascii_lowercase();
-            let b = match v.as_str() {
-                "patch" | "p" => Some(Bump::Patch),
-                "minor" | "mi" => Some(Bump::Minor),
-                "major" | "ma" => Some(Bump::Major),
-                _ => None,
-            };
-            if b.is_some() {
-                bump = b;
-            }
-        }
-    }
-    let remainder: String = lines.collect::<Vec<_>>().join("\n");
-    let message = remainder.trim().to_string();
-    if packages.is_empty() || bump.is_none() || message.is_empty() {
-        return None;
-    }
-    Some(Changeset {
-        path: path.to_path_buf(),
-        packages,
-        bump: bump.unwrap(),
-        message,
-    })
-}
-
 /// Extract planned release information from sampo dry-run output.
 ///
 /// Looks for lines like "package-name: 0.1.0 -> 0.2.0" and parses them
@@ -400,7 +271,6 @@ fn parse_planned_releases(stdout: &str) -> BTreeMap<String, (String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_parse_planned_releases() {
@@ -426,65 +296,6 @@ No changesets found for other-pkg";
         let stdout = "No changesets found";
         let releases = parse_planned_releases(stdout);
         assert!(releases.is_empty());
-    }
-
-    #[test]
-    fn test_parse_changeset_valid() {
-        let text = "---
-packages:
-- sampo
-- sampo-github-action
-release: minor
----
-Add new feature for better PR formatting";
-
-        let changeset = parse_changeset(text, &PathBuf::from("test.md"));
-        assert!(changeset.is_some());
-
-        let cs = changeset.unwrap();
-        assert_eq!(cs.packages, vec!["sampo", "sampo-github-action"]);
-        assert_eq!(cs.bump, Bump::Minor);
-        assert_eq!(cs.message, "Add new feature for better PR formatting");
-    }
-
-    #[test]
-    fn test_parse_changeset_invalid_no_frontmatter() {
-        let text = "Just a regular markdown file";
-        let changeset = parse_changeset(text, &PathBuf::from("test.md"));
-        assert!(changeset.is_none());
-    }
-
-    #[test]
-    fn test_parse_changeset_missing_required_fields() {
-        let text = "---
-packages:
-- sampo
----
-Missing release field";
-
-        let changeset = parse_changeset(text, &PathBuf::from("test.md"));
-        assert!(changeset.is_none());
-    }
-
-    #[test]
-    fn test_bump_ordering() {
-        assert!(Bump::Patch < Bump::Minor);
-        assert!(Bump::Minor < Bump::Major);
-
-        let mut bumps = vec![Bump::Major, Bump::Patch, Bump::Minor];
-        bumps.sort();
-        assert_eq!(bumps, vec![Bump::Patch, Bump::Minor, Bump::Major]);
-    }
-
-    #[test]
-    fn test_detect_changesets_dir_default() {
-        use tempfile::TempDir;
-
-        let temp_dir = TempDir::new().unwrap();
-        let workspace = temp_dir.path();
-
-        let changesets_dir = detect_changesets_dir(workspace);
-        assert_eq!(changesets_dir, workspace.join(".sampo").join("changesets"));
     }
 
     #[test]

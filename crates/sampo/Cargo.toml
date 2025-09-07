@@ -2,10 +2,14 @@
 name = "sampo"
 version = "0.2.0"
 license = "MIT"
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
 edition = "2024"
-readme = "README.md"
 description = "Sampo CLI: automate changelogs, versioning, and publishing"
+homepage = "https://github.com/bruits/sampo"
 repository = "https://github.com/bruits/sampo"
+readme = "README.md"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+categories = ["development-tools"]
 
 [lib]
 name = "sampo"
@@ -16,6 +20,7 @@ name = "sampo"
 path = "src/main.rs"
 
 [dependencies]
+sampo-core = { path = "../sampo-core" }
 clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
 toml = "0.8"

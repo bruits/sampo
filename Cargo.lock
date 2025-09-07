@@ -592,6 +592,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "h2"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1684,8 +1690,22 @@ dependencies = [
  "clap",
  "rand",
  "reqwest 0.12.23",
+ "sampo-core",
  "serde_json",
  "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "sampo-core"
+version = "0.1.0"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "toml",
 ]
@@ -1696,6 +1716,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "sampo",
+ "sampo-core",
  "tempfile",
  "thiserror 1.0.69",
  "toml",
