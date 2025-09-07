@@ -6,22 +6,25 @@
   - "**/*.md"
   - "docs/**"
 
-# Add 'ci' label to any change in CI/CD configuration
-"ci":
-  - ".github/**"
-
-# Add 'dependencies' label to dependency changes
-"dependencies":
-  - "**/Cargo.toml"
-  - "**/Cargo.lock"
-
-# Add 'core' label to changes in the main sampo crate
-"core":
-  - "crates/sampo/**"
-
+# Add 'devops' label to any change in configuration files
 "devops":
   - ".github/**"
   - ".vscode/**"
   - ".zed/**"
   - ".editorconfig"
   - ".gitignore"
+
+# Add 'dependencies' label to dependency changes
+"dependencies":
+  - "**/Cargo.toml"
+  - "**/Cargo.lock"
+
+# Add crate/package specific labels
+"crt:sampo":
+  - "crates/sampo/**"
+"crt:sampo-core":
+  - "crates/sampo-core/**"
+"crt:sampo-github-action":
+  - "crates/sampo-github-action/**"
+"crt:sampo-github-bot":
+  - "crates/sampo-github-bot/**"
