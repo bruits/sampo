@@ -5,9 +5,11 @@
 
 > Steers his mighty boat in safety, Through the perils of the whirlpool, Through the watery deeps and dangers. 
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna). Enforce [Semantic Versioning](https://semver.org/) (SemVer) across all packages.
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... And more coming soon!
 
-Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... More coming soon!
+Deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna). Enforce [Semantic Versioning](https://semver.org/) (SemVer) across all packages.
+
+Don't know where to start? Check out Sampo's [Getting Started](.crates/sampo/README.md) guide.
 
 > [!WARNING]
 > This project is in early development, most features are not yet implemented, and the API may change dramatically.

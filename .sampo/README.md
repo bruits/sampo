@@ -1,3 +1,5 @@
-# Sampo
+# Sampo's Sampo's doc
 
-*Work in progress*
+You're reading Sampo's documentation in Sampo's folder of Sampo's repository... How meta!
+
+You should probably go [there](./crates/sampo/README.md) instead.

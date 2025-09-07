@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple registries.
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... And more coming soon!
 
 ## Getting Started
 
@@ -14,6 +14,15 @@ Initialize Sampo in your repository:
 
 ```bash
 sampo init
+```
+
+This command creates a `.sampo` directory at your repository root:
+
+```
+.sampo/
+├─ changesets/ <- Individual changeset files describing pending changes
+├─ config.toml <- Sampo configuration (package settings, registry options)
+└─ README.md <- A copy of this documentation
 ```
 
 ### Main concepts
@@ -49,17 +58,6 @@ An helpful description of the changes.
 As long as the release is not finalized, you can continue to add changesets and re-run the `sampo release` command. Sampo will update package versions and pending changelogs accordingly.
 
 **Publishing**: After running `sampo release`, use `sampo publish` to publish updated packages to their respective registries and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
-
-### Sampo folder structure
-
-`sampo init` creates a `.sampo` directory at your repository root:
-
-```
-.sampo/
-├─ changesets/ <- Individual changeset files describing pending changes
-├─ config.toml <- Sampo configuration (package settings, registry options)
-└─ README.md <- A copy of this documentation
-```
 
 ## Configuration
 
