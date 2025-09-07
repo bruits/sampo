@@ -195,17 +195,17 @@ fn is_internal_dep(
 ) -> bool {
     if let Some(tbl) = dep_val.as_table() {
         // Check for `path = "..."` dependency
-        if let Some(path_val) = tbl.get("path") {
-            if let Some(path_str) = path_val.as_str() {
-                let dep_path = clean_path(&crate_dir.join(path_str));
-                return name_to_path.values().any(|p| *p == dep_path);
-            }
+        if let Some(path_val) = tbl.get("path")
+            && let Some(path_str) = path_val.as_str()
+        {
+            let dep_path = clean_path(&crate_dir.join(path_str));
+            return name_to_path.values().any(|p| *p == dep_path);
         }
         // Check for `workspace = true` dependency
-        if let Some(workspace_val) = tbl.get("workspace") {
-            if workspace_val.as_bool() == Some(true) {
-                return true;
-            }
+        if let Some(workspace_val) = tbl.get("workspace")
+            && workspace_val.as_bool() == Some(true)
+        {
+            return true;
         }
     }
     false

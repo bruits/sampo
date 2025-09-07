@@ -32,11 +32,7 @@ pub fn get_commit_hash_for_path(repo_root: &Path, file_path: &Path) -> Option<St
 
     if output.status.success() {
         let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !hash.is_empty() {
-            Some(hash)
-        } else {
-            None
-        }
+        if !hash.is_empty() { Some(hash) } else { None }
     } else {
         None
     }
@@ -202,16 +198,16 @@ async fn build_acknowledgment_suffix(
     };
 
     // If we have a GitHub repo and token, try to get GitHub user info
-    if let (Some(slug), Some(token)) = (repo_slug, github_token) {
-        if let Some(github_user) = get_github_user_for_commit(slug, &commit.sha, token).await {
-            if github_user.is_first_contribution {
-                return format!(
-                    " — Thanks @{} for your first contribution 🎉!",
-                    github_user.login
-                );
-            } else {
-                return format!(" — Thanks @{}!", github_user.login);
-            }
+    if let (Some(slug), Some(token)) = (repo_slug, github_token)
+        && let Some(github_user) = get_github_user_for_commit(slug, &commit.sha, token).await
+    {
+        if github_user.is_first_contribution {
+            return format!(
+                " — Thanks @{} for your first contribution 🎉!",
+                github_user.login
+            );
+        } else {
+            return format!(" — Thanks @{}!", github_user.login);
         }
     }
 

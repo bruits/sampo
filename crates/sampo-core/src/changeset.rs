@@ -44,10 +44,10 @@ pub fn parse_changeset(text: &str, path: &Path) -> Option<ChangesetInfo> {
                 in_packages = false;
             }
         }
-        if let Some(v) = l.strip_prefix("release:") {
-            if let Some(b) = Bump::parse(v.trim()) {
-                bump = Some(b);
-            }
+        if let Some(v) = l.strip_prefix("release:")
+            && let Some(b) = Bump::parse(v.trim())
+        {
+            bump = Some(b);
         }
     }
 
@@ -92,19 +92,16 @@ pub fn load_changesets(dir: &Path) -> io::Result<Vec<ChangesetInfo>> {
 pub fn detect_changesets_dir(workspace: &Path) -> PathBuf {
     let base = workspace.join(".sampo");
     let cfg_path = base.join("config.toml");
-    if cfg_path.exists() {
-        if let Ok(text) = std::fs::read_to_string(&cfg_path) {
-            if let Ok(value) = text.parse::<toml::Value>() {
-                if let Some(dir) = value
-                    .get("changesets")
-                    .and_then(|v| v.as_table())
-                    .and_then(|t| t.get("dir"))
-                    .and_then(|v| v.as_str())
-                {
-                    return base.join(dir);
-                }
-            }
-        }
+    if cfg_path.exists()
+        && let Ok(text) = std::fs::read_to_string(&cfg_path)
+        && let Ok(value) = text.parse::<toml::Value>()
+        && let Some(dir) = value
+            .get("changesets")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("dir"))
+            .and_then(|v| v.as_str())
+    {
+        return base.join(dir);
     }
     base.join("changesets")
 }
