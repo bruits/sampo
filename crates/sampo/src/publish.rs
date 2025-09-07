@@ -1,5 +1,5 @@
 use crate::cli::PublishArgs;
-use crate::workspace::{CrateInfo, Workspace};
+use sampo_core::{CrateInfo, discover_workspace};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io;
@@ -8,7 +8,7 @@ use std::process::Command;
 
 pub fn run(args: &PublishArgs) -> io::Result<()> {
     let cwd = std::env::current_dir()?;
-    let ws = Workspace::discover_from(&cwd).map_err(io::Error::other)?;
+    let ws = discover_workspace(&cwd).map_err(io::Error::other)?;
 
     // Determine which crates are publishable to crates.io
     let mut name_to_crate: BTreeMap<String, &CrateInfo> = BTreeMap::new();

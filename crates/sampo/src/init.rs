@@ -1,3 +1,4 @@
+use sampo_core::discover_workspace;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ pub struct InitReport {
 }
 
 pub fn init_from_cwd(cwd: &Path) -> io::Result<InitReport> {
-    let root = match crate::workspace::Workspace::discover_from(cwd) {
+    let root = match discover_workspace(cwd) {
         Ok(ws) => ws.root,
         Err(_) => cwd.to_path_buf(),
     };

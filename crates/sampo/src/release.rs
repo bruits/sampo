@@ -1,10 +1,8 @@
-use crate::changeset::{Bump, load_all};
 use crate::cli::ReleaseArgs;
-use crate::config::Config;
-use crate::enrichment::{
-    detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
+use sampo_core::{
+    Bump, Config, CrateInfo, detect_changesets_dir, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
-use crate::workspace::{CrateInfo, Workspace};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -16,10 +14,11 @@ pub fn run(args: &ReleaseArgs) -> io::Result<()> {
 }
 
 pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
-    let ws = Workspace::discover_from(root).map_err(io::Error::other)?;
-    let cfg = Config::load(&ws.root)?;
+    let ws = discover_workspace(root).map_err(io::Error::other)?;
+    let cfg = Config::load(&ws.root).map_err(io::Error::other)?;
 
-    let changesets = load_all(&ws.root.join(".sampo").join("changesets"))?;
+    let changesets_dir = detect_changesets_dir(&ws.root);
+    let changesets = load_changesets(&changesets_dir)?;
     if changesets.is_empty() {
         println!(
             "No changesets found in {}",

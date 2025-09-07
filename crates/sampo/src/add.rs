@@ -1,7 +1,6 @@
-use crate::changeset::{Bump, render_markdown};
 use crate::cli::AddArgs;
 use crate::names;
-use crate::workspace::Workspace;
+use sampo_core::{Bump, discover_workspace, render_changeset_markdown};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -10,7 +9,7 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
     let cwd = std::env::current_dir()?;
 
     // Discover workspace (optional but helps list packages)
-    let (root, packages) = match Workspace::discover_from(&cwd) {
+    let (root, packages) = match discover_workspace(&cwd) {
         Ok(ws) => {
             let names = ws.members.into_iter().map(|c| c.name).collect::<Vec<_>>();
             (ws.root, names)
@@ -37,7 +36,7 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
     };
 
     // Compose file contents
-    let contents = render_markdown(&selected_packages, bump, &message);
+    let contents = render_changeset_markdown(&selected_packages, bump, &message);
     let path = unique_changeset_path(&changesets_dir);
     fs::write(&path, contents)?;
 
@@ -139,7 +138,7 @@ fn prompt_bump() -> io::Result<Bump> {
         if l.is_empty() {
             return Ok(Bump::Patch);
         }
-        if let Some(b) = Bump::from_str(l) {
+        if let Some(b) = Bump::parse(l) {
             return Ok(b);
         }
     }
@@ -180,11 +179,8 @@ mod tests {
 
     #[test]
     fn render_has_frontmatter() {
-        let md = crate::changeset::render_markdown(
-            &["a".into(), "b".into()],
-            Bump::Minor,
-            "feat: add stuff",
-        );
+        let md =
+            render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: add stuff");
         assert!(md.starts_with("---\n"));
         assert!(md.contains("packages:\n  - a\n  - b"));
         assert!(md.contains("release: minor\n"));
@@ -193,7 +189,7 @@ mod tests {
 
     #[test]
     fn render_single_package() {
-        let md = crate::changeset::render_markdown(&["single".into()], Bump::Patch, "fix: bug");
+        let md = render_changeset_markdown(&["single".into()], Bump::Patch, "fix: bug");
         assert!(md.contains("packages:\n  - single\n"));
         assert!(md.contains("release: patch\n"));
         assert!(md.ends_with("fix: bug\n"));
@@ -201,8 +197,7 @@ mod tests {
 
     #[test]
     fn render_major_release() {
-        let md =
-            crate::changeset::render_markdown(&["pkg".into()], Bump::Major, "breaking: api change");
+        let md = render_changeset_markdown(&["pkg".into()], Bump::Major, "breaking: api change");
         assert!(md.contains("release: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
     }

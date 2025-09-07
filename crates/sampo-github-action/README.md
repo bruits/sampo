@@ -2,6 +2,8 @@
 
 GitHub Action to run Sampo (release and/or publish) in GitHub Actions.
 
+If you don't use Sampo yet, please [check it out](https://github.com/bruits/sampo/tree/main/crates/sampo).
+
 ### Usage
 
 Minimal example (release only):

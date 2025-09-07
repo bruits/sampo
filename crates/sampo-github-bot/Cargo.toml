@@ -1,12 +1,15 @@
 [package]
 name = "sampo-github-bot"
 version = "0.2.0"
-edition = "2024"
 license = "MIT"
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+edition = "2024"
 description = "GitHub App to inspect PRs and ask for changesets if needed"
-readme = "README.md"
+homepage = "https://github.com/bruits/sampo"
 repository = "https://github.com/bruits/sampo"
-homepage = "https://github.com/apps/sampo-s-bot"
+readme = "README.md"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+categories = ["development-tools"]
 
 [dependencies]
 axum = { version = "0.7", features = ["macros"] }

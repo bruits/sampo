@@ -1,13 +1,18 @@
 [package]
 name = "sampo-github-action"
 version = "0.1.0"
-edition = "2024"
 license = "MIT"
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+edition = "2024"
 description = "GitHub Action runner for Sampo CLI (release/publish orchestrator)"
-readme = "README.md"
+homepage = "https://github.com/bruits/sampo"
 repository = "https://github.com/bruits/sampo"
+readme = "README.md"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+categories = ["development-tools"]
 
 [dependencies]
+sampo-core = { path = "../sampo-core" }
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "1.0"
 toml = "0.8"
