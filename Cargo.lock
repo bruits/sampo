@@ -1709,6 +1709,7 @@ name = "sampo-core"
 version = "0.0.0"
 dependencies = [
  "glob",
+ "reqwest 0.12.23",
  "rustc-hash",
  "serde",
  "serde_json",
