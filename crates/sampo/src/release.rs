@@ -337,7 +337,7 @@ fn update_manifest_versions(
 
                 // If path points to a workspace crate, prefer that crate's name
                 if let Some(toml::Value::String(path_str)) = tbl.get("path") {
-                    let dep_path = base_dir.join(path_str);
+                    let dep_path = clean_path_like(&base_dir.join(path_str));
                     if let Some(name) = crate_name_by_path(crate_dirs, &dep_path) {
                         real_name = name;
                     }
