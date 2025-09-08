@@ -42,17 +42,18 @@ packages:
   - example
 release: minor
 ---
-An helpful description of the changes.
+
+A helpful description of the changes.
 ```
 
 **Changelog**: Automatically generated file listing all changes for each package version. Sampo consumes changesets to build comprehensive changelogs with semantic versioning.
 
 **Release**: The process of consuming changesets to bump package versions, update changelogs, and create git tags. Sampo works seamlessly with **monorepos** containing multiple packages and supports publishing to **multiple registries** across different ecosystems.
 
-**Internal dependencies**: Sampo detects packages within the same repository that depend on each other, and automatically manages their versions.
-  - By default, automatically patch dependent packages when an internal dependency is updated. Example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` has a major or minor change due to `b`'s update, it should be explicitly specified in a changeset.
-  - **Fixed dependencies** (see [configuration](#configuration)) always bump together, even if not directly affected by changes. Example: if `a@1.0.0` depends on `b@1.0.0` and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0` (major).
-  - **Linked dependencies** (see [configuration](#configuration)) bump if dependencies are updated, based on the group's highest bump level. Example: if `a@1.0.0` depends on `b@1.0.0` and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0` (major). Then, if `a` is updated to `2.1.0` (minor), `b` remains at `2.0.0` (not concerned and not dependent). Finally, if `b` has a patch update, both `a` and `b` will be bumped to `2.1.1` (patch) based on the highest bump level in the group.
+**Internal dependencies**: Sampo detects packages within the same repository that depend on each other and automatically manages their versions.
+  - By default, dependent packages are automatically patched when an internal dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset.
+  - **Fixed dependencies** (see [configuration](#configuration)) always bump together with the same version, even if not directly affected. For example: if `a@1.0.0` and `b@1.0.0` are in a fixed group and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0`.
+  - **Linked dependencies** (see [configuration](#configuration)) apply the highest bump level to affected packages and their dependents. For example: if `a@1.0.0` depends on `b@1.0.0` in a linked group and `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0`. If `a` is later updated to `2.1.0` (minor), `b` remains at `2.0.0` since it's not affected. Finally, if `b` has a patch update, both `a` and `b` will be bumped with patch level (the highest in the group).
 
 ### Usage
 
@@ -93,9 +94,9 @@ linked_dependencies = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 
 ### `[packages]` section
 
-`fixed_dependencies`: An array of dependency groups where packages in each group should be bumped together with the same level (default: `[]`). Each group is an array of package names. When any package in a group is updated, all other packages in the same group will receive the same version bump level, regardless of dependency direction. For example, if `fixed_dependencies = [["a", "b"], ["c", "d"]]` and `a` is updated to `2.0.0` (major), then `b` will also be bumped to `2.0.0` (major), but `c` and `d` remain unchanged.
+`fixed_dependencies`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of package names. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed_dependencies = [["a", "b"], ["c", "d"]]` and `a` is updated to `2.0.0` (major), then `b` will also be bumped to `2.0.0`, but `c` and `d` remain unchanged.
 
-`linked_dependencies`: An array of dependency groups where packages with internal dependencies are bumped together using the highest bump level in the group (default: `[]`). Each group is an array of package names. When any package in a group is updated, all packages in the same group that have internal dependencies within the group will receive the highest version bump level from the group. For example, if `linked_dependencies = [["a", "b"]]` where `a` depends on `b`, when `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0` (major). Then, if `a` is updated to `2.1.0` (minor), `b` remains at `2.0.0` (not concerned and not dependent). Finally, if `b` has a patch update, both `a` and `b` will be bumped to `2.1.1` (patch) based on the highest bump level in the group.
+`linked_dependencies`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of package names. When any package in a group is updated, all packages in the same group that are affected or have internal dependencies within the group receive the highest version bump level from the group. For example: if `linked_dependencies = [["a", "b"]]` where `a` depends on `b`, when `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0`. If `a` is later updated to `2.1.0` (minor), `b` remains at `2.0.0` since it's not affected. Finally, if `b` has a patch update, both `a` and `b` will be bumped with patch level since it's the highest bump in the group.
 
 Note: Packages cannot appear in both `fixed_dependencies` and `linked_dependencies` configurations.
 
