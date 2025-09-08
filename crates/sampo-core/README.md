@@ -2,8 +2,6 @@
 
 Provides core logic, common types, and internal utilities shared across all Sampo crates.
 
-This library is not published to crates.io and is only used internally within the Sampo workspace.
-
 ## Features
 
 - **Types**: Common data structures (`CrateInfo`, `Workspace`, `Config`, etc.)

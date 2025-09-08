@@ -1,6 +1,5 @@
 # Sampo configuration
 version = 1
 
-[changesets]
-# Relative to the `.sampo` directory
-dir = "changesets"
+[packages]
+linked_dependencies = [["sampo", "sampo-core"]]

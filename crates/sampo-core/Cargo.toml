@@ -1,6 +1,6 @@
 [package]
 name = "sampo-core"
-version = "0.1.0"
+version = "0.0.0"
 license = "MIT"
 authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
 edition = "2024"
@@ -10,7 +10,6 @@ repository = "https://github.com/bruits/sampo"
 readme = "README.md"
 keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
-publish = false
 
 [dependencies]
 toml = "0.8"
