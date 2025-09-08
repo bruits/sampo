@@ -18,9 +18,10 @@ pub use enrichment::{
 };
 pub use errors::SampoError;
 pub use release::{
-    build_dependency_updates, create_dependency_update_entry, create_fixed_dependency_policy_entry,
-    detect_all_dependency_explanations, detect_fixed_dependency_policy_packages,
-    format_dependency_updates_message, infer_bump_from_versions,
+    build_dependency_updates, bump_version, create_dependency_update_entry,
+    create_fixed_dependency_policy_entry, detect_all_dependency_explanations,
+    detect_fixed_dependency_policy_packages, format_dependency_updates_message,
+    infer_bump_from_versions, run_release, update_manifest_versions,
 };
 pub use types::{Bump, CrateInfo, DependencyUpdate, Workspace};
 pub use workspace::{WorkspaceError, discover_workspace, parse_workspace_members};

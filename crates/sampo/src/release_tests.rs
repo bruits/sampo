@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
     use crate::cli::ReleaseArgs;
-    use crate::release::{bump_version, run_in, update_manifest_versions};
+    use crate::release::run_in;
     use rustc_hash::FxHashMap;
-    use sampo_core::Bump;
+    use sampo_core::{Bump, bump_version, update_manifest_versions};
     use std::fs;
     use std::path::PathBuf;
 
