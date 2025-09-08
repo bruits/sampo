@@ -9,6 +9,9 @@ use clap::Parser;
 use cli::{Cli, Commands};
 use std::process::ExitCode;
 
+#[cfg(test)]
+mod release_tests;
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
