@@ -83,6 +83,38 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         by_name.insert(c.name.clone(), c);
     }
 
+    // Build reverse dependency graph: dep -> set of dependents
+    let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for c in &ws.members {
+        for dep in &c.internal_deps {
+            dependents
+                .entry(dep.clone())
+                .or_default()
+                .insert(c.name.clone());
+        }
+    }
+
+    // Cascade: auto-bump dependents (at least patch) when an internal dep is bumped
+    {
+        let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
+        let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
+        while let Some(changed) = queue.pop() {
+            if let Some(deps) = dependents.get(&changed) {
+                for dep_name in deps {
+                    let entry = bump_by_pkg.entry(dep_name.clone()).or_insert(Bump::Patch);
+                    // If already present, keep the higher bump
+                    if *entry < Bump::Patch {
+                        *entry = Bump::Patch;
+                    }
+                    if !seen.contains(dep_name) {
+                        queue.push(dep_name.clone());
+                        seen.insert(dep_name.clone());
+                    }
+                }
+            }
+        }
+    }
+
     // Prepare plan
     let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
     for (name, bump) in &bump_by_pkg {
@@ -113,13 +145,35 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         return Ok(());
     }
 
-    // Apply: update Cargo.toml and CHANGELOG
+    // Build a quick lookup for new versions
+    let mut new_version_by_name: BTreeMap<String, String> = BTreeMap::new();
+    for (name, _old, newv) in &releases {
+        new_version_by_name.insert(name.clone(), newv.clone());
+    }
+
+    // Apply: update Cargo.toml (package version + internal dependency versions) and CHANGELOG
     for (name, old, newv) in &releases {
         let info = by_name.get(name.as_str()).unwrap();
         let manifest_path = info.path.join("Cargo.toml");
         let text = fs::read_to_string(&manifest_path)?;
-        let updated = update_package_version_in_toml(&text, newv)?;
+
+        // Update manifest and collect which internal deps were retargeted
+        let (updated, dep_updates) =
+            update_manifest_versions(&text, Some(newv.as_str()), &ws, &new_version_by_name)?;
         fs::write(&manifest_path, updated)?;
+
+        // Augment messages with dependency update notes
+        if !dep_updates.is_empty() {
+            let mut parts: Vec<String> = Vec::new();
+            for (dep, ver) in dep_updates {
+                parts.push(format!("{} -> {}", dep, ver));
+            }
+            let msg = format!("chore(deps): update internal deps ({}).", parts.join(", "));
+            messages_by_pkg
+                .entry(name.clone())
+                .or_default()
+                .push((msg, Bump::Patch));
+        }
 
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
         update_changelog(&info.path, name, old, newv, &messages)?;
@@ -151,34 +205,161 @@ fn bump_version(old: &str, bump: Bump) -> Result<String, String> {
     Ok(format!("{maj}.{min}.{pat}"))
 }
 
-fn update_package_version_in_toml(input: &str, new_version: &str) -> io::Result<String> {
-    let mut out = String::with_capacity(input.len());
-    let mut in_package = false;
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            in_package = trimmed == "[package]";
-            out.push_str(line);
-            out.push('\n');
-            continue;
+/// Update a crate manifest, setting the crate version (if provided) and retargeting
+/// internal dependency version requirements to the latest planned versions.
+/// Returns the updated TOML string along with a list of (dep_name, new_version) applied.
+fn update_manifest_versions(
+    input: &str,
+    new_pkg_version: Option<&str>,
+    ws: &sampo_core::Workspace,
+    new_version_by_name: &BTreeMap<String, String>,
+) -> io::Result<(String, Vec<(String, String)>)> {
+    let mut value: toml::Value = input
+        .parse()
+        .map_err(|e| io::Error::other(format!("invalid Cargo.toml: {e}")))?;
+
+    if let Some(v) = new_pkg_version
+        && let Some(pkg) = value.get_mut("package").and_then(toml::Value::as_table_mut)
+    {
+        pkg.insert("version".into(), toml::Value::String(v.to_string()));
+    }
+
+    let workspace_crates: BTreeSet<String> = ws.members.iter().map(|c| c.name.clone()).collect();
+    let mut applied: Vec<(String, String)> = Vec::new();
+
+    // helper to try update one dependency entry
+    fn update_dep_entry(
+        key: &str,
+        entry: &mut toml::Value,
+        workspace_crates: &BTreeSet<String>,
+        new_version_by_name: &BTreeMap<String, String>,
+        crate_dirs: &BTreeMap<String, std::path::PathBuf>,
+        base_dir: &std::path::Path,
+    ) -> Option<(String, String)> {
+        match entry {
+            toml::Value::String(ver) => {
+                // If the key itself matches a workspace crate with a new version, update string
+                if let Some(newv) = new_version_by_name.get(key)
+                    && workspace_crates.contains(key)
+                {
+                    *ver = newv.clone();
+                    return Some((key.to_string(), newv.clone()));
+                }
+            }
+            toml::Value::Table(tbl) => {
+                // Determine the real crate name: key or overridden via 'package'
+                let mut real_name = key.to_string();
+                if let Some(toml::Value::String(pkg_name)) = tbl.get("package") {
+                    real_name = pkg_name.clone();
+                }
+
+                // If path points to a workspace crate, prefer that crate's name
+                if let Some(toml::Value::String(path_str)) = tbl.get("path") {
+                    let dep_path = base_dir.join(path_str);
+                    if let Some(name) = crate_name_by_path(crate_dirs, &dep_path) {
+                        real_name = name;
+                    }
+                }
+
+                // Skip pure workspace deps (managed at workspace level)
+                if matches!(tbl.get("workspace"), Some(toml::Value::Boolean(true))) {
+                    return None;
+                }
+
+                if let Some(newv) = new_version_by_name.get(&real_name)
+                    && workspace_crates.contains(&real_name)
+                {
+                    tbl.insert("version".into(), toml::Value::String(newv.clone()));
+                    return Some((real_name, newv.clone()));
+                }
+            }
+            _ => {}
         }
-        if in_package {
-            // Replace version assignment in package section
-            if let Some(_idx) = trimmed.find("version") {
-                // naive key detection, ensure not commented out
-                if !trimmed.starts_with('#') && trimmed.starts_with("version") {
-                    // preserve leading whitespace up to key
-                    let leading = &line[..line.find('v').unwrap_or(0)];
-                    out.push_str(leading);
-                    out.push_str(&format!("version = \"{}\"\n", new_version));
-                    continue;
+        None
+    }
+
+    // Build helper maps for path resolution
+    let mut crate_dirs: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
+    for c in &ws.members {
+        crate_dirs.insert(c.name.clone(), c.path.clone());
+    }
+
+    // Resolve manifest base_dir from package.name
+    let current_crate_name = value
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|t| t.get("name"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let base_dir = ws
+        .members
+        .iter()
+        .find(|c| c.name == current_crate_name)
+        .map(|c| c.path.as_path().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // Update dependencies across dependency sections
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        if let Some(t) = value.get_mut(section).and_then(toml::Value::as_table_mut) {
+            // Clone keys to avoid borrow issues while mutating
+            let keys: Vec<String> = t.keys().cloned().collect();
+            for dep_key in keys {
+                if let Some(entry) = t.get_mut(&dep_key)
+                    && let Some((dep_name, ver)) = update_dep_entry(
+                        &dep_key,
+                        entry,
+                        &workspace_crates,
+                        new_version_by_name,
+                        &crate_dirs,
+                        &base_dir,
+                    )
+                {
+                    applied.push((dep_name, ver));
                 }
             }
         }
-        out.push_str(line);
-        out.push('\n');
     }
-    Ok(out)
+
+    // Also handle table-style per-dependency sections like [dependencies.foo]
+    // toml::Value already represents those as entries in the tables above, so no extra work.
+
+    let out = toml::to_string(&value)
+        .map_err(|e| io::Error::other(format!("failed to serialize Cargo.toml: {e}")))?;
+    Ok((out, applied))
+}
+
+fn crate_name_by_path(
+    crate_dirs: &BTreeMap<String, std::path::PathBuf>,
+    dep_path: &Path,
+) -> Option<String> {
+    let cleaned = clean_path_like(dep_path);
+    for (name, p) in crate_dirs {
+        if clean_path_like(p) == cleaned {
+            return Some(name.clone());
+        }
+    }
+    None
+}
+
+fn clean_path_like(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    out.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    out.pop();
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn update_changelog(
@@ -336,8 +517,22 @@ mod tests {
 
     #[test]
     fn updates_version_in_toml() {
+        use sampo_core::{CrateInfo, Workspace};
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
         let input = "[package]\nname=\"x\"\nversion = \"0.1.0\"\n\n[dependencies]\n";
-        let out = update_package_version_in_toml(input, "0.2.0").unwrap();
+        let ws = Workspace {
+            root: PathBuf::from("/test"),
+            members: vec![CrateInfo {
+                name: "x".to_string(),
+                version: "0.1.0".to_string(),
+                path: PathBuf::from("/test/crates/x"),
+                internal_deps: Default::default(),
+            }],
+        };
+        let new_versions = BTreeMap::new();
+        let (out, _) = update_manifest_versions(input, Some("0.2.0"), &ws, &new_versions).unwrap();
         assert!(out.contains("version = \"0.2.0\""));
         assert!(out.contains("[dependencies]"));
     }
@@ -483,5 +678,87 @@ mod tests {
         // old section remains intact
         assert!(log.contains("### Patch changes"));
         assert!(log.contains("initial patch"));
+    }
+
+    #[test]
+    fn auto_bumps_dependents_and_updates_internal_dep_versions() {
+        use crate::cli::ReleaseArgs;
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // workspace with two crates: a depends on b
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // a depends on b via path + version
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"0.1.0\" }\n",
+        )
+        .unwrap();
+
+        // Changeset: bump b minor
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-minor.md"),
+            "---\npackages:\n  - b\nrelease: minor\n---\n\nfeat: b adds new feature\n",
+        )
+        .unwrap();
+
+        // run release
+        super::run_in(root, &ReleaseArgs { dry_run: false }).unwrap();
+
+        // verify b -> 0.2.0
+        let b_manifest = fs::read_to_string(b_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            b_manifest.contains("version=\"0.2.0\"") || b_manifest.contains("version = \"0.2.0\"")
+        );
+
+        // verify a bumped patch and its dependency updated to 0.2.0
+        let a_manifest = fs::read_to_string(a_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            a_manifest.contains("version=\"0.1.1\"") || a_manifest.contains("version = \"0.1.1\"")
+        );
+        // Parse to verify dependency version updated
+        let a_toml: toml::Value = a_manifest.parse().unwrap();
+        let dep_entry = a_toml
+            .get("dependencies")
+            .and_then(toml::Value::as_table)
+            .and_then(|t| t.get("b"))
+            .cloned()
+            .expect("dependency 'b' must exist");
+        match dep_entry {
+            toml::Value::String(v) => assert_eq!(v, "0.2.0"),
+            toml::Value::Table(tbl) => {
+                let v = tbl.get("version").and_then(toml::Value::as_str).unwrap();
+                assert_eq!(v, "0.2.0");
+                assert_eq!(
+                    tbl.get("path").and_then(toml::Value::as_str).unwrap(),
+                    "../b"
+                );
+            }
+            _ => panic!("unexpected dependency entry type"),
+        }
+
+        // changelog for a exists with 0.1.1 section
+        let a_log = fs::read_to_string(a_dir.join("CHANGELOG.md")).unwrap();
+        assert!(a_log.contains("# a"));
+        assert!(a_log.contains("## 0.1.1"));
     }
 }
