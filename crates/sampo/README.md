@@ -52,7 +52,7 @@ An helpful description of the changes.
 **Internal dependencies**: Sampo detects packages within the same repository that depend on each other, and automatically manages their versions.
   - By default, automatically patch dependent packages when an internal dependency is updated. Example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch) if it wasn't explicitly changed.
   - **Linked dependencies** — *Coming soon*.
-  - **Fixed dependencies** (see [configuration](#configuration)) bump together with the parent package, even if not directly affected by changes. Example: if `a@1.0.0` depends on `b@1.0.0` and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0` (major).
+  - **Fixed dependencies** (see [configuration](#configuration)) always bump together, even if not directly affected by changes. Example: if `a@1.0.0` depends on `b@1.0.0` and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0` (major).
 
 ### Usage
 
@@ -75,6 +75,9 @@ repository = "owner/repo"
 [changelog]
 show_commit_hash = true
 show_acknowledgments = true
+
+[packages]
+fixed_dependencies = [["pkg-a", "pkg-b"], ["pkg-c", "pkg-d"]]
 ```
 
 ### `[github]` section
@@ -86,6 +89,10 @@ show_acknowledgments = true
 `show_commit_hash`: Whether to include commit hash links in changelog entries (default: `true`). When enabled, changelog entries include clickable commit hash links that point to the commit on GitHub.
 
 `show_acknowledgments`: Whether to include author acknowledgments in changelog entries (default: `true`). When enabled, changelog entries include author acknowledgments with special messages for first-time contributors.
+
+### `[packages]` section
+
+`fixed_dependencies`: An array of dependency groups where packages in each group should be bumped together with the same level (default: `[]`). Each group is an array of package names. When any package in a group is updated, all other packages in the same group will receive the same version bump level, regardless of dependency direction. For example, if `fixed_dependencies = [["a", "b"], ["c", "d"]]` and `a` is updated to `2.0.0` (major), then `b` will also be bumped to `2.0.0` (major), but `c` and `d` remain unchanged.
 
 ## Commands
 

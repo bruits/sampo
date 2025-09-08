@@ -32,9 +32,7 @@ pub fn build_dependency_updates(updates: &[(String, String)]) -> Vec<DependencyU
 /// Create a changelog entry for dependency updates
 ///
 /// Returns a tuple of (message, bump_type) suitable for adding to changelog messages
-pub fn create_dependency_update_entry(
-    updates: &[DependencyUpdate],
-) -> Option<(String, Bump)> {
+pub fn create_dependency_update_entry(updates: &[DependencyUpdate]) -> Option<(String, Bump)> {
     format_dependency_updates_message(updates).map(|msg| (msg, Bump::Patch))
 }
 

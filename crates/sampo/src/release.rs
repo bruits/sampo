@@ -18,6 +18,9 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
     let ws = discover_workspace(root).map_err(io::Error::other)?;
     let cfg = Config::load(&ws.root).map_err(io::Error::other)?;
 
+    // Validate fixed dependencies configuration
+    validate_fixed_dependencies(&cfg, &ws).map_err(io::Error::other)?;
+
     let changesets_dir = detect_changesets_dir(&ws.root);
     let changesets = load_changesets(&changesets_dir)?;
     if changesets.is_empty() {
@@ -95,21 +98,59 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         }
     }
 
-    // Cascade: auto-bump dependents (at least patch) when an internal dep is bumped
+    // Cascade: auto-bump dependents when an internal dep is bumped
     {
+        // Helper function to find which fixed group a package belongs to, if any
+        let find_fixed_group = |pkg_name: &str| -> Option<usize> {
+            cfg.fixed_dependencies
+                .iter()
+                .position(|group| group.contains(&pkg_name.to_string()))
+        };
+
         let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
         let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
+        
         while let Some(changed) = queue.pop() {
+            let changed_bump = bump_by_pkg.get(&changed).copied().unwrap_or(Bump::Patch);
+            
+            // 1. Handle normal dependency relationships (unchanged → dependent)
             if let Some(deps) = dependents.get(&changed) {
                 for dep_name in deps {
-                    let entry = bump_by_pkg.entry(dep_name.clone()).or_insert(Bump::Patch);
+                    // Determine bump level for this dependent
+                    let dependent_bump = if find_fixed_group(dep_name).is_some() {
+                        // Fixed dependencies: same bump level as the dependency
+                        changed_bump
+                    } else {
+                        // Normal dependencies: at least patch
+                        Bump::Patch
+                    };
+                    
+                    let entry = bump_by_pkg.entry(dep_name.clone()).or_insert(dependent_bump);
                     // If already present, keep the higher bump
-                    if *entry < Bump::Patch {
-                        *entry = Bump::Patch;
+                    if *entry < dependent_bump {
+                        *entry = dependent_bump;
                     }
                     if !seen.contains(dep_name) {
                         queue.push(dep_name.clone());
                         seen.insert(dep_name.clone());
+                    }
+                }
+            }
+            
+            // 2. Handle fixed dependency groups (bidirectional)
+            if let Some(group_idx) = find_fixed_group(&changed) {
+                // All packages in the same fixed group should bump together
+                for group_member in &cfg.fixed_dependencies[group_idx] {
+                    if group_member != &changed {
+                        let entry = bump_by_pkg.entry(group_member.clone()).or_insert(changed_bump);
+                        // If already present, keep the higher bump
+                        if *entry < changed_bump {
+                            *entry = changed_bump;
+                        }
+                        if !seen.contains(group_member) {
+                            queue.push(group_member.clone());
+                            seen.insert(group_member.clone());
+                        }
                     }
                 }
             }
@@ -503,6 +544,29 @@ fn update_changelog(
     fs::write(&path, combined)
 }
 
+/// Validate fixed dependencies configuration against the workspace
+fn validate_fixed_dependencies(cfg: &Config, ws: &sampo_core::Workspace) -> Result<(), String> {
+    let workspace_packages: std::collections::HashSet<String> = ws.members
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    for (group_idx, group) in cfg.fixed_dependencies.iter().enumerate() {
+        for package in group {
+            if !workspace_packages.contains(package) {
+                let available_packages: Vec<String> = workspace_packages.iter().cloned().collect();
+                return Err(format!(
+                    "Package '{}' in fixed dependency group {} does not exist in the workspace. Available packages: [{}]",
+                    package,
+                    group_idx + 1,
+                    available_packages.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,5 +823,313 @@ mod tests {
         let a_log = fs::read_to_string(a_dir.join("CHANGELOG.md")).unwrap();
         assert!(a_log.contains("# a"));
         assert!(a_log.contains("## 0.1.1"));
+    }
+
+    #[test]
+    fn fixed_dependencies_bump_with_same_level() {
+        use crate::cli::ReleaseArgs;
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // workspace with two crates: a depends on b
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // a depends on b via path + version
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"1.0.0\" }\n",
+        )
+        .unwrap();
+
+        // Create config with fixed dependencies (new group format)
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\"]]\n",
+        )
+        .unwrap();
+
+        // Changeset: bump b major
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-major.md"),
+            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b has breaking changes\n",
+        )
+        .unwrap();
+
+        // run release
+        super::run_in(root, &ReleaseArgs { dry_run: false }).unwrap();
+
+        // verify b -> 2.0.0
+        let b_manifest = fs::read_to_string(b_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            b_manifest.contains("version=\"2.0.0\"") || b_manifest.contains("version = \"2.0.0\"")
+        );
+
+        // verify a bumped major (not patch) because it's a fixed dependency -> 2.0.0
+        let a_manifest = fs::read_to_string(a_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            a_manifest.contains("version=\"2.0.0\"") || a_manifest.contains("version = \"2.0.0\"")
+        );
+        
+        // Parse to verify dependency version updated
+        let a_toml: toml::Value = a_manifest.parse().unwrap();
+        let dep_entry = a_toml
+            .get("dependencies")
+            .and_then(toml::Value::as_table)
+            .and_then(|t| t.get("b"))
+            .cloned()
+            .expect("dependency 'b' must exist");
+        match dep_entry {
+            toml::Value::String(v) => assert_eq!(v, "2.0.0"),
+            toml::Value::Table(tbl) => {
+                let v = tbl.get("version").and_then(toml::Value::as_str).unwrap();
+                assert_eq!(v, "2.0.0");
+                assert_eq!(
+                    tbl.get("path").and_then(toml::Value::as_str).unwrap(),
+                    "../b"
+                );
+            }
+            _ => panic!("unexpected dependency entry type"),
+        }
+
+        // changelog for a exists with 2.0.0 section (major bump)
+        let a_log = fs::read_to_string(a_dir.join("CHANGELOG.md")).unwrap();
+        assert!(a_log.contains("# a"));
+        assert!(a_log.contains("## 2.0.0"));
+    }
+
+    #[test]
+    fn fixed_dependencies_bidirectional() {
+        use crate::cli::ReleaseArgs;
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // workspace with two crates: a depends on b
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"1.0.0\"\n\n[dependencies]\na = { path=\"../a\", version=\"1.0.0\" }\n",
+        )
+        .unwrap();
+
+        // Note: b depends on a (reverse of normal test)
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // Create config with fixed dependencies group
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+        )
+        .unwrap();
+
+        // Changeset: bump a minor (even though b depends on a, both should bump)
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("a-minor.md"),
+            "---\npackages:\n  - a\nrelease: minor\n---\n\nfeat: a adds new feature\n",
+        )
+        .unwrap();
+
+        // run release
+        super::run_in(root, &ReleaseArgs { dry_run: false }).unwrap();
+
+        // verify a -> 1.1.0
+        let a_manifest = fs::read_to_string(a_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            a_manifest.contains("version=\"1.1.0\"") || a_manifest.contains("version = \"1.1.0\"")
+        );
+
+        // verify b also bumped minor (bidirectional) -> 1.1.0
+        let b_manifest = fs::read_to_string(b_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            b_manifest.contains("version=\"1.1.0\"") || b_manifest.contains("version = \"1.1.0\"")
+        );
+
+        // Parse to verify dependency version updated in b
+        let b_toml: toml::Value = b_manifest.parse().unwrap();
+        let dep_entry = b_toml
+            .get("dependencies")
+            .and_then(toml::Value::as_table)
+            .and_then(|t| t.get("a"))
+            .cloned()
+            .expect("dependency 'a' must exist");
+        match dep_entry {
+            toml::Value::String(v) => assert_eq!(v, "1.1.0"),
+            toml::Value::Table(tbl) => {
+                let v = tbl.get("version").and_then(toml::Value::as_str).unwrap();
+                assert_eq!(v, "1.1.0");
+                assert_eq!(
+                    tbl.get("path").and_then(toml::Value::as_str).unwrap(),
+                    "../a"
+                );
+            }
+            _ => panic!("unexpected dependency entry type"),
+        }
+
+        // both should have changelogs
+        let a_log = fs::read_to_string(a_dir.join("CHANGELOG.md")).unwrap();
+        assert!(a_log.contains("# a"));
+        assert!(a_log.contains("## 1.1.0"));
+
+        let b_log = fs::read_to_string(b_dir.join("CHANGELOG.md")).unwrap();
+        assert!(b_log.contains("# b"));
+        assert!(b_log.contains("## 1.1.0"));
+    }
+
+    #[test]
+    fn multiple_fixed_dependency_groups() {
+        use crate::cli::ReleaseArgs;
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // workspace with four crates: a-b group and c-d group
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        let c_dir = root.join("crates/c");
+        let d_dir = root.join("crates/d");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+        fs::create_dir_all(&c_dir).unwrap();
+        fs::create_dir_all(&d_dir).unwrap();
+
+        for (dir, name) in [(a_dir.clone(), "a"), (b_dir.clone(), "b"), (c_dir.clone(), "c"), (d_dir.clone(), "d")] {
+            fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname=\"{}\"\nversion=\"1.0.0\"\n", name),
+            )
+            .unwrap();
+        }
+
+        // Create config with multiple fixed dependency groups
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"b\"], [\"c\", \"d\"]]\n",
+        )
+        .unwrap();
+
+        // Changeset: bump a patch (only a and b should bump)
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("a-patch.md"),
+            "---\npackages:\n  - a\nrelease: patch\n---\n\nfix: a bug fix\n",
+        )
+        .unwrap();
+
+        // run release
+        super::run_in(root, &ReleaseArgs { dry_run: false }).unwrap();
+
+        // verify a -> 1.0.1
+        let a_manifest = fs::read_to_string(a_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            a_manifest.contains("version=\"1.0.1\"") || a_manifest.contains("version = \"1.0.1\"")
+        );
+
+        // verify b also bumped patch (same group) -> 1.0.1
+        let b_manifest = fs::read_to_string(b_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            b_manifest.contains("version=\"1.0.1\"") || b_manifest.contains("version = \"1.0.1\"")
+        );
+
+        // verify c and d remain unchanged (different group)
+        let c_manifest = fs::read_to_string(c_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            c_manifest.contains("version=\"1.0.0\"") || c_manifest.contains("version = \"1.0.0\"")
+        );
+
+        let d_manifest = fs::read_to_string(d_dir.join("Cargo.toml")).unwrap();
+        assert!(
+            d_manifest.contains("version=\"1.0.0\"") || d_manifest.contains("version = \"1.0.0\"")
+        );
+    }
+
+    #[test]
+    fn rejects_nonexistent_package_in_fixed_dependencies() {
+        use crate::cli::ReleaseArgs;
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // workspace with one crate
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // Create config with non-existent package
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"nonexistent\"]]\n",
+        )
+        .unwrap();
+
+        // Create a changeset
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("a-patch.md"),
+            "---\npackages:\n  - a\nrelease: patch\n---\n\nfix: a bug fix\n",
+        )
+        .unwrap();
+
+        // run release should fail
+        let result = super::run_in(root, &ReleaseArgs { dry_run: false });
+        assert!(result.is_err());
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("Package 'nonexistent' in fixed dependency group 1 does not exist"));
+        assert!(error_msg.contains("Available packages: [a]"));
     }
 }
