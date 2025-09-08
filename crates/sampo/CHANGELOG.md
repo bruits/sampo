@@ -1,5 +1,13 @@
 # sampo
 
+## 0.4.1
+
+### Patch changes
+
+- [6062083](https://github.com/bruits/sampo/commit/6062083ae20e3bcea6c1f4f00d6b58cf790cd9f1) Fix deploys and publishing. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.1.1
+
+
 ## 0.4.0
 
 ### Patch changes
