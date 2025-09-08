@@ -11,10 +11,6 @@ readme = "README.md"
 keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
 
-[lib]
-name = "sampo"
-path = "src/lib.rs"
-
 [[bin]]
 name = "sampo"
 path = "src/main.rs"
@@ -26,7 +22,8 @@ rand = "0.8"
 toml = "0.8"
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"] }
+semver = "1.0.26"
+rustc-hash = "2.0"
 
 [dev-dependencies]
 tempfile = "3"

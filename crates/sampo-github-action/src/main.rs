@@ -286,7 +286,9 @@ fn prepare_release_pr(workspace: &Path, cli: &Cli) -> Result<()> {
 
     // Build PR body BEFORE running release (release will consume changesets)
     let pr_body = {
-        let body = sampo::build_release_pr_body_from_stdout(workspace, &plan.description)?;
+        // Load configuration for dependency explanations
+        let config = sampo_core::Config::load(workspace).unwrap_or_default();
+        let body = sampo::build_release_pr_body_from_stdout(workspace, &plan.description, &config)?;
         if body.trim().is_empty() {
             // Fallback to the raw plan text when no applicable packages
             format!(

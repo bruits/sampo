@@ -1,7 +1,8 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    Bump, Config, detect_changesets_dir, detect_github_repo_slug_with_config,
-    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    Bump, Config, detect_all_dependency_explanations, detect_changesets_dir,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    get_commit_hash_for_path, load_changesets,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -128,10 +129,15 @@ pub fn run_publish(
 /// # Arguments
 /// * `workspace` - Path to the workspace root
 /// * `plan_stdout` - Output from `sampo release --dry-run`
+/// * `config` - Configuration reference to use for dependency policies and GitHub settings
 ///
 /// # Returns
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
-pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) -> Result<String> {
+pub fn build_release_pr_body_from_stdout(
+    workspace: &Path,
+    plan_stdout: &str,
+    config: &Config,
+) -> Result<String> {
     let releases = parse_planned_releases(plan_stdout);
     if releases.is_empty() {
         return Ok(String::new());
@@ -140,16 +146,12 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     let changesets_dir = detect_changesets_dir(workspace);
     let changesets = load_changesets(&changesets_dir)?;
 
+    // Load workspace for dependency explanations
+    let ws = discover_workspace(workspace)
+        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
+
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
-
-    // Load configuration to get GitHub repository setting
-    let config = Config::load(workspace).unwrap_or(Config {
-        version: 1,
-        github_repository: None,
-        changelog_show_commit_hash: true,
-        changelog_show_acknowledgments: true,
-    });
 
     // Resolve GitHub slug and token for commit links and acknowledgments
     let repo_slug =
@@ -181,6 +183,17 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
                     .push((enriched, cs.bump));
             }
         }
+    }
+
+    // Add automatic dependency explanations using unified function
+    let explanations = detect_all_dependency_explanations(&changesets, &ws, config, &releases);
+
+    // Merge explanations into messages_by_pkg
+    for (pkg_name, explanations) in explanations {
+        messages_by_pkg
+            .entry(pkg_name)
+            .or_default()
+            .extend(explanations);
     }
 
     // Compose header
@@ -340,5 +353,190 @@ No changesets found for other-pkg";
         // Should only have 2 unique messages
         assert_eq!(major_changes.len(), 2);
         assert_eq!(major_changes, vec!["Fix critical bug", "Add new feature"]);
+    }
+
+    #[test]
+    fn test_dependency_updates_in_pr_body() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create workspace structure
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // a depends on b
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"0.1.0\" }\n",
+        )
+        .unwrap();
+
+        // Create a changeset that only affects b
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-minor.md"),
+            "---\npackages:\n  - b\nrelease: minor\n---\n\nfeat: b adds new feature\n",
+        )
+        .unwrap();
+
+        // Simulate the output from `sampo release --dry-run`
+        let plan_stdout = "Planned releases:\n  a: 0.1.0 -> 0.1.1\n  b: 0.1.0 -> 0.2.0\n";
+
+        // Use default config for this test
+        let config = Config::default();
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
+
+        // Should contain dependency update information for package a
+        assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
+        assert!(pr_body.contains("## b 0.1.0 -> 0.2.0"));
+        assert!(pr_body.contains("feat: b adds new feature"));
+        assert!(pr_body.contains("Updated dependencies: b@0.2.0"));
+    }
+
+    #[test]
+    fn test_fixed_dependencies_in_pr_body() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create workspace structure
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // a depends on b
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"1.0.0\" }\n",
+        )
+        .unwrap();
+
+        // Create sampo config with fixed dependencies
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(&sampo_dir).unwrap();
+        fs::write(
+            sampo_dir.join("config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+        )
+        .unwrap();
+
+        // Create a changeset that only affects b
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-major.md"),
+            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b breaking change\n",
+        )
+        .unwrap();
+
+        // Simulate the output from `sampo release --dry-run` for fixed dependencies
+        let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
+
+        // Load the config we created above
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
+
+        // Should contain information for both packages with same version
+        assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("## b 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("breaking: b breaking change"));
+        // Fixed dependency should show dependency update too
+        assert!(pr_body.contains("Updated dependencies: b@2.0.0"));
+    }
+
+    #[test]
+    fn test_fixed_dependencies_without_actual_dependency() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create workspace structure
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // a does NOT depend on b (important difference)
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // Create sampo config with fixed dependencies
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(&sampo_dir).unwrap();
+        fs::write(
+            sampo_dir.join("config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+        )
+        .unwrap();
+
+        // Create a changeset that only affects b
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-major.md"),
+            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b breaking change\n",
+        )
+        .unwrap();
+
+        // Simulate the output from `sampo release --dry-run` for fixed dependencies
+        let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
+
+        // Load the config we created above
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
+
+        println!("PR Body:\n{}", pr_body);
+
+        // Should contain information for both packages with same version
+        assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("## b 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("breaking: b breaking change"));
+
+        // FIXED: Package 'a' should now have an explanation for the bump!
+        assert!(pr_body.contains("Bumped due to fixed dependency group policy"));
     }
 }

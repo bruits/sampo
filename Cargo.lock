@@ -1570,6 +1570,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f7d92ca342cea22a06f2121d944b4fd82af56988c270852495420f961d4ace"
 
 [[package]]
+name = "rustc-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+
+[[package]]
 name = "rustix"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1690,10 +1696,11 @@ dependencies = [
  "clap",
  "rand",
  "reqwest 0.12.23",
+ "rustc-hash",
  "sampo-core",
+ "semver",
  "serde_json",
  "tempfile",
- "tokio",
  "toml",
 ]
 
@@ -1702,6 +1709,7 @@ name = "sampo-core"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "rustc-hash",
  "serde",
  "serde_json",
  "tempfile",
@@ -1715,7 +1723,7 @@ name = "sampo-github-action"
 version = "0.1.0"
 dependencies = [
  "clap",
- "sampo",
+ "rustc-hash",
  "sampo-core",
  "tempfile",
  "thiserror 1.0.69",
@@ -1782,6 +1790,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56e6fa9c48d24d85fb3de5ad847117517440f6beceb7798af16b4a87d616b8d0"
 
 [[package]]
 name = "serde"

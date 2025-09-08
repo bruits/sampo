@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -42,7 +42,7 @@ fn get_action_binary() -> std::path::PathBuf {
 /// Run the action binary with environment variables
 fn run_action(
     args: &[&str],
-    env_vars: &HashMap<String, String>,
+    env_vars: &FxHashMap<String, String>,
     working_dir: &Path,
 ) -> std::process::Output {
     let binary = get_action_binary();
@@ -77,7 +77,7 @@ fn test_missing_workspace_fails() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
     // Don't set GITHUB_WORKSPACE environment variable
-    let env_vars = HashMap::new();
+    let env_vars = FxHashMap::default();
 
     let output = run_action(&["--mode", "release"], &env_vars, temp_dir.path());
 
@@ -100,7 +100,7 @@ fn test_environment_variable_parsing() {
     let output_file = workspace.join("github_output");
 
     // Test GitHub Actions style input variables
-    let mut env_vars = HashMap::new();
+    let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
         workspace.to_string_lossy().to_string(),
@@ -136,7 +136,7 @@ fn test_working_directory_override() {
     let output_file = workspace.join("github_output");
 
     // Don't set GITHUB_WORKSPACE, but provide --working-directory
-    let mut env_vars = HashMap::new();
+    let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_OUTPUT".to_string(),
         output_file.to_string_lossy().to_string(),
@@ -179,7 +179,7 @@ fn test_github_output_generation() {
     )
     .expect("Failed to create Cargo.toml");
 
-    let mut env_vars = HashMap::new();
+    let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
         workspace.to_string_lossy().to_string(),
@@ -255,7 +255,7 @@ fn test_with_minimal_valid_workspace() {
         .output()
         .ok();
 
-    let mut env_vars = HashMap::new();
+    let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
         workspace.to_string_lossy().to_string(),
@@ -348,7 +348,7 @@ repository = "test-owner/test-repo"
         .output()
         .ok();
 
-    let mut env_vars = HashMap::new();
+    let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
         workspace.to_string_lossy().to_string(),
