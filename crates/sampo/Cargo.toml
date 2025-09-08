@@ -11,10 +11,6 @@ readme = "README.md"
 keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
 
-[lib]
-name = "sampo"
-path = "src/lib.rs"
-
 [[bin]]
 name = "sampo"
 path = "src/main.rs"

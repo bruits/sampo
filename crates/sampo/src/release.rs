@@ -9,6 +9,16 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// Type alias for initial bumps computation result
+type InitialBumpsResult = (
+    BTreeMap<String, Bump>,                // bump_by_pkg
+    BTreeMap<String, Vec<(String, Bump)>>, // messages_by_pkg
+    BTreeSet<std::path::PathBuf>,          // used_paths
+);
+
+/// Type alias for release plan
+type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_version)
+
 pub fn run(args: &ReleaseArgs) -> io::Result<()> {
     let cwd = std::env::current_dir()?;
     run_in(&cwd, args)
@@ -31,7 +41,49 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         return Ok(());
     }
 
-    // Compute highest bump per package and collect messages per package
+    // Compute initial bumps from changesets
+    let (mut bump_by_pkg, mut messages_by_pkg, used_paths) =
+        compute_initial_bumps(&changesets, &ws, &cfg)?;
+
+    if bump_by_pkg.is_empty() {
+        println!("No applicable packages found in changesets.");
+        return Ok(());
+    }
+
+    // Build dependency graph and apply cascading logic
+    let dependents = build_dependency_graph(&ws);
+    apply_dependency_cascade(&mut bump_by_pkg, &dependents, &cfg);
+    apply_linked_dependencies(&mut bump_by_pkg, &cfg);
+
+    // Prepare and validate release plan
+    let releases = prepare_release_plan(&bump_by_pkg, &ws)?;
+    if releases.is_empty() {
+        println!("No matching workspace crates to release.");
+        return Ok(());
+    }
+
+    print_release_plan(&releases);
+
+    if args.dry_run {
+        println!("Dry-run: no files modified, no tags created.");
+        return Ok(());
+    }
+
+    // Apply changes
+    apply_releases(&releases, &ws, &mut messages_by_pkg)?;
+
+    // Clean up
+    cleanup_consumed_changesets(used_paths)?;
+
+    Ok(())
+}
+
+/// Compute initial bumps from changesets and collect messages
+fn compute_initial_bumps(
+    changesets: &[sampo_core::ChangesetInfo],
+    ws: &sampo_core::Workspace,
+    cfg: &Config,
+) -> io::Result<InitialBumpsResult> {
     let mut bump_by_pkg: BTreeMap<String, Bump> = BTreeMap::new();
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
     let mut used_paths: BTreeSet<std::path::PathBuf> = BTreeSet::new();
@@ -42,7 +94,7 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
-    for cs in &changesets {
+    for cs in changesets {
         for pkg in &cs.packages {
             used_paths.insert(cs.path.clone());
             bump_by_pkg
@@ -53,6 +105,7 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
                     }
                 })
                 .or_insert(cs.bump);
+
             // Enrich message with commit info and acknowledgments
             let commit_hash = get_commit_hash_for_path(&ws.root, &cs.path);
             let enriched = if let Some(hash) = commit_hash {
@@ -76,18 +129,11 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         }
     }
 
-    if bump_by_pkg.is_empty() {
-        println!("No applicable packages found in changesets.");
-        return Ok(());
-    }
+    Ok((bump_by_pkg, messages_by_pkg, used_paths))
+}
 
-    // Map crate name -> CrateInfo for quick lookup
-    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
-    for c in &ws.members {
-        by_name.insert(c.name.clone(), c);
-    }
-
-    // Build reverse dependency graph: dep -> set of dependents
+/// Build reverse dependency graph: dep -> set of dependents
+fn build_dependency_graph(ws: &sampo_core::Workspace) -> BTreeMap<String, BTreeSet<String>> {
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for c in &ws.members {
         for dep in &c.internal_deps {
@@ -97,72 +143,78 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
                 .insert(c.name.clone());
         }
     }
+    dependents
+}
 
-    // Cascade: auto-bump dependents when an internal dep is bumped
-    {
-        // Helper function to find which fixed group a package belongs to, if any
-        let find_fixed_group = |pkg_name: &str| -> Option<usize> {
-            cfg.fixed_dependencies
-                .iter()
-                .position(|group| group.contains(&pkg_name.to_string()))
-        };
+/// Apply dependency cascade logic and fixed dependency groups
+fn apply_dependency_cascade(
+    bump_by_pkg: &mut BTreeMap<String, Bump>,
+    dependents: &BTreeMap<String, BTreeSet<String>>,
+    cfg: &Config,
+) {
+    // Helper function to find which fixed group a package belongs to, if any
+    let find_fixed_group = |pkg_name: &str| -> Option<usize> {
+        cfg.fixed_dependencies
+            .iter()
+            .position(|group| group.contains(&pkg_name.to_string()))
+    };
 
-        let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
-        let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
+    let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
+    let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
 
-        while let Some(changed) = queue.pop() {
-            let changed_bump = bump_by_pkg.get(&changed).copied().unwrap_or(Bump::Patch);
+    while let Some(changed) = queue.pop() {
+        let changed_bump = bump_by_pkg.get(&changed).copied().unwrap_or(Bump::Patch);
 
-            // 1. Handle normal dependency relationships (unchanged → dependent)
-            if let Some(deps) = dependents.get(&changed) {
-                for dep_name in deps {
-                    // Determine bump level for this dependent
-                    let dependent_bump = if find_fixed_group(dep_name).is_some() {
-                        // Fixed dependencies: same bump level as the dependency
-                        changed_bump
-                    } else {
-                        // Normal dependencies: at least patch
-                        Bump::Patch
-                    };
+        // 1. Handle normal dependency relationships (unchanged → dependent)
+        if let Some(deps) = dependents.get(&changed) {
+            for dep_name in deps {
+                // Determine bump level for this dependent
+                let dependent_bump = if find_fixed_group(dep_name).is_some() {
+                    // Fixed dependencies: same bump level as the dependency
+                    changed_bump
+                } else {
+                    // Normal dependencies: at least patch
+                    Bump::Patch
+                };
 
-                    let entry = bump_by_pkg
-                        .entry(dep_name.clone())
-                        .or_insert(dependent_bump);
-                    // If already present, keep the higher bump
-                    if *entry < dependent_bump {
-                        *entry = dependent_bump;
-                    }
-                    if !seen.contains(dep_name) {
-                        queue.push(dep_name.clone());
-                        seen.insert(dep_name.clone());
-                    }
+                let entry = bump_by_pkg
+                    .entry(dep_name.clone())
+                    .or_insert(dependent_bump);
+                // If already present, keep the higher bump
+                if *entry < dependent_bump {
+                    *entry = dependent_bump;
+                }
+                if !seen.contains(dep_name) {
+                    queue.push(dep_name.clone());
+                    seen.insert(dep_name.clone());
                 }
             }
+        }
 
-            // 2. Handle fixed dependency groups (bidirectional)
-            if let Some(group_idx) = find_fixed_group(&changed) {
-                // All packages in the same fixed group should bump together
-                for group_member in &cfg.fixed_dependencies[group_idx] {
-                    if group_member != &changed {
-                        let entry = bump_by_pkg
-                            .entry(group_member.clone())
-                            .or_insert(changed_bump);
-                        // If already present, keep the higher bump
-                        if *entry < changed_bump {
-                            *entry = changed_bump;
-                        }
-                        if !seen.contains(group_member) {
-                            queue.push(group_member.clone());
-                            seen.insert(group_member.clone());
-                        }
+        // 2. Handle fixed dependency groups (bidirectional)
+        if let Some(group_idx) = find_fixed_group(&changed) {
+            // All packages in the same fixed group should bump together
+            for group_member in &cfg.fixed_dependencies[group_idx] {
+                if group_member != &changed {
+                    let entry = bump_by_pkg
+                        .entry(group_member.clone())
+                        .or_insert(changed_bump);
+                    // If already present, keep the higher bump
+                    if *entry < changed_bump {
+                        *entry = changed_bump;
+                    }
+                    if !seen.contains(group_member) {
+                        queue.push(group_member.clone());
+                        seen.insert(group_member.clone());
                     }
                 }
             }
         }
     }
+}
 
-    // Handle linked dependencies: apply highest bump level to affected packages only
-    // Process linked dependency groups after all bump calculations
+/// Apply linked dependencies logic: highest bump level to affected packages only
+fn apply_linked_dependencies(bump_by_pkg: &mut BTreeMap<String, Bump>, cfg: &Config) {
     for group in &cfg.linked_dependencies {
         // Check if any package in this group has been bumped
         let mut group_has_bumps = false;
@@ -196,10 +248,21 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
             }
         }
     }
+}
 
-    // Prepare plan
+/// Prepare the release plan by matching bumps to workspace members
+fn prepare_release_plan(
+    bump_by_pkg: &BTreeMap<String, Bump>,
+    ws: &sampo_core::Workspace,
+) -> io::Result<ReleasePlan> {
+    // Map crate name -> CrateInfo for quick lookup
+    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    for c in &ws.members {
+        by_name.insert(c.name.clone(), c);
+    }
+
     let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
-    for (name, bump) in &bump_by_pkg {
+    for (name, bump) in bump_by_pkg {
         if let Some(info) = by_name.get(name) {
             let old = if info.version.is_empty() {
                 "0.0.0".to_string()
@@ -213,37 +276,43 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         }
     }
 
-    if releases.is_empty() {
-        println!("No matching workspace crates to release.");
-        return Ok(());
-    }
+    Ok(releases)
+}
 
-    // Print plan
+/// Print the planned releases
+fn print_release_plan(releases: &ReleasePlan) {
     println!("Planned releases:");
-    for (name, old, newv) in &releases {
+    for (name, old, newv) in releases {
         println!("  {name}: {old} -> {newv}");
     }
+}
 
-    if args.dry_run {
-        println!("Dry-run: no files modified, no tags created.");
-        return Ok(());
+/// Apply all releases: update manifests and changelogs
+fn apply_releases(
+    releases: &ReleasePlan,
+    ws: &sampo_core::Workspace,
+    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
+) -> io::Result<()> {
+    // Build lookup maps
+    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    for c in &ws.members {
+        by_name.insert(c.name.clone(), c);
     }
 
-    // Build a quick lookup for new versions
     let mut new_version_by_name: BTreeMap<String, String> = BTreeMap::new();
-    for (name, _old, newv) in &releases {
+    for (name, _old, newv) in releases {
         new_version_by_name.insert(name.clone(), newv.clone());
     }
 
-    // Apply: update Cargo.toml (package version + internal dependency versions) and CHANGELOG
-    for (name, old, newv) in &releases {
+    // Apply updates for each release
+    for (name, old, newv) in releases {
         let info = by_name.get(name.as_str()).unwrap();
         let manifest_path = info.path.join("Cargo.toml");
         let text = fs::read_to_string(&manifest_path)?;
 
         // Update manifest and collect which internal deps were retargeted
         let (updated, dep_updates) =
-            update_manifest_versions(&text, Some(newv.as_str()), &ws, &new_version_by_name)?;
+            update_manifest_versions(&text, Some(newv.as_str()), ws, &new_version_by_name)?;
         fs::write(&manifest_path, updated)?;
 
         // Augment messages with dependency update notes
@@ -261,12 +330,15 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
         update_changelog(&info.path, name, old, newv, &messages)?;
     }
 
-    // Remove consumed changesets
+    Ok(())
+}
+
+/// Clean up consumed changeset files
+fn cleanup_consumed_changesets(used_paths: BTreeSet<std::path::PathBuf>) -> io::Result<()> {
     for p in used_paths {
         let _ = fs::remove_file(p);
     }
     println!("Removed consumed changesets.");
-
     Ok(())
 }
 
