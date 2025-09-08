@@ -1716,7 +1716,6 @@ name = "sampo-github-action"
 version = "0.1.0"
 dependencies = [
  "clap",
- "sampo",
  "sampo-core",
  "tempfile",
  "thiserror 1.0.69",
