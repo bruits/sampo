@@ -219,6 +219,7 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
         changelog_show_commit_hash: true,
         changelog_show_acknowledgments: true,
         fixed_dependencies: Vec::new(),
+        linked_dependencies: Vec::new(),
     });
 
     // Resolve GitHub slug and token for commit links and acknowledgments
