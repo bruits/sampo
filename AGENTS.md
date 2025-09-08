@@ -24,7 +24,7 @@ Principles for how automated agents and contributors generate code and docs here
 
 - Before generating new code or docs, parse repository to inherit existing conventions and avoid duplication.
 - Match the current project structure, naming, and style; do not create parallel patterns.
-- Use explicit `use` imports for standard library types (e.g., `use std::collections::BTreeSet;`) rather than fully qualified paths in code.
+- Explicit `use` imports for standard library types.
 
 ## Changes & Dependencies
 
