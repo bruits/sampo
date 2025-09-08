@@ -1,5 +1,12 @@
 # sampo-github-bot
 
+## 0.2.1
+
+### Patch changes
+
+- [6b956fa](https://github.com/bruits/sampo/commit/6b956fa73c2fd62eb09a98b6b0e724325d20258d) Fix deploys and publishing. — Thanks @goulvenclech!
+
+
 ## 0.2.0
 
 ### Minor changes
