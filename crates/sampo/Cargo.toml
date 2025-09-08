@@ -1,29 +1,37 @@
-[package]
-name = "sampo"
-version = "0.2.0"
-license = "MIT"
-authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
-edition = "2024"
-description = "Sampo CLI: automate changelogs, versioning, and publishing"
-homepage = "https://github.com/bruits/sampo"
-repository = "https://github.com/bruits/sampo"
-readme = "README.md"
-keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
-categories = ["development-tools"]
-
 [[bin]]
 name = "sampo"
 path = "src/main.rs"
 
 [dependencies]
-sampo-core = { path = "../sampo-core" }
-clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
-toml = "0.8"
-serde_json = "1.0"
-reqwest = { version = "0.12", features = ["json"] }
-semver = "1.0.26"
 rustc-hash = "2.0"
+semver = "1.0.26"
+serde_json = "1.0"
+toml = "0.8"
+
+[dependencies.clap]
+features = ["derive"]
+version = "4.5"
+
+[dependencies.reqwest]
+features = ["json"]
+version = "0.12"
+
+[dependencies.sampo-core]
+path = "../sampo-core"
 
 [dev-dependencies]
 tempfile = "3"
+
+[package]
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+categories = ["development-tools"]
+description = "Sampo CLI: automate changelogs, versioning, and publishing"
+edition = "2024"
+homepage = "https://github.com/bruits/sampo"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+license = "MIT"
+name = "sampo"
+readme = "README.md"
+repository = "https://github.com/bruits/sampo"
+version = "0.3.0"
