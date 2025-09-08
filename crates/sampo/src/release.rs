@@ -109,10 +109,10 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
 
         let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
         let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
-        
+
         while let Some(changed) = queue.pop() {
             let changed_bump = bump_by_pkg.get(&changed).copied().unwrap_or(Bump::Patch);
-            
+
             // 1. Handle normal dependency relationships (unchanged → dependent)
             if let Some(deps) = dependents.get(&changed) {
                 for dep_name in deps {
@@ -124,8 +124,10 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
                         // Normal dependencies: at least patch
                         Bump::Patch
                     };
-                    
-                    let entry = bump_by_pkg.entry(dep_name.clone()).or_insert(dependent_bump);
+
+                    let entry = bump_by_pkg
+                        .entry(dep_name.clone())
+                        .or_insert(dependent_bump);
                     // If already present, keep the higher bump
                     if *entry < dependent_bump {
                         *entry = dependent_bump;
@@ -136,13 +138,15 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
                     }
                 }
             }
-            
+
             // 2. Handle fixed dependency groups (bidirectional)
             if let Some(group_idx) = find_fixed_group(&changed) {
                 // All packages in the same fixed group should bump together
                 for group_member in &cfg.fixed_dependencies[group_idx] {
                     if group_member != &changed {
-                        let entry = bump_by_pkg.entry(group_member.clone()).or_insert(changed_bump);
+                        let entry = bump_by_pkg
+                            .entry(group_member.clone())
+                            .or_insert(changed_bump);
                         // If already present, keep the higher bump
                         if *entry < changed_bump {
                             *entry = changed_bump;
@@ -546,10 +550,8 @@ fn update_changelog(
 
 /// Validate fixed dependencies configuration against the workspace
 fn validate_fixed_dependencies(cfg: &Config, ws: &sampo_core::Workspace) -> Result<(), String> {
-    let workspace_packages: std::collections::HashSet<String> = ws.members
-        .iter()
-        .map(|c| c.name.clone())
-        .collect();
+    let workspace_packages: std::collections::HashSet<String> =
+        ws.members.iter().map(|c| c.name.clone()).collect();
 
     for (group_idx, group) in cfg.fixed_dependencies.iter().enumerate() {
         for package in group {
@@ -888,7 +890,7 @@ mod tests {
         assert!(
             a_manifest.contains("version=\"2.0.0\"") || a_manifest.contains("version = \"2.0.0\"")
         );
-        
+
         // Parse to verify dependency version updated
         let a_toml: toml::Value = a_manifest.parse().unwrap();
         let dep_entry = a_toml
@@ -1034,7 +1036,12 @@ mod tests {
         fs::create_dir_all(&c_dir).unwrap();
         fs::create_dir_all(&d_dir).unwrap();
 
-        for (dir, name) in [(a_dir.clone(), "a"), (b_dir.clone(), "b"), (c_dir.clone(), "c"), (d_dir.clone(), "d")] {
+        for (dir, name) in [
+            (a_dir.clone(), "a"),
+            (b_dir.clone(), "b"),
+            (c_dir.clone(), "c"),
+            (d_dir.clone(), "d"),
+        ] {
             fs::write(
                 dir.join("Cargo.toml"),
                 format!("[package]\nname=\"{}\"\nversion=\"1.0.0\"\n", name),
@@ -1129,7 +1136,9 @@ mod tests {
         let result = super::run_in(root, &ReleaseArgs { dry_run: false });
         assert!(result.is_err());
         let error_msg = format!("{}", result.unwrap_err());
-        assert!(error_msg.contains("Package 'nonexistent' in fixed dependency group 1 does not exist"));
+        assert!(
+            error_msg.contains("Package 'nonexistent' in fixed dependency group 1 does not exist")
+        );
         assert!(error_msg.contains("Available packages: [a]"));
     }
 }

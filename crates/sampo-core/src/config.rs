@@ -75,13 +75,13 @@ impl Config {
                 // Check if all elements are arrays (groups format)
                 let all_arrays = outer_arr.iter().all(|item| item.is_array());
                 let any_arrays = outer_arr.iter().any(|item| item.is_array());
-                
+
                 if !all_arrays {
                     if any_arrays {
                         // Mixed format
                         let non_array = outer_arr.iter().find(|item| !item.is_array()).unwrap();
                         return Err(format!(
-                            "fixed_dependencies must be an array of arrays, found mixed format with: {}. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]", 
+                            "fixed_dependencies must be an array of arrays, found mixed format with: {}. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]",
                             non_array
                         ));
                     } else {
@@ -108,7 +108,7 @@ impl Config {
                     for package in group {
                         if seen_packages.contains(package) {
                             return Err(format!(
-                                "Package '{}' appears in multiple fixed dependency groups. Each package can only belong to one group.", 
+                                "Package '{}' appears in multiple fixed dependency groups. Each package can only belong to one group.",
                                 package
                             ));
                         }
@@ -202,7 +202,10 @@ mod tests {
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
-        assert_eq!(config.fixed_dependencies, vec![vec!["pkg-a".to_string(), "pkg-b".to_string()]]);
+        assert_eq!(
+            config.fixed_dependencies,
+            vec![vec!["pkg-a".to_string(), "pkg-b".to_string()]]
+        );
     }
 
     #[test]
@@ -216,10 +219,17 @@ mod tests {
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
-        assert_eq!(config.fixed_dependencies, vec![
-            vec!["pkg-a".to_string(), "pkg-b".to_string()],
-            vec!["pkg-c".to_string(), "pkg-d".to_string(), "pkg-e".to_string()]
-        ]);
+        assert_eq!(
+            config.fixed_dependencies,
+            vec![
+                vec!["pkg-a".to_string(), "pkg-b".to_string()],
+                vec![
+                    "pkg-c".to_string(),
+                    "pkg-d".to_string(),
+                    "pkg-e".to_string()
+                ]
+            ]
+        );
     }
 
     #[test]

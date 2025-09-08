@@ -1,8 +1,8 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    Bump, Config, build_dependency_updates, create_dependency_update_entry,
-    detect_changesets_dir, detect_github_repo_slug_with_config, discover_workspace,
-    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    Bump, Config, build_dependency_updates, create_dependency_update_entry, detect_changesets_dir,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    get_commit_hash_for_path, load_changesets,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -129,7 +129,8 @@ fn detect_dependency_updates(
     releases: &BTreeMap<String, (String, String)>,
     messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
 ) -> Result<()> {
-    let ws = discover_workspace(workspace).map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
+    let ws = discover_workspace(workspace)
+        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
     let changesets_dir = detect_changesets_dir(workspace);
     let changesets = load_changesets(&changesets_dir).map_err(ActionError::Io)?;
 
