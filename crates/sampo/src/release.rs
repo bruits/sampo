@@ -8,7 +8,7 @@ use sampo_core::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Type alias for initial bumps computation result
 type InitialBumpsResult = (
@@ -507,7 +507,6 @@ fn crate_name_by_path(
 }
 
 fn clean_path_like(p: &std::path::Path) -> std::path::PathBuf {
-    use std::path::{Component, PathBuf};
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {

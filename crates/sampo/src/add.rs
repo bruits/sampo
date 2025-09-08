@@ -1,6 +1,7 @@
 use crate::cli::AddArgs;
 use crate::names;
 use sampo_core::{Bump, discover_workspace, render_changeset_markdown};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -70,7 +71,7 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
                 .collect();
             if !items.is_empty() {
                 // de-duplicate
-                let mut seen = std::collections::BTreeSet::new();
+                let mut seen = BTreeSet::new();
                 let mut out = Vec::new();
                 for it in items {
                     if seen.insert(it.clone()) {
@@ -119,7 +120,7 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
             }
             if !out.is_empty() {
                 // de-duplicate preserving order
-                let mut seen = std::collections::BTreeSet::new();
+                let mut seen = BTreeSet::new();
                 out.retain(|p| seen.insert(p.clone()));
                 return Ok(out);
             }
