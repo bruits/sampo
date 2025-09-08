@@ -48,12 +48,17 @@ A helpful description of the changes.
 
 **Changelog**: Automatically generated file listing all changes for each package version. Sampo consumes changesets to build comprehensive changelogs with semantic versioning.
 
-**Release**: The process of consuming changesets to bump package versions, update changelogs, and create git tags. Sampo works seamlessly with **monorepos** containing multiple packages and supports publishing to **multiple registries** across different ecosystems.
+```
+# Example
 
-**Internal dependencies**: Sampo detects packages within the same repository that depend on each other and automatically manages their versions.
-  - By default, dependent packages are automatically patched when an internal dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset.
-  - **Fixed dependencies** (see [configuration](#configuration)) always bump together with the same version, even if not directly affected. For example: if `a@1.0.0` and `b@1.0.0` are in a fixed group and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0`.
-  - **Linked dependencies** (see [configuration](#configuration)) apply the highest bump level to affected packages and their dependents. For example: if `a@1.0.0` depends on `b@1.0.0` in a linked group and `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0`. If `a` is later updated to `2.1.0` (minor), `b` remains at `2.0.0` since it's not affected. Finally, if `b` has a patch update, both `a` and `b` will be bumped with patch level (the highest in the group).
+## 0.1.0
+
+### Minor changes
+
+- [abcdefg](link/to/commit) A helpful description of the changes. — Thanks @user!
+```
+
+**Release**: The process of consuming changesets to bump package versions, update changelogs, and create git tags. Sampo works seamlessly with **monorepos** containing multiple packages and supports publishing to **multiple registries** across different ecosystems.
 
 ### Usage
 
@@ -93,6 +98,8 @@ linked_dependencies = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 `show_acknowledgments`: Whether to include author acknowledgments in changelog entries (default: `true`). When enabled, changelog entries include author acknowledgments with special messages for first-time contributors.
 
 ### `[packages]` section
+
+Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when an internal dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
 `fixed_dependencies`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of package names. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed_dependencies = [["a", "b"], ["c", "d"]]` and `a` is updated to `2.0.0` (major), then `b` will also be bumped to `2.0.0`, but `c` and `d` remain unchanged.
 

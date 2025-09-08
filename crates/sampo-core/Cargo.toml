@@ -6,7 +6,7 @@ thiserror = "1.0"
 toml = "0.8"
 
 [dependencies.reqwest]
-features = ["json"]
+features = ["json", "blocking"]
 version = "0.12"
 
 [dependencies.serde]
