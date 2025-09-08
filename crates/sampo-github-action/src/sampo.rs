@@ -129,10 +129,15 @@ pub fn run_publish(
 /// # Arguments
 /// * `workspace` - Path to the workspace root
 /// * `plan_stdout` - Output from `sampo release --dry-run`
+/// * `config` - Configuration reference to use for dependency policies and GitHub settings
 ///
 /// # Returns
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
-pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) -> Result<String> {
+pub fn build_release_pr_body_from_stdout(
+    workspace: &Path,
+    plan_stdout: &str,
+    config: &Config,
+) -> Result<String> {
     let releases = parse_planned_releases(plan_stdout);
     if releases.is_empty() {
         return Ok(String::new());
@@ -147,16 +152,6 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
 
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
-
-    // Load configuration to get GitHub repository setting
-    let config = Config::load(workspace).unwrap_or(Config {
-        version: 1,
-        github_repository: None,
-        changelog_show_commit_hash: true,
-        changelog_show_acknowledgments: true,
-        fixed_dependencies: Vec::new(),
-        linked_dependencies: Vec::new(),
-    });
 
     // Resolve GitHub slug and token for commit links and acknowledgments
     let repo_slug =
@@ -191,7 +186,7 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
     }
 
     // Add automatic dependency explanations using unified function
-    let explanations = detect_all_dependency_explanations(&changesets, &ws, &config, &releases);
+    let explanations = detect_all_dependency_explanations(&changesets, &ws, config, &releases);
 
     // Merge explanations into messages_by_pkg
     for (pkg_name, explanations) in explanations {
@@ -403,7 +398,9 @@ No changesets found for other-pkg";
         // Simulate the output from `sampo release --dry-run`
         let plan_stdout = "Planned releases:\n  a: 0.1.0 -> 0.1.1\n  b: 0.1.0 -> 0.2.0\n";
 
-        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout).unwrap();
+        // Use default config for this test
+        let config = Config::default();
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
 
         // Should contain dependency update information for package a
         assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
@@ -464,7 +461,9 @@ No changesets found for other-pkg";
         // Simulate the output from `sampo release --dry-run` for fixed dependencies
         let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
 
-        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout).unwrap();
+        // Load the config we created above
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
 
         // Should contain information for both packages with same version
         assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
@@ -526,7 +525,9 @@ No changesets found for other-pkg";
         // Simulate the output from `sampo release --dry-run` for fixed dependencies
         let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
 
-        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout).unwrap();
+        // Load the config we created above
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
 
         println!("PR Body:\n{}", pr_body);
 
