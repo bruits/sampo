@@ -360,6 +360,9 @@ fn post_merge_publish(
     cargo_token: Option<&str>,
     create_github_release: bool,
 ) -> Result<()> {
+    // Setup git identity for tag creation
+    git::setup_bot_user(workspace)?;
+
     // Capture tags before publishing
     let before_tags = git::list_tags(workspace)?;
 

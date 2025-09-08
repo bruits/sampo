@@ -211,6 +211,7 @@ fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Result<bo
             match code.as_str() {
                 "200" => Ok(true),  // version exists
                 "404" => Ok(false), // version not found
+                "403" => Ok(true),  // assume exists to be safe (auth/permission issue)
                 _ => Err(io::Error::other(format!(
                     "unexpected HTTP status from crates.io: {}",
                     code
