@@ -1,4 +1,5 @@
 use crate::cli::ReleaseArgs;
+use rustc_hash::FxHashSet;
 use sampo_core::{
     Bump, Config, CrateInfo, detect_all_dependency_explanations, detect_changesets_dir,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
@@ -669,8 +670,7 @@ fn update_changelog(
 
 /// Validate fixed dependencies configuration against the workspace
 fn validate_fixed_dependencies(cfg: &Config, ws: &sampo_core::Workspace) -> Result<(), String> {
-    let workspace_packages: std::collections::HashSet<String> =
-        ws.members.iter().map(|c| c.name.clone()).collect();
+    let workspace_packages: FxHashSet<String> = ws.members.iter().map(|c| c.name.clone()).collect();
 
     for (group_idx, group) in cfg.fixed_dependencies.iter().enumerate() {
         for package in group {
@@ -692,7 +692,7 @@ fn validate_fixed_dependencies(cfg: &Config, ws: &sampo_core::Workspace) -> Resu
 mod tests {
     use super::*;
     use crate::cli::ReleaseArgs;
-    use std::collections::HashMap;
+    use rustc_hash::FxHashMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -700,7 +700,7 @@ mod tests {
     struct TestWorkspace {
         root: PathBuf,
         _temp_dir: tempfile::TempDir,
-        crates: HashMap<String, PathBuf>,
+        crates: FxHashMap<String, PathBuf>,
     }
 
     impl TestWorkspace {
@@ -718,7 +718,7 @@ mod tests {
             Self {
                 root,
                 _temp_dir: temp_dir,
-                crates: HashMap::new(),
+                crates: FxHashMap::default(),
             }
         }
 
@@ -1157,7 +1157,7 @@ mod tests {
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("affected_directly", "1.0.0")      // Has changeset
-            .add_crate("affected_by_cascade", "1.0.0")    // Depends on affected_directly  
+            .add_crate("affected_by_cascade", "1.0.0")    // Depends on affected_directly
             .add_crate("unaffected_in_group", "1.0.0")    // In group but no relation
             .add_crate("outside_group", "1.0.0")          // Not in group at all
             .add_dependency("affected_by_cascade", "affected_directly", "1.0.0")
@@ -1202,7 +1202,7 @@ mod tests {
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("pkg_a", "1.0.0")           // Has major changeset
-            .add_crate("pkg_b", "1.0.0")           // Has minor changeset  
+            .add_crate("pkg_b", "1.0.0")           // Has minor changeset
             .add_crate("pkg_c", "1.0.0")           // In group but no changeset, no deps
             .add_crate("pkg_d", "1.0.0")           // Depends on pkg_a
             .add_dependency("pkg_d", "pkg_a", "1.0.0")

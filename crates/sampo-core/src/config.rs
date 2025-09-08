@@ -1,4 +1,5 @@
 use crate::errors::SampoError;
+use rustc_hash::FxHashSet;
 use std::path::Path;
 
 /// Configuration for Sampo
@@ -105,7 +106,7 @@ impl Config {
                     .collect();
 
                 // Check for overlapping groups
-                let mut seen_packages = std::collections::HashSet::new();
+                let mut seen_packages = FxHashSet::default();
                 for group in &groups {
                     for package in group {
                         if seen_packages.contains(package) {
@@ -161,7 +162,7 @@ impl Config {
                     .collect();
 
                 // Check for overlapping groups within linked_dependencies
-                let mut seen_packages = std::collections::HashSet::new();
+                let mut seen_packages = FxHashSet::default();
                 for group in &groups {
                     for package in group {
                         if seen_packages.contains(package) {
@@ -181,7 +182,7 @@ impl Config {
             .unwrap_or_default();
 
         // Check for overlapping packages between fixed and linked dependencies
-        let mut all_fixed_packages = std::collections::HashSet::new();
+        let mut all_fixed_packages = FxHashSet::default();
         for group in &fixed_dependencies {
             for package in group {
                 all_fixed_packages.insert(package.clone());

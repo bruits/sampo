@@ -78,7 +78,7 @@ pub fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
 ///
 /// # Arguments
 /// * `changesets` - The changesets being processed
-/// * `workspace` - The workspace containing all packages  
+/// * `workspace` - The workspace containing all packages
 /// * `config` - The configuration with dependency policies
 /// * `releases` - Map of package name to (old_version, new_version) for all planned releases
 ///
