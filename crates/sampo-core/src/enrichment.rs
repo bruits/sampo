@@ -147,10 +147,11 @@ async fn enrich_changeset_message_async(
 
 /// Get commit information for a specific commit hash
 fn get_commit_info_for_hash(repo_root: &Path, commit_hash: &str) -> Option<CommitInfo> {
-    let format_string = "%H\x1f%h\x1f%an";
+    // Use \x1f (Unit Separator) to avoid conflicts with user content
+    let format_arg = "--format=%H\x1f%h\x1f%an";
     let output = Command::new("git")
         .current_dir(repo_root)
-        .args(["show", "--no-patch", "--format", format_string, commit_hash])
+        .args(["show", "--no-patch", format_arg, commit_hash])
         .output()
         .ok()?;
 
@@ -302,6 +303,96 @@ mod tests {
         assert_eq!(
             message,
             "[abcd](link) feat: add new feature — Thanks @user!"
+        );
+    }
+
+    #[test]
+    fn enrich_changeset_message_integration() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize a git repo
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Configure git user
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create a test file and commit it
+        let test_file = repo_path.join("test.md");
+        fs::write(&test_file, "initial content").unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "test.md"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial commit"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Get the commit hash
+        let commit_hash = get_commit_hash_for_path(repo_path, &test_file)
+            .expect("Should find commit hash for test file");
+
+        // Test enrichment with all features enabled
+        let enriched = enrich_changeset_message(
+            "fix: resolve critical bug",
+            &commit_hash,
+            repo_path,
+            Some("owner/repo"),
+            None, // no GitHub token for this test
+            true, // show commit hash
+            true, // show acknowledgments
+        );
+
+        // Should contain the commit hash link and author thanks
+        assert!(
+            enriched.contains(&commit_hash[..8]),
+            "Should contain short commit hash"
+        );
+        assert!(
+            enriched.contains("Thanks Test User!"),
+            "Should contain author thanks"
+        );
+        assert!(
+            enriched.contains("fix: resolve critical bug"),
+            "Should contain original message"
+        );
+
+        // Test with features disabled
+        let plain = enrich_changeset_message(
+            "fix: resolve critical bug",
+            &commit_hash,
+            repo_path,
+            Some("owner/repo"),
+            None,
+            false, // no commit hash
+            false, // no acknowledgments
+        );
+
+        assert_eq!(
+            plain, "fix: resolve critical bug",
+            "Should be unchanged when features disabled"
         );
     }
 }
