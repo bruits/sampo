@@ -271,12 +271,8 @@ fn add_fixed_dependency_policy_messages(
     cfg: &Config,
 ) {
     let bumped_packages: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
-    let policy_packages = sampo_core::detect_fixed_dependency_policy_packages(
-        changesets,
-        ws,
-        cfg,
-        &bumped_packages,
-    );
+    let policy_packages =
+        sampo_core::detect_fixed_dependency_policy_packages(changesets, ws, cfg, &bumped_packages);
 
     for (pkg_name, bump) in policy_packages {
         let (msg, bump_type) = sampo_core::create_fixed_dependency_policy_entry(bump);

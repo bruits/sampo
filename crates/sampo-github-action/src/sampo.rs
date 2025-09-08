@@ -205,12 +205,8 @@ fn detect_fixed_dependency_policy_bumps(
     let changesets = load_changesets(&changesets_dir).map_err(ActionError::Io)?;
 
     let bumped_packages: std::collections::BTreeSet<String> = releases.keys().cloned().collect();
-    let policy_packages = detect_fixed_dependency_policy_packages(
-        &changesets,
-        &ws,
-        &config,
-        &bumped_packages,
-    );
+    let policy_packages =
+        detect_fixed_dependency_policy_packages(&changesets, &ws, &config, &bumped_packages);
 
     for (pkg_name, policy_bump) in policy_packages {
         // For the GitHub Action, we need to determine the actual bump from the version change

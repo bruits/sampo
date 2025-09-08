@@ -99,7 +99,7 @@ pub fn detect_fixed_dependency_policy_packages(
 
     // Find packages that need fixed dependency policy messages
     let mut result = BTreeMap::new();
-    
+
     for pkg_name in bumped_packages {
         // Skip if package has direct changeset
         if packages_with_changesets.contains(pkg_name) {
@@ -123,11 +123,13 @@ pub fn detect_fixed_dependency_policy_packages(
 
                 if has_affected_group_member {
                     // Find the highest bump level in the group to determine the policy bump
-                    let group_bump = group.iter()
+                    let group_bump = group
+                        .iter()
                         .filter_map(|member| {
                             if packages_with_changesets.contains(member) {
                                 // Find the highest bump from changesets affecting this member
-                                changesets.iter()
+                                changesets
+                                    .iter()
                                     .filter(|cs| cs.packages.contains(member))
                                     .map(|cs| cs.bump)
                                     .max()
@@ -137,7 +139,7 @@ pub fn detect_fixed_dependency_policy_packages(
                         })
                         .max()
                         .unwrap_or(Bump::Patch);
-                    
+
                     result.insert(pkg_name.clone(), group_bump);
                     break;
                 }
