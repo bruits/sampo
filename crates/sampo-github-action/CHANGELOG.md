@@ -1,5 +1,13 @@
 # sampo-github-action
 
+## 0.2.1
+
+### Patch changes
+
+- [7397d24](https://github.com/bruits/sampo/commit/7397d24eb0276de3e8aaef6246a4c7b628cfa2a8) Fixed changelog enrichment not working. — Thanks Goulven Clec'h!
+- Updated dependencies: sampo-core@0.1.0
+
+
 ## 0.2.0
 
 ### Minor changes
