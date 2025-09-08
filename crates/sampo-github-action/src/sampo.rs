@@ -1,9 +1,8 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    Bump, Config, build_dependency_updates, create_dependency_update_entry,
-    create_fixed_dependency_policy_entry, detect_changesets_dir,
-    detect_fixed_dependency_policy_packages, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    Bump, Config, detect_all_dependency_explanations, detect_changesets_dir,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    get_commit_hash_for_path, load_changesets,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -121,130 +120,6 @@ pub fn run_publish(
     Ok(())
 }
 
-/// Detect automatic dependency updates for crates that are being released
-///
-/// This function identifies crates that have been auto-bumped due to internal
-/// dependency updates and creates appropriate changelog entries for them.
-fn detect_dependency_updates(
-    workspace: &Path,
-    releases: &BTreeMap<String, (String, String)>,
-    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
-) -> Result<()> {
-    let ws = discover_workspace(workspace)
-        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
-    let changesets_dir = detect_changesets_dir(workspace);
-    let changesets = load_changesets(&changesets_dir).map_err(ActionError::Io)?;
-
-    // Collect explicitly changed packages from changesets
-    let mut explicitly_changed = std::collections::BTreeSet::new();
-    for cs in &changesets {
-        for pkg in &cs.packages {
-            explicitly_changed.insert(pkg.clone());
-        }
-    }
-
-    // Build new version lookup from releases
-    let mut new_version_by_name = std::collections::BTreeMap::new();
-    for (name, (_old, new_ver)) in releases {
-        new_version_by_name.insert(name.clone(), new_ver.clone());
-    }
-
-    // Build map of crate name -> CrateInfo for quick lookup
-    let mut by_name = std::collections::BTreeMap::new();
-    for c in &ws.members {
-        by_name.insert(c.name.clone(), c);
-    }
-
-    // For each released crate that wasn't explicitly changed,
-    // check if it has internal dependencies that were updated
-    for crate_name in releases.keys() {
-        if explicitly_changed.contains(crate_name) {
-            // Skip explicitly changed crates - they have their own changelog entries
-            continue;
-        }
-
-        if let Some(crate_info) = by_name.get(crate_name) {
-            // Find which internal dependencies were updated
-            let mut updated_deps = Vec::new();
-            for dep_name in &crate_info.internal_deps {
-                if let Some(new_version) = new_version_by_name.get(dep_name) {
-                    // This internal dependency was updated
-                    updated_deps.push((dep_name.clone(), new_version.clone()));
-                }
-            }
-
-            if !updated_deps.is_empty() {
-                // Create dependency update entry
-                let updates = build_dependency_updates(&updated_deps);
-                if let Some((msg, bump)) = create_dependency_update_entry(&updates) {
-                    messages_by_pkg
-                        .entry(crate_name.clone())
-                        .or_default()
-                        .push((msg, bump));
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Detect packages bumped due to fixed dependency group policy
-///
-/// Identifies packages that were bumped solely due to fixed dependency group policy
-/// and adds explanatory messages to the PR body.
-fn detect_fixed_dependency_policy_bumps(
-    workspace: &Path,
-    releases: &BTreeMap<String, (String, String)>,
-    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
-) -> Result<()> {
-    let ws = discover_workspace(workspace)
-        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
-    let config = Config::load(workspace).unwrap_or_default();
-    let changesets_dir = detect_changesets_dir(workspace);
-    let changesets = load_changesets(&changesets_dir).map_err(ActionError::Io)?;
-
-    let bumped_packages: std::collections::BTreeSet<String> = releases.keys().cloned().collect();
-    let policy_packages =
-        detect_fixed_dependency_policy_packages(&changesets, &ws, &config, &bumped_packages);
-
-    for (pkg_name, policy_bump) in policy_packages {
-        // For the GitHub Action, we need to determine the actual bump from the version change
-        // because the policy_packages function returns the changeset bump, not the final bump
-        let actual_bump = if let Some((old_ver, new_ver)) = releases.get(&pkg_name) {
-            infer_bump_from_versions(old_ver, new_ver)
-        } else {
-            policy_bump
-        };
-
-        let (msg, bump_type) = create_fixed_dependency_policy_entry(actual_bump);
-        messages_by_pkg
-            .entry(pkg_name)
-            .or_default()
-            .push((msg, bump_type));
-    }
-
-    Ok(())
-}
-
-/// Infer bump type from version changes
-fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
-    let old_parts: Vec<u32> = old_ver.split('.').filter_map(|s| s.parse().ok()).collect();
-    let new_parts: Vec<u32> = new_ver.split('.').filter_map(|s| s.parse().ok()).collect();
-
-    if old_parts.len() >= 3 && new_parts.len() >= 3 {
-        if new_parts[0] > old_parts[0] {
-            Bump::Major
-        } else if new_parts[1] > old_parts[1] {
-            Bump::Minor
-        } else {
-            Bump::Patch
-        }
-    } else {
-        Bump::Patch
-    }
-}
-
 /// Compute a markdown PR body summarizing the pending release by crate,
 /// grouping changes by semantic bump type, and showing old -> new versions.
 ///
@@ -265,6 +140,10 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
 
     let changesets_dir = detect_changesets_dir(workspace);
     let changesets = load_changesets(&changesets_dir)?;
+
+    // Load workspace for dependency explanations
+    let ws = discover_workspace(workspace)
+        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
 
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
@@ -311,11 +190,16 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
         }
     }
 
-    // Add automatic dependency update messages for auto-bumped crates
-    detect_dependency_updates(workspace, &releases, &mut messages_by_pkg)?;
+    // Add automatic dependency explanations using unified function
+    let explanations = detect_all_dependency_explanations(&changesets, &ws, &config, &releases);
 
-    // Add policy messages for packages bumped due to fixed dependency groups
-    detect_fixed_dependency_policy_bumps(workspace, &releases, &mut messages_by_pkg)?;
+    // Merge explanations into messages_by_pkg
+    for (pkg_name, explanations) in explanations {
+        messages_by_pkg
+            .entry(pkg_name)
+            .or_default()
+            .extend(explanations);
+    }
 
     // Compose header
     let mut output = String::new();

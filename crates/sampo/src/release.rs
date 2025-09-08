@@ -1,8 +1,8 @@
 use crate::cli::ReleaseArgs;
 use sampo_core::{
-    Bump, Config, CrateInfo, build_dependency_updates, create_dependency_update_entry,
-    detect_changesets_dir, detect_github_repo_slug_with_config, discover_workspace,
-    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    Bump, Config, CrateInfo, detect_all_dependency_explanations, detect_changesets_dir,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    get_commit_hash_for_path, load_changesets,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -55,15 +55,6 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
     apply_dependency_cascade(&mut bump_by_pkg, &dependents, &cfg);
     apply_linked_dependencies(&mut bump_by_pkg, &cfg);
 
-    // Add explanatory messages for packages bumped by policy
-    add_fixed_dependency_policy_messages(
-        &bump_by_pkg,
-        &mut messages_by_pkg,
-        &changesets,
-        &ws,
-        &cfg,
-    );
-
     // Prepare and validate release plan
     let releases = prepare_release_plan(&bump_by_pkg, &ws)?;
     if releases.is_empty() {
@@ -79,7 +70,7 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
     }
 
     // Apply changes
-    apply_releases(&releases, &ws, &mut messages_by_pkg)?;
+    apply_releases(&releases, &ws, &mut messages_by_pkg, &changesets, &cfg)?;
 
     // Clean up
     cleanup_consumed_changesets(used_paths)?;
@@ -259,30 +250,6 @@ fn apply_linked_dependencies(bump_by_pkg: &mut BTreeMap<String, Bump>, cfg: &Con
     }
 }
 
-/// Add policy messages for packages bumped due to fixed dependency groups
-///
-/// Identifies packages that were bumped solely due to fixed dependency group policy
-/// and adds explanatory messages to their changelogs.
-fn add_fixed_dependency_policy_messages(
-    bump_by_pkg: &BTreeMap<String, Bump>,
-    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
-    changesets: &[sampo_core::ChangesetInfo],
-    ws: &sampo_core::Workspace,
-    cfg: &Config,
-) {
-    let bumped_packages: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
-    let policy_packages =
-        sampo_core::detect_fixed_dependency_policy_packages(changesets, ws, cfg, &bumped_packages);
-
-    for (pkg_name, bump) in policy_packages {
-        let (msg, bump_type) = sampo_core::create_fixed_dependency_policy_entry(bump);
-        messages_by_pkg
-            .entry(pkg_name)
-            .or_default()
-            .push((msg, bump_type));
-    }
-}
-
 /// Prepare the release plan by matching bumps to workspace members
 fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
@@ -325,6 +292,8 @@ fn apply_releases(
     releases: &ReleasePlan,
     ws: &sampo_core::Workspace,
     messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
+    changesets: &[sampo_core::ChangesetInfo],
+    cfg: &Config,
 ) -> io::Result<()> {
     // Build lookup maps
     let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
@@ -337,27 +306,34 @@ fn apply_releases(
         new_version_by_name.insert(name.clone(), newv.clone());
     }
 
+    // Build releases map for dependency explanations
+    let releases_map: BTreeMap<String, (String, String)> = releases
+        .iter()
+        .map(|(name, old, new)| (name.clone(), (old.clone(), new.clone())))
+        .collect();
+
+    // Use unified function to detect all dependency explanations
+    let dependency_explanations =
+        detect_all_dependency_explanations(changesets, ws, cfg, &releases_map);
+
+    // Merge dependency explanations into existing messages
+    for (pkg_name, explanations) in dependency_explanations {
+        messages_by_pkg
+            .entry(pkg_name)
+            .or_default()
+            .extend(explanations);
+    }
+
     // Apply updates for each release
     for (name, old, newv) in releases {
         let info = by_name.get(name.as_str()).unwrap();
         let manifest_path = info.path.join("Cargo.toml");
         let text = fs::read_to_string(&manifest_path)?;
 
-        // Update manifest and collect which internal deps were retargeted
-        let (updated, dep_updates) =
+        // Update manifest versions
+        let (updated, _dep_updates) =
             update_manifest_versions(&text, Some(newv.as_str()), ws, &new_version_by_name)?;
         fs::write(&manifest_path, updated)?;
-
-        // Augment messages with dependency update notes
-        if !dep_updates.is_empty() {
-            let updates = build_dependency_updates(&dep_updates);
-            if let Some((msg, bump)) = create_dependency_update_entry(&updates) {
-                messages_by_pkg
-                    .entry(name.clone())
-                    .or_default()
-                    .push((msg, bump));
-            }
-        }
 
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
         update_changelog(&info.path, name, old, newv, &messages)?;

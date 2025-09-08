@@ -4,4 +4,4 @@ packages:
 release: minor
 ---
 
-Release PR's changelogs now include clear explanations for automatic version bumps, ensuring transparency in automated dependency management. For example: "Updated dependencies: name@x.x.x" for cascade bumps, and "Bumped due to fixed dependency group policy" for fixed group updates.
+Release PR's changelogs now include clear explanations for automatic version bumps. For example: "Updated dependencies: name@x.x.x" for cascade bumps, and "Bumped due to fixed dependency group policy" for fixed group updates.
