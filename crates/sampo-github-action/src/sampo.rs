@@ -1,6 +1,7 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    Bump, Config, detect_changesets_dir, detect_github_repo_slug_with_config,
+    Bump, Config, build_dependency_updates, create_dependency_update_entry,
+    detect_changesets_dir, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use std::collections::BTreeMap;
@@ -119,6 +120,73 @@ pub fn run_publish(
     Ok(())
 }
 
+/// Detect automatic dependency updates for crates that are being released
+///
+/// This function identifies crates that have been auto-bumped due to internal
+/// dependency updates and creates appropriate changelog entries for them.
+fn detect_dependency_updates(
+    workspace: &Path,
+    releases: &BTreeMap<String, (String, String)>,
+    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
+) -> Result<()> {
+    let ws = discover_workspace(workspace).map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
+    let changesets_dir = detect_changesets_dir(workspace);
+    let changesets = load_changesets(&changesets_dir).map_err(ActionError::Io)?;
+
+    // Collect explicitly changed packages from changesets
+    let mut explicitly_changed = std::collections::BTreeSet::new();
+    for cs in &changesets {
+        for pkg in &cs.packages {
+            explicitly_changed.insert(pkg.clone());
+        }
+    }
+
+    // Build new version lookup from releases
+    let mut new_version_by_name = std::collections::BTreeMap::new();
+    for (name, (_old, new_ver)) in releases {
+        new_version_by_name.insert(name.clone(), new_ver.clone());
+    }
+
+    // Build map of crate name -> CrateInfo for quick lookup
+    let mut by_name = std::collections::BTreeMap::new();
+    for c in &ws.members {
+        by_name.insert(c.name.clone(), c);
+    }
+
+    // For each released crate that wasn't explicitly changed,
+    // check if it has internal dependencies that were updated
+    for crate_name in releases.keys() {
+        if explicitly_changed.contains(crate_name) {
+            // Skip explicitly changed crates - they have their own changelog entries
+            continue;
+        }
+
+        if let Some(crate_info) = by_name.get(crate_name) {
+            // Find which internal dependencies were updated
+            let mut updated_deps = Vec::new();
+            for dep_name in &crate_info.internal_deps {
+                if let Some(new_version) = new_version_by_name.get(dep_name) {
+                    // This internal dependency was updated
+                    updated_deps.push((dep_name.clone(), new_version.clone()));
+                }
+            }
+
+            if !updated_deps.is_empty() {
+                // Create dependency update entry
+                let updates = build_dependency_updates(&updated_deps);
+                if let Some((msg, bump)) = create_dependency_update_entry(&updates) {
+                    messages_by_pkg
+                        .entry(crate_name.clone())
+                        .or_default()
+                        .push((msg, bump));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Compute a markdown PR body summarizing the pending release by crate,
 /// grouping changes by semantic bump type, and showing old -> new versions.
 ///
@@ -182,6 +250,9 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
             }
         }
     }
+
+    // Add automatic dependency update messages for auto-bumped crates
+    detect_dependency_updates(workspace, &releases, &mut messages_by_pkg)?;
 
     // Compose header
     let mut output = String::new();
@@ -340,5 +411,57 @@ No changesets found for other-pkg";
         // Should only have 2 unique messages
         assert_eq!(major_changes.len(), 2);
         assert_eq!(major_changes, vec!["Fix critical bug", "Add new feature"]);
+    }
+
+    #[test]
+    fn test_dependency_updates_in_pr_body() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create workspace structure
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // a depends on b
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"0.1.0\" }\n",
+        )
+        .unwrap();
+
+        // Create a changeset that only affects b
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-minor.md"),
+            "---\npackages:\n  - b\nrelease: minor\n---\n\nfeat: b adds new feature\n",
+        )
+        .unwrap();
+
+        // Simulate the output from `sampo release --dry-run`
+        let plan_stdout = "Planned releases:\n  a: 0.1.0 -> 0.1.1\n  b: 0.1.0 -> 0.2.0\n";
+
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout).unwrap();
+
+        // Should contain dependency update information for package a
+        assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
+        assert!(pr_body.contains("## b 0.1.0 -> 0.2.0"));
+        assert!(pr_body.contains("feat: b adds new feature"));
+        assert!(pr_body.contains("Updated dependencies: b@0.2.0"));
     }
 }

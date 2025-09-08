@@ -49,6 +49,11 @@ An helpful description of the changes.
 
 **Release**: The process of consuming changesets to bump package versions, update changelogs, and create git tags. Sampo works seamlessly with **monorepos** containing multiple packages and supports publishing to **multiple registries** across different ecosystems.
 
+**Internal dependencies**: Sampo detects packages within the same repository that depend on each other, and automatically manages their versions.
+  - By default, automatically patch dependent packages when an internal dependency is updated. Example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch) if it wasn't explicitly changed.
+  - **Linked dependencies** — *Coming soon*.
+  - **Fixed dependencies** (see [configuration](#configuration)) bump together with the parent package, even if not directly affected by changes. Example: if `a@1.0.0` depends on `b@1.0.0` and `b` is updated to `2.0.0`, then `a` will also be bumped to `2.0.0` (major).
+
 ### Usage
 
 **Creating a changeset**: Use `sampo add` to create a new changeset file. The command guides you through selecting packages and describing changes. Use [Sampo GitHub bot](https://github.com/bruits/sampo/tree/main/crates/sampo-github-bot) to get reminders on each PR without a changeset.

@@ -2,6 +2,13 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+/// Information about a dependency update during release
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyUpdate {
+    pub name: String,
+    pub new_version: String,
+}
+
 /// Information about a crate in the workspace
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateInfo {

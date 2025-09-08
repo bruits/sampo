@@ -1,7 +1,8 @@
 use crate::cli::ReleaseArgs;
 use sampo_core::{
-    Bump, Config, CrateInfo, detect_changesets_dir, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    Bump, Config, CrateInfo, build_dependency_updates, create_dependency_update_entry,
+    detect_changesets_dir, detect_github_repo_slug_with_config, discover_workspace,
+    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -164,15 +165,13 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
 
         // Augment messages with dependency update notes
         if !dep_updates.is_empty() {
-            let mut parts: Vec<String> = Vec::new();
-            for (dep, ver) in dep_updates {
-                parts.push(format!("{} -> {}", dep, ver));
+            let updates = build_dependency_updates(&dep_updates);
+            if let Some((msg, bump)) = create_dependency_update_entry(&updates) {
+                messages_by_pkg
+                    .entry(name.clone())
+                    .or_default()
+                    .push((msg, bump));
             }
-            let msg = format!("chore(deps): update internal deps ({}).", parts.join(", "));
-            messages_by_pkg
-                .entry(name.clone())
-                .or_default()
-                .push((msg, Bump::Patch));
         }
 
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
