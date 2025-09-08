@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 pub fn run(args: &PublishArgs) -> io::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -195,33 +196,40 @@ fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) -> io:
 
 fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Result<bool> {
     // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
-    // Use `curl` to avoid adding a crate dependency. Only the status code is needed.
     let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
-    let out = Command::new("curl")
-        .arg("-sS")
-        .arg("-o")
-        .arg("/dev/null")
-        .arg("-w")
-        .arg("%{http_code}")
-        .arg(&url)
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            match code.as_str() {
-                "200" => Ok(true),  // version exists
-                "404" => Ok(false), // version not found
-                _ => Err(io::Error::other(format!(
-                    "unexpected HTTP status from crates.io: {}",
-                    code
-                ))),
-            }
-        }
-        Ok(o) => Err(io::Error::other(format!(
-            "curl failed with status {}",
-            o.status
-        ))),
-        Err(e) => Err(io::Error::other(format!("failed to run curl: {}", e))),
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .user_agent("sampo/0.4.0")
+        .build()
+        .map_err(|e| io::Error::other(format!("failed to build HTTP client: {}", e)))?;
+
+    let res = client
+        .get(&url)
+        .send()
+        .map_err(|e| io::Error::other(format!("HTTP request failed: {}", e)))?;
+
+    let status = res.status();
+    if status == reqwest::StatusCode::OK {
+        Ok(true)
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        Ok(false)
+    } else {
+        // Include a short, normalized snippet of the response body for diagnostics
+        let body = res.text().unwrap_or_default();
+        let snippet: String = body.trim().chars().take(500).collect();
+        let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        let body_part = if snippet.is_empty() {
+            String::new()
+        } else {
+            format!(" body=\"{}\"", snippet)
+        };
+
+        Err(io::Error::other(format!(
+            "Crates.io {} response: {}",
+            status, body_part
+        )))
     }
 }
 
