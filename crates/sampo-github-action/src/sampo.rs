@@ -1,8 +1,9 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    Bump, Config, build_dependency_updates, create_dependency_update_entry, detect_changesets_dir,
-    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    get_commit_hash_for_path, load_changesets,
+    Bump, Config, build_dependency_updates, create_dependency_update_entry,
+    create_fixed_dependency_policy_entry, detect_changesets_dir,
+    detect_fixed_dependency_policy_packages, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -188,6 +189,66 @@ fn detect_dependency_updates(
     Ok(())
 }
 
+/// Detect packages bumped due to fixed dependency group policy
+///
+/// Identifies packages that were bumped solely due to fixed dependency group policy
+/// and adds explanatory messages to the PR body.
+fn detect_fixed_dependency_policy_bumps(
+    workspace: &Path,
+    releases: &BTreeMap<String, (String, String)>,
+    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
+) -> Result<()> {
+    let ws = discover_workspace(workspace)
+        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
+    let config = Config::load(workspace).unwrap_or_default();
+    let changesets_dir = detect_changesets_dir(workspace);
+    let changesets = load_changesets(&changesets_dir).map_err(ActionError::Io)?;
+
+    let bumped_packages: std::collections::BTreeSet<String> = releases.keys().cloned().collect();
+    let policy_packages = detect_fixed_dependency_policy_packages(
+        &changesets,
+        &ws,
+        &config,
+        &bumped_packages,
+    );
+
+    for (pkg_name, policy_bump) in policy_packages {
+        // For the GitHub Action, we need to determine the actual bump from the version change
+        // because the policy_packages function returns the changeset bump, not the final bump
+        let actual_bump = if let Some((old_ver, new_ver)) = releases.get(&pkg_name) {
+            infer_bump_from_versions(old_ver, new_ver)
+        } else {
+            policy_bump
+        };
+
+        let (msg, bump_type) = create_fixed_dependency_policy_entry(actual_bump);
+        messages_by_pkg
+            .entry(pkg_name)
+            .or_default()
+            .push((msg, bump_type));
+    }
+
+    Ok(())
+}
+
+/// Infer bump type from version changes
+fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
+    let old_parts: Vec<u32> = old_ver.split('.').filter_map(|s| s.parse().ok()).collect();
+    let new_parts: Vec<u32> = new_ver.split('.').filter_map(|s| s.parse().ok()).collect();
+
+    if old_parts.len() >= 3 && new_parts.len() >= 3 {
+        if new_parts[0] > old_parts[0] {
+            Bump::Major
+        } else if new_parts[1] > old_parts[1] {
+            Bump::Minor
+        } else {
+            Bump::Patch
+        }
+    } else {
+        Bump::Patch
+    }
+}
+
 /// Compute a markdown PR body summarizing the pending release by crate,
 /// grouping changes by semantic bump type, and showing old -> new versions.
 ///
@@ -256,6 +317,9 @@ pub fn build_release_pr_body_from_stdout(workspace: &Path, plan_stdout: &str) ->
 
     // Add automatic dependency update messages for auto-bumped crates
     detect_dependency_updates(workspace, &releases, &mut messages_by_pkg)?;
+
+    // Add policy messages for packages bumped due to fixed dependency groups
+    detect_fixed_dependency_policy_bumps(workspace, &releases, &mut messages_by_pkg)?;
 
     // Compose header
     let mut output = String::new();
@@ -466,5 +530,132 @@ No changesets found for other-pkg";
         assert!(pr_body.contains("## b 0.1.0 -> 0.2.0"));
         assert!(pr_body.contains("feat: b adds new feature"));
         assert!(pr_body.contains("Updated dependencies: b@0.2.0"));
+    }
+
+    #[test]
+    fn test_fixed_dependencies_in_pr_body() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create workspace structure
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // a depends on b
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"1.0.0\" }\n",
+        )
+        .unwrap();
+
+        // Create sampo config with fixed dependencies
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(&sampo_dir).unwrap();
+        fs::write(
+            sampo_dir.join("config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+        )
+        .unwrap();
+
+        // Create a changeset that only affects b
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-major.md"),
+            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b breaking change\n",
+        )
+        .unwrap();
+
+        // Simulate the output from `sampo release --dry-run` for fixed dependencies
+        let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
+
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout).unwrap();
+
+        // Should contain information for both packages with same version
+        assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("## b 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("breaking: b breaking change"));
+        // Fixed dependency should show dependency update too
+        assert!(pr_body.contains("Updated dependencies: b@2.0.0"));
+    }
+
+    #[test]
+    fn test_fixed_dependencies_without_actual_dependency() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Create workspace structure
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let a_dir = root.join("crates/a");
+        let b_dir = root.join("crates/b");
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::create_dir_all(&b_dir).unwrap();
+
+        fs::write(
+            b_dir.join("Cargo.toml"),
+            "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // a does NOT depend on b (important difference)
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"1.0.0\"\n",
+        )
+        .unwrap();
+
+        // Create sampo config with fixed dependencies
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(&sampo_dir).unwrap();
+        fs::write(
+            sampo_dir.join("config.toml"),
+            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+        )
+        .unwrap();
+
+        // Create a changeset that only affects b
+        let csdir = root.join(".sampo/changesets");
+        fs::create_dir_all(&csdir).unwrap();
+        fs::write(
+            csdir.join("b-major.md"),
+            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b breaking change\n",
+        )
+        .unwrap();
+
+        // Simulate the output from `sampo release --dry-run` for fixed dependencies
+        let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
+
+        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout).unwrap();
+
+        println!("PR Body:\n{}", pr_body);
+
+        // Should contain information for both packages with same version
+        assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("## b 1.0.0 -> 2.0.0"));
+        assert!(pr_body.contains("breaking: b breaking change"));
+
+        // FIXED: Package 'a' should now have an explanation for the bump!
+        assert!(pr_body.contains("Bumped due to fixed dependency group policy"));
     }
 }

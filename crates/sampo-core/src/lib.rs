@@ -18,7 +18,8 @@ pub use enrichment::{
 };
 pub use errors::SampoError;
 pub use release::{
-    build_dependency_updates, create_dependency_update_entry, format_dependency_updates_message,
+    build_dependency_updates, create_dependency_update_entry, create_fixed_dependency_policy_entry,
+    detect_fixed_dependency_policy_packages, format_dependency_updates_message,
 };
 pub use types::{Bump, CrateInfo, DependencyUpdate, Workspace};
 pub use workspace::{WorkspaceError, discover_workspace, parse_workspace_members};

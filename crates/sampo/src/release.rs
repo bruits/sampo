@@ -55,6 +55,15 @@ pub fn run_in(root: &std::path::Path, args: &ReleaseArgs) -> io::Result<()> {
     apply_dependency_cascade(&mut bump_by_pkg, &dependents, &cfg);
     apply_linked_dependencies(&mut bump_by_pkg, &cfg);
 
+    // Add explanatory messages for packages bumped by policy
+    add_fixed_dependency_policy_messages(
+        &bump_by_pkg,
+        &mut messages_by_pkg,
+        &changesets,
+        &ws,
+        &cfg,
+    );
+
     // Prepare and validate release plan
     let releases = prepare_release_plan(&bump_by_pkg, &ws)?;
     if releases.is_empty() {
@@ -247,6 +256,34 @@ fn apply_linked_dependencies(bump_by_pkg: &mut BTreeMap<String, Bump>, cfg: &Con
                 }
             }
         }
+    }
+}
+
+/// Add policy messages for packages bumped due to fixed dependency groups
+///
+/// Identifies packages that were bumped solely due to fixed dependency group policy
+/// and adds explanatory messages to their changelogs.
+fn add_fixed_dependency_policy_messages(
+    bump_by_pkg: &BTreeMap<String, Bump>,
+    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
+    changesets: &[sampo_core::ChangesetInfo],
+    ws: &sampo_core::Workspace,
+    cfg: &Config,
+) {
+    let bumped_packages: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
+    let policy_packages = sampo_core::detect_fixed_dependency_policy_packages(
+        changesets,
+        ws,
+        cfg,
+        &bumped_packages,
+    );
+
+    for (pkg_name, bump) in policy_packages {
+        let (msg, bump_type) = sampo_core::create_fixed_dependency_policy_entry(bump);
+        messages_by_pkg
+            .entry(pkg_name)
+            .or_default()
+            .push((msg, bump_type));
     }
 }
 
@@ -857,6 +894,16 @@ mod tests {
                 changelog
             );
         }
+
+        fn read_changelog(&self, crate_name: &str) -> String {
+            let crate_dir = self.crates.get(crate_name).expect("crate must exist");
+            let changelog_path = crate_dir.join("CHANGELOG.md");
+            if changelog_path.exists() {
+                fs::read_to_string(changelog_path).unwrap()
+            } else {
+                String::new()
+            }
+        }
     }
 
     #[test]
@@ -977,9 +1024,10 @@ mod tests {
         workspace.assert_crate_version("a", "0.1.1");
         workspace.assert_dependency_version("a", "b", "0.2.0");
 
-        // Changelog for a exists with 0.1.1 section
+        // Changelog for a exists with 0.1.1 section and dependency update message
         workspace.assert_changelog_contains("a", "# a");
         workspace.assert_changelog_contains("a", "## 0.1.1");
+        workspace.assert_changelog_contains("a", "Updated dependencies: b@0.2.0");
     }
 
     #[test]
@@ -1004,6 +1052,8 @@ mod tests {
         workspace.assert_changelog_contains("a", "## 2.0.0");
         workspace.assert_changelog_contains("b", "# b");
         workspace.assert_changelog_contains("b", "## 2.0.0");
+        // Check that the automatically bumped package 'a' has dependency update message
+        workspace.assert_changelog_contains("a", "Updated dependencies: b@2.0.0");
     }
 
     #[test]
@@ -1103,6 +1153,9 @@ mod tests {
         workspace.assert_crate_version("a", "1.1.0");
         workspace.assert_crate_version("b", "1.1.0");
         workspace.assert_crate_version("c", "1.1.0");
+
+        // Check that auto-bumped package 'a' has dependency update message
+        workspace.assert_changelog_contains("a", "Updated dependencies: b@1.1.0");
     }
 
     #[test]
@@ -1124,6 +1177,186 @@ mod tests {
 
         // c should remain unchanged (not affected by dependency cascade)
         workspace.assert_crate_version("c", "1.0.0");
+    }
+
+    #[test]
+    fn linked_dependencies_comprehensive_behavior() {
+        // Comprehensive test to document linked dependencies behavior
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("affected_directly", "1.0.0")      // Has changeset
+            .add_crate("affected_by_cascade", "1.0.0")    // Depends on affected_directly  
+            .add_crate("unaffected_in_group", "1.0.0")    // In group but no relation
+            .add_crate("outside_group", "1.0.0")          // Not in group at all
+            .add_dependency("affected_by_cascade", "affected_directly", "1.0.0")
+            .set_config("[packages]\nlinked_dependencies = [[\"affected_directly\", \"affected_by_cascade\", \"unaffected_in_group\"]]\n")
+            .add_changeset(&["affected_directly"], Bump::Minor, "feat: new feature");
+
+        workspace.run_release(false).unwrap();
+
+        // affected_directly: has changeset -> bumped to 1.1.0 (minor)
+        workspace.assert_crate_version("affected_directly", "1.1.0");
+
+        // affected_by_cascade: depends on affected_directly -> bumped by cascade,
+        // then upgraded to 1.1.0 due to linked group highest bump
+        workspace.assert_crate_version("affected_by_cascade", "1.1.0");
+
+        // unaffected_in_group: in linked group but no changeset and no dependencies
+        // -> should NOT be bumped (key behavior!)
+        workspace.assert_crate_version("unaffected_in_group", "1.0.0");
+
+        // outside_group: not in any group -> should NOT be bumped
+        workspace.assert_crate_version("outside_group", "1.0.0");
+
+        // Verify changelogs
+        workspace.assert_changelog_contains("affected_directly", "feat: new feature");
+        workspace.assert_changelog_contains(
+            "affected_by_cascade",
+            "Updated dependencies: affected_directly@1.1.0",
+        );
+
+        // unaffected_in_group should have no changelog (not bumped)
+        let changelog = workspace.read_changelog("unaffected_in_group");
+        assert!(
+            changelog.is_empty(),
+            "unaffected_in_group should have no changelog"
+        );
+    }
+
+    #[test]
+    fn linked_dependencies_multiple_direct_changes() {
+        // Test case: multiple packages in linked group have their own changesets
+        // The unaffected package should still not be bumped
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("pkg_a", "1.0.0")           // Has major changeset
+            .add_crate("pkg_b", "1.0.0")           // Has minor changeset  
+            .add_crate("pkg_c", "1.0.0")           // In group but no changeset, no deps
+            .add_crate("pkg_d", "1.0.0")           // Depends on pkg_a
+            .add_dependency("pkg_d", "pkg_a", "1.0.0")
+            .set_config("[packages]\nlinked_dependencies = [[\"pkg_a\", \"pkg_b\", \"pkg_c\", \"pkg_d\"]]\n")
+            .add_changeset(&["pkg_a"], Bump::Major, "breaking: major change in a")
+            .add_changeset(&["pkg_b"], Bump::Minor, "feat: minor change in b");
+
+        workspace.run_release(false).unwrap();
+
+        // pkg_a: major changeset -> 2.0.0 (highest bump in group)
+        workspace.assert_crate_version("pkg_a", "2.0.0");
+
+        // pkg_b: minor changeset, but upgraded to major due to linked group -> 2.0.0
+        workspace.assert_crate_version("pkg_b", "2.0.0");
+
+        // pkg_d: depends on pkg_a, affected by cascade, upgraded to major -> 2.0.0
+        workspace.assert_crate_version("pkg_d", "2.0.0");
+
+        // pkg_c: in linked group but no changeset and no dependencies -> NOT bumped
+        workspace.assert_crate_version("pkg_c", "1.0.0");
+
+        // Verify changelog messages
+        workspace.assert_changelog_contains("pkg_a", "breaking: major change in a");
+        workspace.assert_changelog_contains("pkg_b", "feat: minor change in b");
+        workspace.assert_changelog_contains("pkg_d", "Updated dependencies: pkg_a@2.0.0");
+
+        // pkg_c should have no changelog
+        let changelog = workspace.read_changelog("pkg_c");
+        assert!(
+            changelog.is_empty(),
+            "pkg_c should have no changelog since it wasn't affected"
+        );
+    }
+
+    #[test]
+    fn fixed_dependencies_without_actual_dependency() {
+        // Test case: two packages in fixed group but no actual dependency between them
+        // Should the auto-bumped package still show "Updated dependencies" message?
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            // Note: no dependency between a and b
+            .set_config("[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n")
+            .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
+
+        workspace.run_release(false).unwrap();
+
+        // Both should be bumped to 2.0.0 (same level as fixed dependencies)
+        workspace.assert_crate_version("a", "2.0.0");
+        workspace.assert_crate_version("b", "2.0.0");
+
+        // The question: should 'a' have "Updated dependencies" message when
+        // it doesn't actually depend on 'b'? Currently it won't because
+        // apply_releases only adds dependency update messages for actual dependencies.
+
+        // Let's verify this behavior
+        workspace.assert_changelog_contains("a", "# a");
+        workspace.assert_changelog_contains("a", "## 2.0.0");
+        // This should NOT contain "Updated dependencies" since there's no actual dependency
+
+        // Let's check what the actual changelog content is
+        let changelog_content = workspace.read_changelog("a");
+        println!("Changelog content for 'a':\n{}", changelog_content);
+
+        // Package 'a' should have a changelog but with empty sections since no explicit changes
+        assert!(!changelog_content.contains("Updated dependencies"));
+        assert!(!changelog_content.contains("breaking: b breaking change"));
+
+        // FIXED: Package 'a' should now have an explanation for why it was bumped!
+        workspace.assert_changelog_contains("a", "Bumped due to fixed dependency group policy");
+    }
+
+    #[test]
+    fn fixed_dependencies_complex_scenario() {
+        // Test case: multiple packages in fixed group, some with dependencies, some without
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("pkg_a", "1.0.0") // In group but no changes, no dependencies
+            .add_crate("pkg_b", "1.0.0") // In group with changeset
+            .add_crate("pkg_c", "1.0.0") // In group, depends on pkg_d (outside group)
+            .add_crate("pkg_d", "1.0.0") // Not in group but has changeset
+            .add_dependency("pkg_c", "pkg_d", "1.0.0")
+            .set_config("[packages]\nfixed_dependencies = [[\"pkg_a\", \"pkg_b\", \"pkg_c\"]]\n")
+            .add_changeset(&["pkg_b"], Bump::Minor, "feat: pkg_b new feature")
+            .add_changeset(&["pkg_d"], Bump::Patch, "fix: pkg_d bug fix");
+
+        workspace.run_release(false).unwrap();
+
+        // All packages in fixed group should be bumped to 1.1.0 (highest bump in group)
+        workspace.assert_crate_version("pkg_a", "1.1.0");
+        workspace.assert_crate_version("pkg_b", "1.1.0");
+        workspace.assert_crate_version("pkg_c", "1.1.0");
+        // pkg_d is bumped to 1.0.1 (its own patch changeset)
+        workspace.assert_crate_version("pkg_d", "1.0.1");
+
+        // Check changelog messages
+        workspace.assert_changelog_contains("pkg_a", "Bumped due to fixed dependency group policy");
+        workspace.assert_changelog_contains("pkg_b", "feat: pkg_b new feature");
+        workspace.assert_changelog_contains("pkg_c", "Updated dependencies: pkg_d@1.0.1");
+        workspace.assert_changelog_contains("pkg_d", "fix: pkg_d bug fix");
+    }
+
+    #[test]
+    fn package_with_both_changeset_and_dependency_update() {
+        // Test case: package has its own changeset AND gets dependency updates
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency("a", "b", "0.1.0")
+            .add_changeset(&["a"], Bump::Minor, "feat: a adds new feature")
+            .add_changeset(&["b"], Bump::Patch, "fix: b bug fix");
+
+        workspace.run_release(false).unwrap();
+
+        // a should be bumped minor (0.2.0) due to its own changeset
+        workspace.assert_crate_version("a", "0.2.0");
+        // b should be bumped patch (0.1.1) due to its changeset
+        workspace.assert_crate_version("b", "0.1.1");
+
+        // a should have both its own message AND dependency update message
+        workspace.assert_changelog_contains("a", "# a");
+        workspace.assert_changelog_contains("a", "## 0.2.0");
+        workspace.assert_changelog_contains("a", "feat: a adds new feature");
+        workspace.assert_changelog_contains("a", "Updated dependencies: b@0.1.1");
     }
 
     /// Test the complete README scenario: multiple releases in sequence
