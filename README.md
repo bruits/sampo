@@ -9,10 +9,7 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 
 Deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna). Enforce [Semantic Versioning](https://semver.org/) (SemVer) across all packages.
 
-Don't know where to start? Check out Sampo's [Getting Started](.crates/sampo/README.md) guide.
-
-> [!WARNING]
-> This project is in early development, most features are not yet implemented, and the API may change dramatically.
+Don't know where to start? Check out Sampo's [Getting Started](./crates/sampo/README.md#getting-started) guide.
 
 ## Crates
 
