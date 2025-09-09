@@ -1,5 +1,12 @@
 # sampo-github-bot
 
+## 0.3.0
+
+### Minor changes
+
+- [cc04060](https://github.com/bruits/sampo/commit/cc040606a59c5372116b203a17ce5e5e9692f133) Test — Thanks @goulvenclech!
+
+
 ## 0.2.1
 
 ### Patch changes

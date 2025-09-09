@@ -1,28 +1,43 @@
-[package]
-name = "sampo-github-bot"
-version = "0.2.1"
-license = "MIT"
-authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
-edition = "2024"
-description = "GitHub App to inspect PRs and ask for changesets if needed"
-homepage = "https://github.com/bruits/sampo"
-repository = "https://github.com/bruits/sampo"
-readme = "README.md"
-keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
-categories = ["development-tools"]
-
 [dependencies]
-axum = { version = "0.7", features = ["macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-octocrab = "0.39"
-hmac = "0.12"
-sha2 = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-http = "1"
-thiserror = "1"
-jsonwebtoken = "9"
 base64 = "0.22"
-reqwest = { version = "0.11", features = ["json"] }
+hmac = "0.12"
+http = "1"
+jsonwebtoken = "9"
+octocrab = "0.39"
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "1"
+tracing = "0.1"
+
+[dependencies.axum]
+features = ["macros"]
+version = "0.7"
+
+[dependencies.reqwest]
+features = ["json"]
+version = "0.11"
+
+[dependencies.serde]
+features = ["derive"]
+version = "1"
+
+[dependencies.tokio]
+features = ["rt-multi-thread", "macros"]
+version = "1"
+
+[dependencies.tracing-subscriber]
+features = ["fmt", "env-filter"]
+version = "0.3"
+
+[package]
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+categories = ["development-tools"]
+description = "GitHub App to inspect PRs and ask for changesets if needed"
+edition = "2024"
+homepage = "https://github.com/bruits/sampo"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+license = "MIT"
+name = "sampo-github-bot"
+readme = "README.md"
+repository = "https://github.com/bruits/sampo"
+version = "0.3.0"

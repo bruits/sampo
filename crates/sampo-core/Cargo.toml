@@ -1,26 +1,25 @@
-[package]
-name = "sampo-core"
-version = "0.2.0"
-license = "MIT"
-authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
-edition = "2024"
-description = "Core types and utilities for Sampo."
-homepage = "https://github.com/bruits/sampo"
-repository = "https://github.com/bruits/sampo"
-readme = "README.md"
-keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
-categories = ["development-tools"]
-
 [dependencies]
 glob = "0.3"
 rustc-hash = "2.0"
 serde_json = "1.0"
 thiserror = "1.0"
 toml = "0.8"
-tempfile = { version = "3.13", optional = true }
-serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.0", features = ["rt", "macros"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+[dependencies.reqwest]
+features = ["json", "blocking"]
+version = "0.12"
+
+[dependencies.serde]
+features = ["derive"]
+version = "1.0"
+
+[dependencies.tempfile]
+optional = true
+version = "3.13"
+
+[dependencies.tokio]
+features = ["rt", "macros"]
+version = "1.0"
 
 [dev-dependencies]
 tempfile = "3.13"
@@ -28,3 +27,16 @@ tempfile = "3.13"
 [features]
 default = []
 testing = ["tempfile"]
+
+[package]
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+categories = ["development-tools"]
+description = "Core types and utilities for Sampo."
+edition = "2024"
+homepage = "https://github.com/bruits/sampo"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+license = "MIT"
+name = "sampo-core"
+readme = "README.md"
+repository = "https://github.com/bruits/sampo"
+version = "0.3.0"

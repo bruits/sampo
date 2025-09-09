@@ -6,7 +6,7 @@ toml = "0.8"
 
 [dependencies.sampo-core]
 path = "../sampo-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [dependencies.serde]
 features = ["derive"]
@@ -26,4 +26,4 @@ license = "MIT"
 name = "sampo-github-action"
 readme = "README.md"
 repository = "https://github.com/bruits/sampo"
-version = "0.4.0"
+version = "0.5.0"
