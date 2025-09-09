@@ -30,3 +30,6 @@ pub use release::{
 };
 pub use types::{Bump, CrateInfo, DependencyUpdate, Workspace};
 pub use workspace::{WorkspaceError, discover_workspace, parse_workspace_members};
+
+#[cfg(test)]
+mod release_tests;
