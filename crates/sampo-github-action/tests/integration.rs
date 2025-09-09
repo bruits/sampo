@@ -77,9 +77,10 @@ fn test_missing_workspace_fails() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
     // Don't set GITHUB_WORKSPACE environment variable
-    let env_vars = FxHashMap::default();
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
 
-    let output = run_action(&["--mode", "release"], &env_vars, temp_dir.path());
+    let output = run_action(&[], &env_vars, temp_dir.path());
 
     // Should fail with clear error message
     assert!(
@@ -135,22 +136,20 @@ fn test_working_directory_override() {
     let workspace = temp_dir.path();
     let output_file = workspace.join("github_output");
 
-    // Don't set GITHUB_WORKSPACE, but provide --working-directory
+    // Don't set GITHUB_WORKSPACE, but provide INPUT_WORKING_DIRECTORY
     let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_OUTPUT".to_string(),
         output_file.to_string_lossy().to_string(),
     );
+    env_vars.insert(
+        "INPUT_WORKING_DIRECTORY".to_string(),
+        workspace.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    let args = [
-        "--working-directory",
-        &workspace.to_string_lossy(),
-        "--mode",
-        "release",
-        "--dry-run",
-    ];
-
-    let output = run_action(&args, &env_vars, Path::new("/tmp"));
+    let output = run_action(&[], &env_vars, Path::new("/tmp"));
 
     // Should fail because workspace is invalid, but working directory parsing should work
     assert!(
@@ -162,7 +161,7 @@ fn test_working_directory_override() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("No working directory provided"),
-        "Should not complain about missing working directory when --working-directory is provided"
+        "Should not complain about missing working directory when INPUT_WORKING_DIRECTORY is provided"
     );
 }
 
@@ -188,8 +187,10 @@ fn test_github_output_generation() {
         "GITHUB_OUTPUT".to_string(),
         output_file.to_string_lossy().to_string(),
     );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    let _output = run_action(&["--mode", "release", "--dry-run"], &env_vars, workspace);
+    let _output = run_action(&[], &env_vars, workspace);
 
     if output_file.exists() {
         let content = fs::read_to_string(&output_file).expect("Failed to read output file");
@@ -264,8 +265,10 @@ fn test_with_minimal_valid_workspace() {
         "GITHUB_OUTPUT".to_string(),
         output_file.to_string_lossy().to_string(),
     );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    let output = run_action(&["--mode", "release", "--dry-run"], &env_vars, workspace);
+    let output = run_action(&[], &env_vars, workspace);
 
     // This might succeed or fail for legitimate sampo reasons
     if output.status.success() {
@@ -366,9 +369,11 @@ repository = "test-owner/test-repo"
         "GITHUB_OUTPUT".to_string(),
         output_file.to_string_lossy().to_string(),
     );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
     // Test that the action can read the GitHub repository configuration successfully
-    let output = run_action(&["--mode", "release", "--dry-run"], &env_vars, workspace);
+    let output = run_action(&[], &env_vars, workspace);
 
     // The important thing is that configuration parsing doesn't cause errors
     // The actual sampo execution might fail for other reasons, but not config-related
