@@ -9,6 +9,24 @@ pub struct DependencyUpdate {
     pub new_version: String,
 }
 
+/// Information about a single released package
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleasedPackage {
+    pub name: String,
+    pub old_version: String,
+    pub new_version: String,
+    pub bump: Bump,
+}
+
+/// Output information from a release operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseOutput {
+    /// Packages that were released
+    pub released_packages: Vec<ReleasedPackage>,
+    /// Whether this was a dry-run (no files modified)
+    pub dry_run: bool,
+}
+
 /// Information about a crate in the workspace
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrateInfo {

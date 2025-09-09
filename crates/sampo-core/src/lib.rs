@@ -28,7 +28,7 @@ pub use release::{
     detect_fixed_dependency_policy_packages, format_dependency_updates_message,
     infer_bump_from_versions, run_release, update_manifest_versions,
 };
-pub use types::{Bump, CrateInfo, DependencyUpdate, Workspace};
+pub use types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 pub use workspace::{WorkspaceError, discover_workspace, parse_workspace_members};
 
 #[cfg(test)]
