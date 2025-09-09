@@ -217,6 +217,59 @@ mod tests {
     }
 
     #[test]
+    fn preserves_original_formatting() {
+        let input = r#"[package]
+name = "sampo-github-action"
+version = "0.1.0"
+license = "MIT"
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+edition = "2024"
+description = "GitHub Action runner for Sampo CLI (release/publish orchestrator)"
+homepage = "https://github.com/bruits/sampo"
+repository = "https://github.com/bruits/sampo"
+readme = "README.md"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+categories = ["development-tools"]
+
+[dependencies]
+sampo-core = { path = "../sampo-core" }
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "1.0"
+toml = "0.8"
+rustc-hash = "2.0"
+
+[dev-dependencies]
+tempfile = "3.0"
+"#;
+
+        let ws = Workspace {
+            root: PathBuf::from("/test"),
+            members: vec![CrateInfo {
+                name: "sampo-github-action".to_string(),
+                version: "0.1.0".to_string(),
+                path: PathBuf::from("/test/crates/sampo-github-action"),
+                internal_deps: Default::default(),
+            }],
+        };
+        let new_versions = BTreeMap::new();
+        let (out, _) = update_manifest_versions(input, Some("0.2.0"), &ws, &new_versions).unwrap();
+
+        // Should update version but preserve all other formatting
+        assert!(out.contains("version = \"0.2.0\""));
+        assert!(out.contains("license = \"MIT\""));
+        assert!(out.contains("authors = [\"Goulven Clech <goulven.clech@protonmail.com>\"]"));
+        assert!(out.contains("clap = { version = \"4.5\", features = [\"derive\"] }"));
+        assert!(out.contains("sampo-core = { path = \"../sampo-core\" }"));
+
+        // Check that sections remain in original order
+        let package_pos = out.find("[package]").unwrap();
+        let deps_pos = out.find("[dependencies]").unwrap();
+        let dev_deps_pos = out.find("[dev-dependencies]").unwrap();
+        assert!(package_pos < deps_pos);
+        assert!(deps_pos < dev_deps_pos);
+    }
+
+    #[test]
     fn no_changesets_returns_ok_and_no_changes() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("x", "0.1.0");

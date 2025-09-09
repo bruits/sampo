@@ -8,7 +8,7 @@ use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::{Component, Path};
+use std::path::Path;
 
 /// Format dependency updates for changelog display
 ///
@@ -654,157 +654,181 @@ pub fn bump_version(old: &str, bump: Bump) -> Result<String, String> {
 /// Update a crate manifest, setting the crate version (if provided) and retargeting
 /// internal dependency version requirements to the latest planned versions.
 /// Returns the updated TOML string along with a list of (dep_name, new_version) applied.
+///
+/// This implementation preserves the original formatting and only modifies the necessary lines
+/// to avoid unwanted reformatting of the entire Cargo.toml file.
 pub fn update_manifest_versions(
     input: &str,
     new_pkg_version: Option<&str>,
     ws: &Workspace,
     new_version_by_name: &BTreeMap<String, String>,
 ) -> io::Result<(String, Vec<(String, String)>)> {
-    let mut value: toml::Value = input
-        .parse()
-        .map_err(|e| io::Error::other(format!("invalid Cargo.toml: {e}")))?;
-
-    if let Some(v) = new_pkg_version
-        && let Some(pkg) = value.get_mut("package").and_then(toml::Value::as_table_mut)
-    {
-        pkg.insert("version".into(), toml::Value::String(v.to_string()));
-    }
-
-    let workspace_crates: BTreeSet<String> = ws.members.iter().map(|c| c.name.clone()).collect();
+    let mut result = input.to_string();
     let mut applied: Vec<(String, String)> = Vec::new();
 
-    // helper to try update one dependency entry
-    fn update_dep_entry(
-        key: &str,
-        entry: &mut toml::Value,
-        workspace_crates: &BTreeSet<String>,
-        new_version_by_name: &BTreeMap<String, String>,
-        crate_dirs: &BTreeMap<String, std::path::PathBuf>,
-        base_dir: &std::path::Path,
-    ) -> Option<(String, String)> {
-        match entry {
-            toml::Value::String(ver) => {
-                // If the key itself matches a workspace crate with a new version, update string
-                if let Some(newv) = new_version_by_name.get(key)
-                    && workspace_crates.contains(key)
-                {
-                    *ver = newv.clone();
-                    return Some((key.to_string(), newv.clone()));
-                }
-            }
-            toml::Value::Table(tbl) => {
-                // Determine the real crate name: key or overridden via 'package'
-                let mut real_name = key.to_string();
-                if let Some(toml::Value::String(pkg_name)) = tbl.get("package") {
-                    real_name = pkg_name.clone();
-                }
-
-                // If path points to a workspace crate, prefer that crate's name
-                if let Some(toml::Value::String(path_str)) = tbl.get("path") {
-                    let dep_path = clean_path_like(&base_dir.join(path_str));
-                    if let Some(name) = crate_name_by_path(crate_dirs, &dep_path) {
-                        real_name = name;
-                    }
-                }
-
-                // Skip pure workspace deps (managed at workspace level)
-                if matches!(tbl.get("workspace"), Some(toml::Value::Boolean(true))) {
-                    return None;
-                }
-
-                if let Some(newv) = new_version_by_name.get(&real_name)
-                    && workspace_crates.contains(&real_name)
-                {
-                    tbl.insert("version".into(), toml::Value::String(newv.clone()));
-                    return Some((real_name, newv.clone()));
-                }
-            }
-            _ => {}
-        }
-        None
+    // Update package version if provided
+    if let Some(new_version) = new_pkg_version {
+        result = update_package_version(&result, new_version)?;
     }
 
-    // Build helper maps for path resolution
-    let mut crate_dirs: BTreeMap<String, std::path::PathBuf> = BTreeMap::new();
-    for c in &ws.members {
-        crate_dirs.insert(c.name.clone(), c.path.clone());
-    }
-
-    // Resolve manifest base_dir from package.name
-    let current_crate_name = value
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .and_then(|t| t.get("name"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let base_dir = ws
-        .members
-        .iter()
-        .find(|c| c.name == current_crate_name)
-        .map(|c| c.path.as_path().to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-
-    // Update dependencies across dependency sections
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(t) = value.get_mut(section).and_then(toml::Value::as_table_mut) {
-            // Clone keys to avoid borrow issues while mutating
-            let keys: Vec<String> = t.keys().cloned().collect();
-            for dep_key in keys {
-                if let Some(entry) = t.get_mut(&dep_key)
-                    && let Some((dep_name, ver)) = update_dep_entry(
-                        &dep_key,
-                        entry,
-                        &workspace_crates,
-                        new_version_by_name,
-                        &crate_dirs,
-                        &base_dir,
-                    )
-                {
-                    applied.push((dep_name, ver));
-                }
+    // Update internal workspace dependency versions
+    let workspace_crates: BTreeSet<String> = ws.members.iter().map(|c| c.name.clone()).collect();
+    for (crate_name, new_version) in new_version_by_name {
+        if workspace_crates.contains(crate_name) {
+            let (updated_result, was_updated) =
+                update_dependency_version(&result, crate_name, new_version)?;
+            result = updated_result;
+            if was_updated {
+                applied.push((crate_name.clone(), new_version.clone()));
             }
         }
     }
 
-    // Also handle table-style per-dependency sections like [dependencies.foo]
-    // toml::Value already represents those as entries in the tables above, so no extra work.
-
-    let out = toml::to_string(&value)
-        .map_err(|e| io::Error::other(format!("failed to serialize Cargo.toml: {e}")))?;
-    Ok((out, applied))
+    Ok((result, applied))
 }
 
-fn crate_name_by_path(
-    crate_dirs: &BTreeMap<String, std::path::PathBuf>,
-    dep_path: &Path,
-) -> Option<String> {
-    let cleaned = clean_path_like(dep_path);
-    for (name, p) in crate_dirs {
-        if clean_path_like(p) == cleaned {
-            return Some(name.clone());
+/// Update the package version in the [package] section
+fn update_package_version(input: &str, new_version: &str) -> io::Result<String> {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut result_lines = Vec::new();
+    let mut in_package_section = false;
+
+    for line in lines {
+        let trimmed = line.trim();
+
+        // Check if we're entering the [package] section
+        if trimmed == "[package]" {
+            in_package_section = true;
+            result_lines.push(line.to_string());
+            continue;
+        }
+
+        // Check if we're leaving the [package] section
+        if in_package_section && trimmed.starts_with('[') && trimmed != "[package]" {
+            in_package_section = false;
+        }
+
+        // Update version line if we're in the [package] section
+        if in_package_section && trimmed.starts_with("version") {
+            // Extract the indentation and update the version
+            let indent = line.len() - line.trim_start().len();
+            let spaces = " ".repeat(indent);
+
+            // Try to preserve the original quoting style
+            result_lines.push(format!("{}version = \"{}\"", spaces, new_version));
+        } else {
+            result_lines.push(line.to_string());
         }
     }
-    None
+
+    Ok(result_lines.join("\n"))
 }
 
-fn clean_path_like(p: &std::path::Path) -> std::path::PathBuf {
-    let mut out = std::path::PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !matches!(
-                    out.components().next_back(),
-                    Some(Component::RootDir | Component::Prefix(_))
-                ) {
-                    out.pop();
-                }
+/// Update the version of a specific dependency across all dependency sections
+fn update_dependency_version(
+    input: &str,
+    dep_name: &str,
+    new_version: &str,
+) -> io::Result<(String, bool)> {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut result_lines = Vec::new();
+    let mut was_updated = false;
+    let mut current_section: Option<String> = None;
+
+    for line in lines {
+        let trimmed = line.trim();
+
+        // Track which section we're in
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section_name = trimmed.trim_start_matches('[').trim_end_matches(']');
+            if section_name.starts_with("dependencies")
+                || section_name.starts_with("dev-dependencies")
+                || section_name.starts_with("build-dependencies")
+            {
+                current_section = Some(section_name.to_string());
+            } else {
+                current_section = None;
             }
-            _ => out.push(c),
+            result_lines.push(line.to_string());
+            continue;
+        }
+
+        // Check if this line defines our target dependency
+        if current_section.is_some() {
+            if trimmed.starts_with(&format!("{} =", dep_name))
+                || trimmed.starts_with(&format!("\"{}\" =", dep_name))
+            {
+                // This is a dependency line for our target crate
+                let indent = line.len() - line.trim_start().len();
+                let spaces = " ".repeat(indent);
+
+                // Check if it's a simple string version or a table with path
+                if trimmed.contains("{ path =") || trimmed.contains("{path =") {
+                    // It's a table format with path - preserve path, update version
+                    let updated_line = update_dependency_table_line(line, new_version);
+                    result_lines.push(updated_line);
+                    was_updated = true;
+                } else if trimmed.contains("version =") {
+                    // It's already a table format or inline table
+                    let updated_line = update_dependency_table_line(line, new_version);
+                    result_lines.push(updated_line);
+                    was_updated = true;
+                } else {
+                    // It's likely a simple string version, convert to table with version
+                    result_lines.push(format!(
+                        "{}\"{}\" = {{ version = \"{}\" }}",
+                        spaces, dep_name, new_version
+                    ));
+                    was_updated = true;
+                }
+            } else {
+                result_lines.push(line.to_string());
+            }
+        } else {
+            result_lines.push(line.to_string());
         }
     }
-    out
+
+    Ok((result_lines.join("\n"), was_updated))
+}
+
+/// Update the version field in a dependency table line
+fn update_dependency_table_line(line: &str, new_version: &str) -> String {
+    // Try to update version field if it exists
+    if let Some(version_start) = line.find("version") {
+        let after_version = &line[version_start..];
+        if let Some(equals_pos) = after_version.find('=') {
+            let before_equals = &line[..version_start + equals_pos + 1];
+            let after_equals = &after_version[equals_pos + 1..];
+
+            // Find the quoted string after equals
+            if let Some(quote_start) = after_equals.find('"') {
+                let after_first_quote = &after_equals[quote_start + 1..];
+                if let Some(quote_end) = after_first_quote.find('"') {
+                    let after_second_quote = &after_first_quote[quote_end + 1..];
+                    return format!(
+                        "{} \"{}\"{}",
+                        before_equals, new_version, after_second_quote
+                    );
+                }
+            }
+        }
+    }
+
+    // If no version field exists but it's a table, add version field
+    if line.contains("{ path =") {
+        // Single-line table with path, add version
+        if let Some(closing_brace_pos) = line.rfind('}') {
+            let before_brace = &line[..closing_brace_pos];
+            let after_brace = &line[closing_brace_pos..];
+            return format!(
+                "{}, version = \"{}\" {}",
+                before_brace, new_version, after_brace
+            );
+        }
+    }
+
+    line.to_string()
 }
 
 fn update_changelog(
