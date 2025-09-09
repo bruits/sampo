@@ -17,7 +17,7 @@ fn set_cargo_env_var(value: &str) {
 #[derive(Debug)]
 pub struct ReleasePlan {
     pub has_changes: bool,
-    pub description: String,
+    pub releases: BTreeMap<String, (String, String)>,
 }
 
 /// Run sampo release and capture the plan
@@ -29,20 +29,16 @@ pub fn capture_release_plan(workspace: &Path) -> Result<ReleasePlan> {
         })?;
 
     let has_changes = !release_output.released_packages.is_empty();
-    let description = if has_changes {
-        let package_names: Vec<String> = release_output
-            .released_packages
-            .iter()
-            .map(|pkg| format!("{}@{}", pkg.name, pkg.new_version))
-            .collect();
-        format!("Would release: {}", package_names.join(", "))
-    } else {
-        "No changesets found".to_string()
-    };
+    let mut releases: BTreeMap<String, (String, String)> = BTreeMap::new();
+    if has_changes {
+        for pkg in release_output.released_packages {
+            releases.insert(pkg.name, (pkg.old_version, pkg.new_version));
+        }
+    }
 
     Ok(ReleasePlan {
         has_changes,
-        description,
+        releases,
     })
 }
 
@@ -101,12 +97,11 @@ pub fn run_publish(
 ///
 /// # Returns
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
-pub fn build_release_pr_body_from_stdout(
+pub fn build_release_pr_body(
     workspace: &Path,
-    plan_stdout: &str,
+    releases: &BTreeMap<String, (String, String)>,
     config: &Config,
 ) -> Result<String> {
-    let releases = parse_planned_releases(plan_stdout);
     if releases.is_empty() {
         return Ok(String::new());
     }
@@ -223,61 +218,9 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
     }
 }
 
-/// Extract planned release information from sampo dry-run output.
-///
-/// Looks for lines like "package-name: 0.1.0 -> 0.2.0" and parses them
-/// into a map of package name to (old_version, new_version) pairs.
-fn parse_planned_releases(stdout: &str) -> BTreeMap<String, (String, String)> {
-    // Extract lines like: "  name: 0.1.0 -> 0.2.0"
-    let mut map = BTreeMap::new();
-    for line in stdout.lines() {
-        let l = line.trim();
-        if l.is_empty() || !l.contains("->") || !l.contains(':') {
-            continue;
-        }
-        // Split on ':' first
-        let mut parts = l.splitn(2, ':');
-        let name = parts.next().unwrap().trim().to_string();
-        let rest = parts.next().unwrap().trim();
-        let mut arrow = rest.splitn(2, "->");
-        let old = arrow.next().unwrap().trim().to_string();
-        let new_version = arrow.next().unwrap_or("").trim().to_string();
-        if !name.is_empty() && !old.is_empty() && !new_version.is_empty() {
-            map.insert(name, (old, new_version));
-        }
-    }
-    map
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_planned_releases() {
-        let stdout = "Planning release for packages:
-  sampo: 0.1.0 -> 0.2.0
-  sampo-github-action: 0.0.1 -> 0.1.0
-No changesets found for other-pkg";
-
-        let releases = parse_planned_releases(stdout);
-        assert_eq!(releases.len(), 2);
-        assert_eq!(
-            releases.get("sampo"),
-            Some(&("0.1.0".to_string(), "0.2.0".to_string()))
-        );
-        assert_eq!(
-            releases.get("sampo-github-action"),
-            Some(&("0.0.1".to_string(), "0.1.0".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_parse_planned_releases_empty() {
-        let stdout = "No changesets found";
-        let releases = parse_planned_releases(stdout);
-        assert!(releases.is_empty());
-    }
 
     #[test]
     fn test_append_changes_section() {
@@ -363,12 +306,11 @@ No changesets found for other-pkg";
         )
         .unwrap();
 
-        // Simulate the output from `sampo release --dry-run`
-        let plan_stdout = "Planned releases:\n  a: 0.1.0 -> 0.1.1\n  b: 0.1.0 -> 0.2.0\n";
-
-        // Use default config for this test
+        // Compute the release plan using core logic (structured)
+        let plan = capture_release_plan(root).unwrap();
+        assert!(plan.has_changes);
         let config = Config::default();
-        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
 
         // Should contain dependency update information for package a
         assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
@@ -426,12 +368,11 @@ No changesets found for other-pkg";
         )
         .unwrap();
 
-        // Simulate the output from `sampo release --dry-run` for fixed dependencies
-        let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
-
-        // Load the config we created above
+        // Compute the plan using core logic and the fixed dependency config
+        let plan = capture_release_plan(root).unwrap();
+        assert!(plan.has_changes);
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
 
         // Should contain information for both packages with same version
         assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
@@ -490,12 +431,11 @@ No changesets found for other-pkg";
         )
         .unwrap();
 
-        // Simulate the output from `sampo release --dry-run` for fixed dependencies
-        let plan_stdout = "Planned releases:\n  a: 1.0.0 -> 2.0.0\n  b: 1.0.0 -> 2.0.0\n";
-
-        // Load the config we created above
+        // Compute the plan using core logic and the fixed dependency config
+        let plan = capture_release_plan(root).unwrap();
+        assert!(plan.has_changes);
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body_from_stdout(root, plan_stdout, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
 
         println!("PR Body:\n{}", pr_body);
 
@@ -506,5 +446,55 @@ No changesets found for other-pkg";
 
         // FIXED: Package 'a' should now have an explanation for the bump!
         assert!(pr_body.contains("Bumped due to fixed dependency group policy"));
+    }
+
+    #[test]
+    fn test_capture_plan_and_pr_body_end_to_end() {
+        use std::fs;
+        // Setup a minimal workspace with one crate and a minor changeset
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Workspace root
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        // Single crate 'example' v0.1.0
+        let ex_dir = root.join("crates/example");
+        fs::create_dir_all(&ex_dir).unwrap();
+        fs::write(
+            ex_dir.join("Cargo.toml"),
+            "[package]\nname=\"example\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // Changeset: example minor change
+        let cs_dir = root.join(".sampo/changesets");
+        fs::create_dir_all(&cs_dir).unwrap();
+        fs::write(
+            cs_dir.join("example-minor.md"),
+            "---\npackages:\n  - example\nrelease: minor\n---\n\nfeat: add new thing\n",
+        )
+        .unwrap();
+
+        // Capture release plan (dry-run) using core logic
+        let plan = capture_release_plan(root).expect("plan should succeed");
+        assert!(plan.has_changes);
+        assert_eq!(
+            plan.releases.get("example"),
+            Some(&("0.1.0".to_string(), "0.2.0".to_string()))
+        );
+
+        // Build PR body from the structured plan
+        let config = Config::load(root).unwrap_or_default();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+
+        // Ensure PR body uses the changelog layout
+        assert!(pr_body.contains("## example 0.1.0 -> 0.2.0"));
+        assert!(pr_body.contains("### Minor changes"));
+        assert!(pr_body.contains("- feat: add new thing"));
     }
 }
