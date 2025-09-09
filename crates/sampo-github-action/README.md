@@ -113,6 +113,10 @@ jobs:
           cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           # optional: also create GitHub Releases for new tags
           create-github-release: true
+          # optional: upload Linux binary to GitHub releases
+          upload-binary: true
+          # optional: specify binary name (defaults to main package name)
+          binary-name: sampo
           # optional: pass flags to cargo publish
           args: --allow-dirty --no-verify
 ```
@@ -135,6 +139,8 @@ Notes:
 - `pr-branch`: working branch used for the Release PR (prepare-pr)
 - `pr-title`: title of the Release PR (prepare-pr)
 - `create-github-release`: if `true`, create GitHub Releases for new tags (post-merge-publish)
+- `upload-binary`: if `true`, upload Linux binary as release asset when creating GitHub releases (post-merge-publish)
+- `binary-name`: binary name to upload (defaults to the main package name)
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env)
 
 ### Outputs

@@ -80,6 +80,14 @@ struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     create_github_release: bool,
 
+    /// Upload Linux binary as release asset when creating GitHub releases
+    #[arg(long, action = ArgAction::SetTrue)]
+    upload_binary: bool,
+
+    /// Binary name to upload (defaults to the main package name)
+    #[arg(long)]
+    binary_name: Option<String>,
+
     /// Optional GitHub token to create/update PRs (defaults to GITHUB_TOKEN)
     #[arg(long)]
     github_token: Option<String>,
@@ -186,6 +194,19 @@ fn apply_environment_overrides(cli: &mut Cli) {
         cli.create_github_release = v.eq_ignore_ascii_case("true");
     }
 
+    if !cli.upload_binary
+        && let Ok(v) = std::env::var("INPUT_UPLOAD_BINARY")
+    {
+        cli.upload_binary = v.eq_ignore_ascii_case("true");
+    }
+
+    if cli.binary_name.is_none()
+        && let Ok(v) = std::env::var("INPUT_BINARY_NAME")
+        && !v.is_empty()
+    {
+        cli.binary_name = Some(v);
+    }
+
     // Optional GitHub token override
     if cli.github_token.is_none()
         && let Ok(v) = std::env::var("INPUT_GITHUB_TOKEN")
@@ -244,6 +265,8 @@ fn execute_operations(cli: &Cli, workspace: &Path) -> Result<(bool, bool)> {
                 cli.args.as_deref(),
                 cli.cargo_token.as_deref(),
                 cli.create_github_release,
+                cli.upload_binary,
+                cli.binary_name.as_deref(),
             )?;
             published = true;
         }
@@ -359,6 +382,8 @@ fn post_merge_publish(
     args: Option<&str>,
     cargo_token: Option<&str>,
     create_github_release: bool,
+    upload_binary: bool,
+    binary_name: Option<&str>,
 ) -> Result<()> {
     // Setup git identity for tag creation
     git::setup_bot_user(workspace)?;
@@ -392,8 +417,14 @@ fn post_merge_publish(
         if !repo.is_empty() && !token.is_empty() {
             for tag in &new_tags {
                 println!("Creating GitHub release for {}", tag);
-                // Simplified release creation
-                create_github_release_for_tag(&repo, &token, tag)?;
+                create_github_release_for_tag(
+                    &repo,
+                    &token,
+                    tag,
+                    workspace,
+                    upload_binary,
+                    binary_name,
+                )?;
             }
         }
     }
@@ -401,7 +432,14 @@ fn post_merge_publish(
     Ok(())
 }
 
-fn create_github_release_for_tag(repo: &str, token: &str, tag: &str) -> Result<()> {
+fn create_github_release_for_tag(
+    repo: &str,
+    token: &str,
+    tag: &str,
+    workspace: &Path,
+    upload_binary: bool,
+    binary_name: Option<&str>,
+) -> Result<()> {
     let api = format!("https://api.github.com/repos/{}/releases", repo);
     let name = tag.to_string();
     let body = format!("Automated release for tag {}", tag);
@@ -435,6 +473,122 @@ fn create_github_release_for_tag(repo: &str, token: &str, tag: &str) -> Result<(
         println!("Created GitHub release for {}", tag);
     }
 
+    // Upload assets to release, extract from response, don't use serde
+    let upload_url = {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(start) = stdout.find("\"upload_url\":\"") {
+            let start = start + "\"upload_url\":\"".len();
+            if let Some(end) = stdout[start..].find('{') {
+                let url = &stdout[start..start + end];
+                url.replace("\\u0026", "&").replace("\\/", "/")
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    };
+
+    // If binary upload is requested, compile and upload the binary
+    if upload_binary && !upload_url.is_empty() {
+        if let Err(e) = build_and_upload_binary(workspace, &upload_url, token, binary_name) {
+            eprintln!("Warning: Failed to upload binary: {}", e);
+        } else {
+            println!("Successfully uploaded binary for {}", tag);
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a Linux binary and upload it to GitHub release
+fn build_and_upload_binary(
+    workspace: &Path,
+    upload_url: &str,
+    token: &str,
+    binary_name: Option<&str>,
+) -> Result<()> {
+    // Determine binary name - use provided name or workspace directory name
+    let bin_name = binary_name.unwrap_or_else(|| {
+        workspace
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("app")
+    });
+
+    println!("Building Linux binary: {}", bin_name);
+
+    // Cross-compile for Linux
+    let output = Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--bin",
+            bin_name,
+        ])
+        .current_dir(workspace)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "cross-compile".to_string(),
+            message: format!(
+                "Failed to build Linux binary: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
+    }
+
+    // Path to the compiled binary
+    let binary_path = workspace
+        .join("target")
+        .join("x86_64-unknown-linux-gnu")
+        .join("release")
+        .join(bin_name);
+
+    if !binary_path.exists() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "binary-locate".to_string(),
+            message: format!("Binary not found at {}", binary_path.display()),
+        });
+    }
+
+    // Upload the binary as a release asset
+    let asset_name = format!("{}-linux-x64", bin_name);
+    println!("Uploading binary as {}", asset_name);
+
+    let output = Command::new("curl")
+        .args([
+            "-sS",
+            "-X",
+            "POST",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "Content-Type: application/octet-stream",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            &format!("{}?name={}", upload_url, asset_name),
+            "--data-binary",
+            &format!("@{}", binary_path.display()),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "binary-upload".to_string(),
+            message: format!(
+                "Failed to upload binary: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        });
+    }
+
+    println!("Binary uploaded successfully");
     Ok(())
 }
 
@@ -450,6 +604,8 @@ impl Default for Cli {
             pr_branch: None,
             pr_title: None,
             create_github_release: false,
+            upload_binary: false,
+            binary_name: None,
             github_token: None,
         }
     }
