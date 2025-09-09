@@ -12,7 +12,7 @@ keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
 
 [dependencies]
-sampo-core = { path = "../sampo-core" }
+sampo-core = { version = "0.2.0", path = "../sampo-core" }
 thiserror = "1.0"
 toml = "0.8"
 rustc-hash = "2.0"

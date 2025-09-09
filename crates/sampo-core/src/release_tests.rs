@@ -232,7 +232,7 @@ keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
 
 [dependencies]
-sampo-core = { path = "../sampo-core" }
+sampo-core = { version = "0.2.0", path = "../sampo-core" }
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "1.0"
 toml = "0.8"
@@ -259,7 +259,7 @@ tempfile = "3.0"
         assert!(out.contains("license = \"MIT\""));
         assert!(out.contains("authors = [\"Goulven Clech <goulven.clech@protonmail.com>\"]"));
         assert!(out.contains("clap = { version = \"4.5\", features = [\"derive\"] }"));
-        assert!(out.contains("sampo-core = { path = \"../sampo-core\" }"));
+        assert!(out.contains("sampo-core = { version = \"0.2.0\", path = \"../sampo-core\" }"));
 
         // Check that sections remain in original order
         let package_pos = out.find("[package]").unwrap();
