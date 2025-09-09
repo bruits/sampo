@@ -33,6 +33,13 @@ inputs:
     description: "If true, create GitHub releases for new tags (post-merge-publish mode)"
     required: false
     default: "false"
+  upload-binary:
+    description: "If true, upload Linux binary as release asset when creating GitHub releases"
+    required: false
+    default: "false"
+  binary-name:
+    description: "Binary name to upload (defaults to the main package name)"
+    required: false
   github-token:
     description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"
     required: false
@@ -61,6 +68,8 @@ runs:
         INPUT_PR_BRANCH: ${{ inputs['pr-branch'] }}
         INPUT_PR_TITLE: ${{ inputs['pr-title'] }}
         INPUT_CREATE_GITHUB_RELEASE: ${{ inputs['create-github-release'] }}
+        INPUT_UPLOAD_BINARY: ${{ inputs['upload-binary'] }}
+        INPUT_BINARY_NAME: ${{ inputs['binary-name'] }}
         INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}
       run: |
         set -euo pipefail
@@ -80,6 +89,22 @@ runs:
           fi
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           source "$HOME/.cargo/env"
+        fi
+
+        # Install cargo-binstall for faster binary installation
+        if ! command -v cargo-binstall >/dev/null 2>&1; then
+          echo "Installing cargo-binstall..."
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        fi
+
+        # Install sampo-github-action binary
+        echo "Installing sampo-github-action..."
+        cargo binstall --no-confirm sampo-github-action
+
+        # Install Linux cross-compilation target if upload-binary is enabled
+        if [[ "${INPUT_UPLOAD_BINARY:-}" == "true" || "${INPUT_UPLOAD_BINARY:-}" == "1" ]]; then
+          echo "Installing Linux cross-compilation target..."
+          rustup target add x86_64-unknown-linux-gnu
         fi
 
         # Ensure git available (needed for tags and pushing)
@@ -102,7 +127,6 @@ runs:
           exit 1
         fi
 
-        # Build and run the action binary from the workspace
         # Compute boolean flags based on explicit true values
         DRY_FLAG=""
         if [[ "${INPUT_DRY_RUN:-}" == "true" || "${INPUT_DRY_RUN:-}" == "1" ]]; then
@@ -114,7 +138,14 @@ runs:
           CREATE_GH_RELEASE_FLAG="--create-github-release"
         fi
 
-        cargo run --manifest-path "${WORKDIR}/Cargo.toml" -p sampo-github-action -- \
+        UPLOAD_BINARY_FLAG=""
+        if [[ "${INPUT_UPLOAD_BINARY:-}" == "true" || "${INPUT_UPLOAD_BINARY:-}" == "1" ]]; then
+          UPLOAD_BINARY_FLAG="--upload-binary"
+        fi
+
+        # Run sampo-github-action binary directly
+        cd "${WORKDIR}"
+        sampo-github-action \
           --mode "${INPUT_COMMAND}" \
           ${DRY_FLAG} \
           ${INPUT_WORKING_DIRECTORY:+--working-directory "${INPUT_WORKING_DIRECTORY}"} \
@@ -123,7 +154,9 @@ runs:
           ${INPUT_BASE_BRANCH:+--base-branch "${INPUT_BASE_BRANCH}"} \
           ${INPUT_PR_BRANCH:+--pr-branch "${INPUT_PR_BRANCH}"} \
           ${INPUT_PR_TITLE:+--pr-title "${INPUT_PR_TITLE}"} \
-          ${CREATE_GH_RELEASE_FLAG}
+          ${CREATE_GH_RELEASE_FLAG} \
+          ${UPLOAD_BINARY_FLAG} \
+          ${INPUT_BINARY_NAME:+--binary-name "${INPUT_BINARY_NAME}"}
 
         # Capture outputs exposed by the binary via GITHUB_OUTPUT
         # (Already written by the binary)

@@ -320,16 +320,25 @@ repository = "test-owner/test-repo"
     fs::write(workspace.join(".sampo/config.toml"), config_content)
         .expect("Failed to write config");
 
-    // Create a basic Cargo.toml
+    // Create a workspace Cargo.toml instead of a package Cargo.toml
     fs::write(
         workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"test-package\"]\nresolver = \"2\"\n",
+    )
+    .expect("Failed to write workspace Cargo.toml");
+
+    // Create the test package directory and its Cargo.toml
+    let package_dir = workspace.join("test-package");
+    fs::create_dir_all(&package_dir).expect("Failed to create package dir");
+    fs::write(
+        package_dir.join("Cargo.toml"),
         "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     )
-    .expect("Failed to write Cargo.toml");
+    .expect("Failed to write package Cargo.toml");
 
-    // Create minimal source file
-    fs::create_dir_all(workspace.join("src")).expect("Failed to create src dir");
-    fs::write(workspace.join("src/main.rs"), "fn main() {}").expect("Failed to write main.rs");
+    // Create minimal source file in the package
+    fs::create_dir_all(package_dir.join("src")).expect("Failed to create src dir");
+    fs::write(package_dir.join("src/main.rs"), "fn main() {}").expect("Failed to write main.rs");
 
     // Initialize git (required by sampo)
     Command::new("git")

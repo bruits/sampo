@@ -4,5 +4,7 @@ use std::io;
 
 pub fn run(args: &ReleaseArgs) -> io::Result<()> {
     let cwd = std::env::current_dir()?;
-    run_release(&cwd, args.dry_run)
+    let _ = run_release(&cwd, args.dry_run)?;
+
+    Ok(())
 }

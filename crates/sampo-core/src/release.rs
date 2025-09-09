@@ -1,4 +1,4 @@
-use crate::types::{Bump, CrateInfo, DependencyUpdate, Workspace};
+use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
     changeset::ChangesetInfo, config::Config, detect_changesets_dir,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
@@ -277,7 +277,7 @@ type InitialBumpsResult = (
 type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_version)
 
 /// Main release function that can be called from CLI or other interfaces
-pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<()> {
+pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseOutput> {
     let ws = discover_workspace(root).map_err(io::Error::other)?;
     let cfg = Config::load(&ws.root).map_err(io::Error::other)?;
 
@@ -291,7 +291,10 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<()> {
             "No changesets found in {}",
             ws.root.join(".sampo").join("changesets").display()
         );
-        return Ok(());
+        return Ok(ReleaseOutput {
+            released_packages: vec![],
+            dry_run,
+        });
     }
 
     // Compute initial bumps from changesets
@@ -300,7 +303,10 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<()> {
 
     if bump_by_pkg.is_empty() {
         println!("No applicable packages found in changesets.");
-        return Ok(());
+        return Ok(ReleaseOutput {
+            released_packages: vec![],
+            dry_run,
+        });
     }
 
     // Build dependency graph and apply cascading logic
@@ -312,14 +318,34 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<()> {
     let releases = prepare_release_plan(&bump_by_pkg, &ws)?;
     if releases.is_empty() {
         println!("No matching workspace crates to release.");
-        return Ok(());
+        return Ok(ReleaseOutput {
+            released_packages: vec![],
+            dry_run,
+        });
     }
 
     print_release_plan(&releases);
 
+    // Convert releases to ReleasedPackage structs
+    let released_packages: Vec<ReleasedPackage> = releases
+        .iter()
+        .map(|(name, old_version, new_version)| {
+            let bump = bump_by_pkg.get(name).copied().unwrap_or(Bump::Patch);
+            ReleasedPackage {
+                name: name.clone(),
+                old_version: old_version.clone(),
+                new_version: new_version.clone(),
+                bump,
+            }
+        })
+        .collect();
+
     if dry_run {
         println!("Dry-run: no files modified, no tags created.");
-        return Ok(());
+        return Ok(ReleaseOutput {
+            released_packages,
+            dry_run: true,
+        });
     }
 
     // Apply changes
@@ -328,7 +354,10 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<()> {
     // Clean up
     cleanup_consumed_changesets(used_paths)?;
 
-    Ok(())
+    Ok(ReleaseOutput {
+        released_packages,
+        dry_run: false,
+    })
 }
 
 /// Compute initial bumps from changesets and collect messages
