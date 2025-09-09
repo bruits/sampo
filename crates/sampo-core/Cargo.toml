@@ -10,7 +10,6 @@ repository = "https://github.com/bruits/sampo"
 readme = "README.md"
 keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
-publish = false
 
 [dependencies]
 glob = "0.3"
