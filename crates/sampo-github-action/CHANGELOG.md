@@ -1,5 +1,12 @@
 # sampo-github-action
 
+## 0.4.1
+
+### Patch changes
+
+- [4bcb266](https://github.com/bruits/sampo/commit/4bcb266e847d0035a5ba4da17109237e74f82993) Fix "Problems parsing JSON" errors when creating GitHub pull requests, and overall better error handling when interacting with the GitHub API. — Thanks @goulvenclech!
+
+
 ## 0.4.0
 
 ### Minor changes
