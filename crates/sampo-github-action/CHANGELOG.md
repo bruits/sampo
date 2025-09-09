@@ -1,5 +1,16 @@
 # sampo-github-action
 
+## 0.3.0
+
+### Minor changes
+
+- [0b3d77b](https://github.com/bruits/sampo/commit/0b3d77bd3c5096e44f459721b5d0b5ba6332705f) Add support for uploading binaries when creating to GitHub releases automatically. — Thanks @Princesseuh!
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.2.0
+
+
 ## 0.2.2
 
 ### Patch changes
