@@ -1,5 +1,12 @@
 # sampo-core
 
+## 0.2.0
+
+### Minor changes
+
+- [20ea306](https://github.com/bruits/sampo/commit/20ea306ce5e913a90c64b19544820f2503625df7) New `release` and `publish` API endpoints in the core library, to be used by the GitHub Action and CLI. — Thanks @Princesseuh!
+
+
 ## 0.1.1
 
 ### Patch changes
