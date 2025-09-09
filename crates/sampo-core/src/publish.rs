@@ -1,5 +1,5 @@
-use crate::types::CrateInfo;
 use crate::discover_workspace;
+use crate::types::CrateInfo;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io;
@@ -102,9 +102,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         }
 
         // Create an annotated git tag after successful publish (not in dry-run)
-        if !dry_run
-            && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version)
-        {
+        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version) {
             eprintln!(
                 "Warning: failed to create tag for {}@{}: {}",
                 c.name, c.version, e

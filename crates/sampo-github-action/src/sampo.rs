@@ -1,8 +1,8 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    Bump, Config, detect_all_dependency_explanations, detect_changesets_dir,
-    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    get_commit_hash_for_path, load_changesets,
+    detect_all_dependency_explanations, detect_changesets_dir, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets, Bump,
+    Config,
 };
 use std::collections::BTreeMap;
 use std::path::Path;

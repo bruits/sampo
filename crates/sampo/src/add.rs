@@ -1,6 +1,6 @@
 use crate::cli::AddArgs;
 use crate::names;
-use sampo_core::{Bump, discover_workspace, render_changeset_markdown};
+use sampo_core::{discover_workspace, render_changeset_markdown, Bump};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};

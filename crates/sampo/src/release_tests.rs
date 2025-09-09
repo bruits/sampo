@@ -3,7 +3,7 @@ mod tests {
     use crate::cli::ReleaseArgs;
     use crate::release::run_in;
     use rustc_hash::FxHashMap;
-    use sampo_core::{Bump, bump_version, update_manifest_versions};
+    use sampo_core::{bump_version, update_manifest_versions, Bump};
     use std::fs;
     use std::path::PathBuf;
 

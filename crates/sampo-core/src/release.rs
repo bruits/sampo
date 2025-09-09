@@ -1,5 +1,9 @@
 use crate::types::{Bump, CrateInfo, DependencyUpdate, Workspace};
-use crate::{changeset::ChangesetInfo, config::Config, detect_changesets_dir, load_changesets, discover_workspace, detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path};
+use crate::{
+    changeset::ChangesetInfo, config::Config, detect_changesets_dir,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    get_commit_hash_for_path, load_changesets,
+};
 use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -1089,11 +1093,9 @@ mod tests {
         // pkg-a should have dependency update message (depends on pkg-b)
         let pkg_a_messages = explanations.get("pkg-a").unwrap();
         assert_eq!(pkg_a_messages.len(), 1);
-        assert!(
-            pkg_a_messages[0]
-                .0
-                .contains("Updated dependencies: pkg-b@1.1.0")
-        );
+        assert!(pkg_a_messages[0]
+            .0
+            .contains("Updated dependencies: pkg-b@1.1.0"));
         assert_eq!(pkg_a_messages[0].1, Bump::Patch);
 
         // pkg-c should have fixed dependency policy message (no deps but in fixed group)
