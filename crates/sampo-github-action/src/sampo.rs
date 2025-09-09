@@ -1,11 +1,18 @@
 use crate::{ActionError, Result};
 use sampo_core::{
-    detect_all_dependency_explanations, detect_changesets_dir, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets, Bump,
-    Config, run_release as core_release, run_publish as core_publish,
+    Bump, Config, detect_all_dependency_explanations, detect_changesets_dir,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
+    run_release as core_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
+
+fn set_cargo_env_var(value: &str) {
+    unsafe {
+        std::env::set_var("CARGO_REGISTRY_TOKEN", value);
+    }
+}
 
 #[derive(Debug)]
 pub struct ReleasePlan {
@@ -15,10 +22,11 @@ pub struct ReleasePlan {
 
 /// Run sampo release and capture the plan
 pub fn capture_release_plan(workspace: &Path) -> Result<ReleasePlan> {
-    let release_output = core_release(workspace, true).map_err(|e| ActionError::SampoCommandFailed {
-        operation: "release-plan".to_string(),
-        message: format!("Release plan failed: {}", e),
-    })?;
+    let release_output =
+        core_release(workspace, true).map_err(|e| ActionError::SampoCommandFailed {
+            operation: "release-plan".to_string(),
+            message: format!("Release plan failed: {}", e),
+        })?;
 
     let has_changes = !release_output.released_packages.is_empty();
     let description = if has_changes {
@@ -42,9 +50,7 @@ pub fn capture_release_plan(workspace: &Path) -> Result<ReleasePlan> {
 pub fn run_release(workspace: &Path, dry_run: bool, cargo_token: Option<&str>) -> Result<()> {
     // Set cargo token if provided
     if let Some(token) = cargo_token {
-        unsafe {
-            std::env::set_var("CARGO_REGISTRY_TOKEN", token);
-        }
+        set_cargo_env_var(token);
     }
 
     core_release(workspace, dry_run).map_err(|e| ActionError::SampoCommandFailed {
@@ -64,9 +70,7 @@ pub fn run_publish(
 ) -> Result<()> {
     // Set cargo token if provided
     if let Some(token) = cargo_token {
-        unsafe {
-            std::env::set_var("CARGO_REGISTRY_TOKEN", token);
-        }
+        set_cargo_env_var(token);
     }
 
     // Parse extra args into a vector
