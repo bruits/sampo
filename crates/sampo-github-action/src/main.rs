@@ -15,6 +15,8 @@ enum ActionError {
     NoWorkingDirectory,
     #[error("Failed to execute sampo {operation}: {message}")]
     SampoCommandFailed { operation: String, message: String },
+    #[error("GitHub credentials not available: GITHUB_REPOSITORY and GITHUB_TOKEN must be set")]
+    GitHubCredentialsNotAvailable,
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -229,9 +231,6 @@ fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)>
     let mut released = false;
     let mut published = false;
 
-    // Create GitHub client once if needed, reuses the same HTTP client
-    let github_client = create_github_client();
-
     match config.mode {
         Mode::Release => {
             sampo::run_release(workspace, config.dry_run, config.cargo_token.as_deref())?;
@@ -259,18 +258,31 @@ fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)>
             published = true;
         }
         Mode::PreparePr => {
-            prepare_release_pr(workspace, config, github_client.as_ref())?;
+            let github_client = create_github_client()?;
+            prepare_release_pr(workspace, config, &github_client)?;
         }
         Mode::PostMergePublish => {
             let github_options = GitHubReleaseOptions::from_config(config);
-            post_merge_publish(
-                workspace,
-                config.dry_run,
-                config.args.as_deref(),
-                config.cargo_token.as_deref(),
-                &github_options,
-                github_client.as_ref(),
-            )?;
+            if github_options.create_github_release {
+                let github_client = create_github_client()?;
+                post_merge_publish(
+                    workspace,
+                    config.dry_run,
+                    config.args.as_deref(),
+                    config.cargo_token.as_deref(),
+                    &github_options,
+                    Some(&github_client),
+                )?;
+            } else {
+                post_merge_publish(
+                    workspace,
+                    config.dry_run,
+                    config.args.as_deref(),
+                    config.cargo_token.as_deref(),
+                    &github_options,
+                    None,
+                )?;
+            }
             published = true;
         }
     }
@@ -291,27 +303,23 @@ fn emit_github_output(key: &str, value: bool) -> Result<()> {
 }
 
 /// Create a GitHub client if credentials are available
-fn create_github_client() -> Option<github::GitHubClient> {
-    let repo = std::env::var("GITHUB_REPOSITORY").ok()?;
-    let token = std::env::var("GITHUB_TOKEN").ok()?;
+fn create_github_client() -> Result<github::GitHubClient> {
+    let repo = std::env::var("GITHUB_REPOSITORY")
+        .map_err(|_| ActionError::GitHubCredentialsNotAvailable)?;
+    let token =
+        std::env::var("GITHUB_TOKEN").map_err(|_| ActionError::GitHubCredentialsNotAvailable)?;
 
     if repo.is_empty() || token.is_empty() {
-        return None;
+        return Err(ActionError::GitHubCredentialsNotAvailable);
     }
 
-    match github::GitHubClient::new(repo, token) {
-        Ok(client) => Some(client),
-        Err(e) => {
-            eprintln!("Warning: Failed to create GitHub client: {}", e);
-            None
-        }
-    }
+    github::GitHubClient::new(repo, token)
 }
 
 fn prepare_release_pr(
     workspace: &Path,
     config: &Config,
-    github_client: Option<&github::GitHubClient>,
+    github_client: &github::GitHubClient,
 ) -> Result<()> {
     // Check if there are changes to release
     let plan = sampo::capture_release_plan(workspace)?;
@@ -385,11 +393,7 @@ fn prepare_release_pr(
     )?;
 
     // Create PR
-    if let Some(client) = github_client {
-        client.ensure_pull_request(&pr_branch, &base_branch, &pr_title, &pr_body)?;
-    } else {
-        eprintln!("Warning: GitHub client not available. Cannot create PR.");
-    }
+    github_client.ensure_pull_request(&pr_branch, &base_branch, &pr_title, &pr_body)?;
 
     Ok(())
 }
@@ -427,17 +431,15 @@ fn post_merge_publish(
     }
 
     // Optionally create GitHub releases for new tags
-    if github_options.create_github_release && !new_tags.is_empty() {
-        if let Some(client) = github_client {
-            for tag in &new_tags {
-                println!("Creating GitHub release for {}", tag);
-                create_github_release_for_tag(client, tag, workspace, github_options)?;
-            }
-        } else {
-            eprintln!("Warning: GitHub client not available. Cannot create GitHub releases.");
+    if github_options.create_github_release
+        && !new_tags.is_empty()
+        && let Some(client) = github_client
+    {
+        for tag in &new_tags {
+            println!("Creating GitHub release for {}", tag);
+            create_github_release_for_tag(client, tag, workspace, github_options)?;
         }
     }
-
     Ok(())
 }
 
@@ -585,21 +587,21 @@ mod tests {
             std::env::remove_var("GITHUB_REPOSITORY");
             std::env::remove_var("GITHUB_TOKEN");
         }
-        assert!(create_github_client().is_none());
+        assert!(create_github_client().is_err());
 
         // Test with empty values
         unsafe {
             std::env::set_var("GITHUB_REPOSITORY", "");
             std::env::set_var("GITHUB_TOKEN", "token");
         }
-        assert!(create_github_client().is_none());
+        assert!(create_github_client().is_err());
 
         // Test with valid values
         unsafe {
             std::env::set_var("GITHUB_REPOSITORY", "owner/repo");
             std::env::set_var("GITHUB_TOKEN", "valid_token");
         }
-        assert!(create_github_client().is_some());
+        assert!(create_github_client().is_ok());
 
         // Clean up
         unsafe {
