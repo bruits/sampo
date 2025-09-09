@@ -1725,6 +1725,7 @@ dependencies = [
 name = "sampo-github-action"
 version = "0.3.0"
 dependencies = [
+ "reqwest 0.12.23",
  "rustc-hash",
  "sampo-core",
  "serde",

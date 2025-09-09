@@ -3,11 +3,10 @@ mod github;
 mod sampo;
 
 use sampo_core::workspace::discover_workspace;
-use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,34 +20,6 @@ enum ActionError {
 }
 
 type Result<T> = std::result::Result<T, ActionError>;
-
-#[derive(Debug, Deserialize)]
-struct GitHubRelease {
-    #[serde(rename = "upload_url")]
-    upload_url: String,
-}
-
-#[derive(Debug, Serialize)]
-struct CreateReleaseRequest {
-    tag_name: String,
-    name: String,
-    body: String,
-    draft: bool,
-    prerelease: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct DiscussionCategory {
-    id: u64,
-    slug: String,
-}
-
-#[derive(Debug, Serialize)]
-struct CreateDiscussionRequest {
-    title: String,
-    body: String,
-    category_id: u64,
-}
 
 #[derive(Debug, Clone)]
 struct GitHubReleaseOptions {
@@ -395,7 +366,8 @@ fn prepare_release_pr(workspace: &Path, config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    github::ensure_pull_request(&repo, &token, &pr_branch, &base_branch, &pr_title, &pr_body)?;
+    let github_client = github::GitHubClient::new(repo, token)?;
+    github_client.ensure_pull_request(&pr_branch, &base_branch, &pr_title, &pr_body)?;
 
     Ok(())
 }
@@ -454,77 +426,30 @@ fn create_github_release_for_tag(
     workspace: &Path,
     github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
-    let api = format!("https://api.github.com/repos/{}/releases", repo);
     let body = match build_release_body_from_changelog(workspace, tag) {
         Some(body) => body,
         None => format!("Automated release for tag {}", tag),
     };
 
-    let request = CreateReleaseRequest {
-        tag_name: tag.to_string(),
-        name: tag.to_string(),
-        body: body.clone(), // Clone for later use in discussion
-        draft: false,
-        prerelease: false,
-    };
+    let github_client = github::GitHubClient::new(repo.to_string(), token.to_string())?;
 
-    let payload = serde_json::to_string(&request).map_err(|e| ActionError::SampoCommandFailed {
-        operation: "serialize-release-request".to_string(),
-        message: e.to_string(),
-    })?;
-
-    let output = Command::new("curl")
-        .args([
-            "-sS",
-            "-X",
-            "POST",
-            "-H",
-            &format!("Authorization: Bearer {}", token),
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &api,
-            "-d",
-            &payload,
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        eprintln!("Warning: Failed to create GitHub release for {}", tag);
-    } else {
-        println!("Created GitHub release for {}", tag);
-    }
-
-    // Parse response to get upload URL for binary upload
-    let upload_url = if output.status.success() {
-        match serde_json::from_slice::<GitHubRelease>(&output.stdout) {
-            Ok(release) => {
-                // GitHub returns URLs with {?name,label} template - remove the template part
-                release
-                    .upload_url
-                    .split('{')
-                    .next()
-                    .unwrap_or("")
-                    .to_string()
-            }
-            Err(_) => {
-                eprintln!("Warning: Could not parse GitHub release response");
-                String::new()
-            }
+    // Create the release and get upload URL
+    let upload_url = match github_client.create_release(tag, &body) {
+        Ok(url) => url,
+        Err(e) => {
+            eprintln!(
+                "Warning: Failed to create GitHub release for {}: {}",
+                tag, e
+            );
+            return Ok(());
         }
-    } else {
-        String::new()
     };
 
     // If binary upload is requested, compile and upload the binary
     if github_options.upload_binary && !upload_url.is_empty() {
-        if let Err(e) = build_and_upload_binary(
-            workspace,
+        if let Err(e) = github_client.upload_binary_asset(
             &upload_url,
-            token,
+            workspace,
             github_options.binary_name.as_deref(),
         ) {
             eprintln!("Warning: Failed to upload binary: {}", e);
@@ -535,9 +460,7 @@ fn create_github_release_for_tag(
 
     // Optionally open a Discussion for this release
     if github_options.open_discussion
-        && let Err(e) = create_discussion_for_release(
-            repo,
-            token,
+        && let Err(e) = github_client.create_discussion(
             tag,
             &body,
             github_options.discussion_category.as_deref(),
@@ -595,207 +518,6 @@ fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     let slice = &text[head..next];
     let body = slice.trim().to_string();
     if body.is_empty() { None } else { Some(body) }
-}
-
-/// Create a GitHub Discussion for a release using the preferred category if available
-fn create_discussion_for_release(
-    repo: &str,
-    token: &str,
-    tag: &str,
-    body: &str,
-    preferred_category: Option<&str>,
-) -> Result<()> {
-    let categories_url = format!(
-        "https://api.github.com/repos/{}/discussions/categories",
-        repo
-    );
-
-    let out = Command::new("curl")
-        .args([
-            "-sS",
-            "-H",
-            &format!("Authorization: Bearer {}", token),
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &categories_url,
-        ])
-        .output()
-        .map_err(ActionError::Io)?;
-
-    if !out.status.success() {
-        return Err(ActionError::SampoCommandFailed {
-            operation: "github-list-discussion-categories".to_string(),
-            message: String::from_utf8_lossy(&out.stderr).to_string(),
-        });
-    }
-
-    let resp = String::from_utf8_lossy(&out.stdout);
-    let categories: Vec<DiscussionCategory> =
-        serde_json::from_str(&resp).map_err(|e| ActionError::SampoCommandFailed {
-            operation: "github-parse-discussion-categories".to_string(),
-            message: format!("Failed to parse categories JSON: {}", e),
-        })?;
-
-    let desired_slug = preferred_category
-        .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
-        .unwrap_or("announcements");
-
-    // Find category by slug, with fallbacks
-    let category_id = categories
-        .iter()
-        .find(|cat| cat.slug == desired_slug)
-        .or_else(|| categories.iter().find(|cat| cat.slug == "announcements"))
-        .or_else(|| categories.first())
-        .map(|cat| cat.id)
-        .ok_or_else(|| ActionError::SampoCommandFailed {
-            operation: "github-find-discussion-category".to_string(),
-            message: "No discussion categories available".into(),
-        })?;
-
-    let discussions_url = format!("https://api.github.com/repos/{}/discussions", repo);
-    let title = format!("Release {}", tag);
-    let body_with_link = format!(
-        "{}\n\n—\nSee release page: https://github.com/{}/releases/tag/{}",
-        body, repo, tag
-    );
-
-    let request = CreateDiscussionRequest {
-        title,
-        body: body_with_link,
-        category_id,
-    };
-
-    let payload = serde_json::to_string(&request).map_err(|e| ActionError::SampoCommandFailed {
-        operation: "serialize-discussion-request".to_string(),
-        message: e.to_string(),
-    })?;
-
-    let out = Command::new("curl")
-        .args([
-            "-sS",
-            "-X",
-            "POST",
-            "-H",
-            &format!("Authorization: Bearer {}", token),
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &discussions_url,
-            "-d",
-            &payload,
-        ])
-        .output()
-        .map_err(ActionError::Io)?;
-
-    if !out.status.success() {
-        return Err(ActionError::SampoCommandFailed {
-            operation: "github-create-discussion".to_string(),
-            message: format!(
-                "Failed to create discussion: stdout={} stderr={}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ),
-        });
-    }
-
-    println!("Opened GitHub Discussion for {}", tag);
-    Ok(())
-}
-
-/// Build a Linux binary and upload it to GitHub release
-fn build_and_upload_binary(
-    workspace: &Path,
-    upload_url: &str,
-    token: &str,
-    binary_name: Option<&str>,
-) -> Result<()> {
-    // Determine binary name - use provided name or workspace directory name
-    let bin_name = binary_name.unwrap_or_else(|| {
-        workspace
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("app")
-    });
-
-    println!("Building Linux binary: {}", bin_name);
-
-    // Cross-compile for Linux
-    let output = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--bin",
-            bin_name,
-        ])
-        .current_dir(workspace)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(ActionError::SampoCommandFailed {
-            operation: "cross-compile".to_string(),
-            message: format!(
-                "Failed to build Linux binary: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        });
-    }
-
-    // Path to the compiled binary
-    let binary_path = workspace
-        .join("target")
-        .join("x86_64-unknown-linux-gnu")
-        .join("release")
-        .join(bin_name);
-
-    if !binary_path.exists() {
-        return Err(ActionError::SampoCommandFailed {
-            operation: "binary-locate".to_string(),
-            message: format!("Binary not found at {}", binary_path.display()),
-        });
-    }
-
-    // Upload the binary as a release asset
-    let asset_name = format!("{}-linux-x64", bin_name);
-    println!("Uploading binary as {}", asset_name);
-
-    let output = Command::new("curl")
-        .args([
-            "-sS",
-            "-X",
-            "POST",
-            "-H",
-            &format!("Authorization: Bearer {}", token),
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "Content-Type: application/octet-stream",
-            "-H",
-            "X-GitHub-Api-Version: 2022-11-28",
-            &format!("{}?name={}", upload_url, asset_name),
-            "--data-binary",
-            &format!("@{}", binary_path.display()),
-        ])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(ActionError::SampoCommandFailed {
-            operation: "binary-upload".to_string(),
-            message: format!(
-                "Failed to upload binary: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
-        });
-    }
-
-    println!("Binary uploaded successfully");
-    Ok(())
 }
 
 #[cfg(test)]
