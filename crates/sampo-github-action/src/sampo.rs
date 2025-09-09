@@ -149,7 +149,7 @@ pub fn build_release_pr_body(
     }
 
     // Add automatic dependency explanations using unified function
-    let explanations = detect_all_dependency_explanations(&changesets, &ws, config, &releases);
+    let explanations = detect_all_dependency_explanations(&changesets, &ws, config, releases);
 
     // Merge explanations into messages_by_pkg
     for (pkg_name, explanations) in explanations {

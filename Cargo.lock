@@ -1725,7 +1725,6 @@ dependencies = [
 name = "sampo-github-action"
 version = "0.3.0"
 dependencies = [
- "clap",
  "rustc-hash",
  "sampo-core",
  "tempfile",

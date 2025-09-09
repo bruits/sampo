@@ -2,7 +2,6 @@ mod git;
 mod github;
 mod sampo;
 
-use clap::{ArgAction, Parser, ValueEnum};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,76 +20,131 @@ enum ActionError {
 
 type Result<T> = std::result::Result<T, ActionError>;
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy)]
 enum Mode {
     Release,
     Publish,
-    #[value(alias = "release-and-publish")]
     All,
     /// Detect changesets and open/update a Release PR (no tags)
-    #[value(alias = "prepare-pr", alias = "release-pr", alias = "open-pr")]
     PreparePr,
     /// After merge to main: create tags for current versions, push, and publish
-    #[value(alias = "post-merge-publish", alias = "finalize")]
     PostMergePublish,
 }
 
-/// Sampo GitHub Action entrypoint
+impl Mode {
+    fn parse(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "release" => Mode::Release,
+            "publish" => Mode::Publish,
+            "release-and-publish" | "all" => Mode::All,
+            "prepare-pr" | "release-pr" | "open-pr" => Mode::PreparePr,
+            "post-merge-publish" | "finalize" => Mode::PostMergePublish,
+            _ => Mode::All, // default fallback
+        }
+    }
+}
+
+/// Sampo GitHub Action configuration
 ///
-/// This wrapper executes the `sampo` CLI inside the workspace, running
-/// release and/or publish depending on inputs. It is designed to be invoked
-/// by a composite GitHub Action which ensures Rust is available.
-#[derive(Debug, Parser)]
-#[command(name = "sampo-github-action", version, about = "Run Sampo in CI")]
-struct Cli {
+/// This configuration reads inputs from GitHub Actions environment variables.
+/// GitHub Actions inputs are exposed as INPUT_* environment variables.
+#[derive(Debug)]
+struct Config {
     /// Which operation to run (release, publish, or both)
-    #[arg(short, long, value_enum, default_value = "all")]
     mode: Mode,
 
     /// Simulate actions without changing files or publishing artifacts
-    #[arg(long, action = ArgAction::SetTrue)]
     dry_run: bool,
 
     /// Path to the repository root (defaults to GITHUB_WORKSPACE)
-    #[arg(long)]
     working_directory: Option<PathBuf>,
 
     /// Optional crates.io token (exported to child processes)
-    #[arg(long)]
     cargo_token: Option<String>,
 
     /// Extra args passed through to `sampo publish` (after `--`)
     /// Accepts a single string that will be split on whitespace.
-    #[arg(long)]
     args: Option<String>,
 
     /// Base branch for the Release PR (default: current ref name or 'main')
-    #[arg(long)]
     base_branch: Option<String>,
 
     /// Branch name to use for the Release PR (default: 'release/sampo')
-    #[arg(long)]
     pr_branch: Option<String>,
 
     /// Title to use for the Release PR (default: 'Release')
-    #[arg(long)]
     pr_title: Option<String>,
 
     /// Create GitHub releases for newly created tags during publish
-    #[arg(long, action = ArgAction::SetTrue)]
     create_github_release: bool,
 
     /// Upload Linux binary as release asset when creating GitHub releases
-    #[arg(long, action = ArgAction::SetTrue)]
     upload_binary: bool,
 
     /// Binary name to upload (defaults to the main package name)
-    #[arg(long)]
     binary_name: Option<String>,
+}
 
-    /// Optional GitHub token to create/update PRs (defaults to GITHUB_TOKEN)
-    #[arg(long)]
-    github_token: Option<String>,
+impl Config {
+    /// Load configuration from GitHub Actions environment variables
+    fn from_environment() -> Self {
+        let mode = std::env::var("INPUT_COMMAND")
+            .map(|v| Mode::parse(&v))
+            .unwrap_or(Mode::All);
+
+        let dry_run = std::env::var("INPUT_DRY_RUN")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let working_directory = std::env::var("INPUT_WORKING_DIRECTORY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+
+        let cargo_token = std::env::var("INPUT_CARGO_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let args = std::env::var("INPUT_ARGS").ok().filter(|v| !v.is_empty());
+
+        let base_branch = std::env::var("INPUT_BASE_BRANCH")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let pr_branch = std::env::var("INPUT_PR_BRANCH")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let pr_title = std::env::var("INPUT_PR_TITLE")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let create_github_release = std::env::var("INPUT_CREATE_GITHUB_RELEASE")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let upload_binary = std::env::var("INPUT_UPLOAD_BINARY")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let binary_name = std::env::var("INPUT_BINARY_NAME")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        Self {
+            mode,
+            dry_run,
+            working_directory,
+            cargo_token,
+            args,
+            base_branch,
+            pr_branch,
+            pr_title,
+            create_github_release,
+            upload_binary,
+            binary_name,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -104,15 +158,12 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+    let config = Config::from_environment();
 
-    // Apply GitHub Actions environment variable overrides
-    apply_environment_overrides(&mut cli);
-
-    let workspace = determine_workspace(&cli)?;
+    let workspace = determine_workspace(&config)?;
 
     // Execute the requested operations
-    let (released, published) = execute_operations(&cli, &workspace)?;
+    let (released, published) = execute_operations(&config, &workspace)?;
 
     // Emit outputs for the workflow
     emit_github_output("released", released)?;
@@ -121,152 +172,58 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Apply GitHub Actions input environment variables to CLI arguments
-fn apply_environment_overrides(cli: &mut Cli) {
-    // Override mode if INPUT_COMMAND is provided and mode is default
-    if matches!(cli.mode, Mode::All)
-        && let Ok(v) = std::env::var("INPUT_COMMAND")
-    {
-        cli.mode = match v.to_ascii_lowercase().as_str() {
-            "release" => Mode::Release,
-            "publish" => Mode::Publish,
-            "release-and-publish" | "all" => Mode::All,
-            "prepare-pr" | "release-pr" | "open-pr" => Mode::PreparePr,
-            "post-merge-publish" | "finalize" => Mode::PostMergePublish,
-            _ => cli.mode,
-        };
-    }
-
-    // Override dry_run if INPUT_DRY_RUN is provided
-    if !cli.dry_run
-        && let Ok(v) = std::env::var("INPUT_DRY_RUN")
-    {
-        cli.dry_run = v.eq_ignore_ascii_case("true");
-    }
-
-    // Override working_directory if INPUT_WORKING_DIRECTORY is provided
-    if cli.working_directory.is_none()
-        && let Ok(v) = std::env::var("INPUT_WORKING_DIRECTORY")
-        && !v.is_empty()
-    {
-        cli.working_directory = Some(PathBuf::from(v));
-    }
-
-    // Override cargo_token if INPUT_CARGO_TOKEN is provided
-    if cli.cargo_token.is_none()
-        && let Ok(v) = std::env::var("INPUT_CARGO_TOKEN")
-        && !v.is_empty()
-    {
-        cli.cargo_token = Some(v);
-    }
-
-    // Override args if INPUT_ARGS is provided
-    if cli.args.is_none()
-        && let Ok(v) = std::env::var("INPUT_ARGS")
-        && !v.is_empty()
-    {
-        cli.args = Some(v);
-    }
-
-    // Override base_branch/pr_branch/pr_title if provided
-    if cli.base_branch.is_none()
-        && let Ok(v) = std::env::var("INPUT_BASE_BRANCH")
-        && !v.is_empty()
-    {
-        cli.base_branch = Some(v);
-    }
-    if cli.pr_branch.is_none()
-        && let Ok(v) = std::env::var("INPUT_PR_BRANCH")
-        && !v.is_empty()
-    {
-        cli.pr_branch = Some(v);
-    }
-    if cli.pr_title.is_none()
-        && let Ok(v) = std::env::var("INPUT_PR_TITLE")
-        && !v.is_empty()
-    {
-        cli.pr_title = Some(v);
-    }
-
-    if !cli.create_github_release
-        && let Ok(v) = std::env::var("INPUT_CREATE_GITHUB_RELEASE")
-    {
-        cli.create_github_release = v.eq_ignore_ascii_case("true");
-    }
-
-    if !cli.upload_binary
-        && let Ok(v) = std::env::var("INPUT_UPLOAD_BINARY")
-    {
-        cli.upload_binary = v.eq_ignore_ascii_case("true");
-    }
-
-    if cli.binary_name.is_none()
-        && let Ok(v) = std::env::var("INPUT_BINARY_NAME")
-        && !v.is_empty()
-    {
-        cli.binary_name = Some(v);
-    }
-
-    // Optional GitHub token override
-    if cli.github_token.is_none()
-        && let Ok(v) = std::env::var("INPUT_GITHUB_TOKEN")
-        && !v.is_empty()
-    {
-        cli.github_token = Some(v);
-    }
-}
-
 /// Determine the workspace root directory
-fn determine_workspace(cli: &Cli) -> Result<PathBuf> {
-    cli.working_directory
+fn determine_workspace(config: &Config) -> Result<PathBuf> {
+    config
+        .working_directory
         .clone()
         .or_else(|| std::env::var("GITHUB_WORKSPACE").ok().map(PathBuf::from))
         .ok_or(ActionError::NoWorkingDirectory)
 }
 
 /// Execute the requested operations and return (released, published) status
-fn execute_operations(cli: &Cli, workspace: &Path) -> Result<(bool, bool)> {
+fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)> {
     let mut released = false;
     let mut published = false;
 
-    match cli.mode {
+    match config.mode {
         Mode::Release => {
-            sampo::run_release(workspace, cli.dry_run, cli.cargo_token.as_deref())?;
+            sampo::run_release(workspace, config.dry_run, config.cargo_token.as_deref())?;
             released = true;
         }
         Mode::Publish => {
             sampo::run_publish(
                 workspace,
-                cli.dry_run,
-                cli.args.as_deref(),
-                cli.cargo_token.as_deref(),
+                config.dry_run,
+                config.args.as_deref(),
+                config.cargo_token.as_deref(),
             )?;
             published = true;
         }
         Mode::All => {
-            sampo::run_release(workspace, cli.dry_run, cli.cargo_token.as_deref())?;
+            sampo::run_release(workspace, config.dry_run, config.cargo_token.as_deref())?;
             released = true;
 
             sampo::run_publish(
                 workspace,
-                cli.dry_run,
-                cli.args.as_deref(),
-                cli.cargo_token.as_deref(),
+                config.dry_run,
+                config.args.as_deref(),
+                config.cargo_token.as_deref(),
             )?;
             published = true;
         }
         Mode::PreparePr => {
-            prepare_release_pr(workspace, cli)?;
+            prepare_release_pr(workspace, config)?;
         }
         Mode::PostMergePublish => {
             post_merge_publish(
                 workspace,
-                cli.dry_run,
-                cli.args.as_deref(),
-                cli.cargo_token.as_deref(),
-                cli.create_github_release,
-                cli.upload_binary,
-                cli.binary_name.as_deref(),
+                config.dry_run,
+                config.args.as_deref(),
+                config.cargo_token.as_deref(),
+                config.create_github_release,
+                config.upload_binary,
+                config.binary_name.as_deref(),
             )?;
             published = true;
         }
@@ -287,7 +244,7 @@ fn emit_github_output(key: &str, value: bool) -> Result<()> {
     Ok(())
 }
 
-fn prepare_release_pr(workspace: &Path, cli: &Cli) -> Result<()> {
+fn prepare_release_pr(workspace: &Path, config: &Config) -> Result<()> {
     // Check if there are changes to release
     let plan = sampo::capture_release_plan(workspace)?;
     if !plan.has_changes {
@@ -296,22 +253,22 @@ fn prepare_release_pr(workspace: &Path, cli: &Cli) -> Result<()> {
     }
 
     // Configuration
-    let base_branch = cli
+    let base_branch = config
         .base_branch
         .clone()
         .or_else(|| std::env::var("GITHUB_REF_NAME").ok())
         .unwrap_or_else(|| "main".into());
-    let pr_branch = cli
+    let pr_branch = config
         .pr_branch
         .clone()
         .unwrap_or_else(|| "release/sampo".into());
-    let pr_title = cli.pr_title.clone().unwrap_or_else(|| "Release".into());
+    let pr_title = config.pr_title.clone().unwrap_or_else(|| "Release".into());
 
     // Build PR body BEFORE running release (release will consume changesets)
     let pr_body = {
         // Load configuration for dependency explanations
-        let config = sampo_core::Config::load(workspace).unwrap_or_default();
-        let body = sampo::build_release_pr_body(workspace, &plan.releases, &config)?;
+        let sampo_config = sampo_core::Config::load(workspace).unwrap_or_default();
+        let body = sampo::build_release_pr_body(workspace, &plan.releases, &sampo_config)?;
         if body.trim().is_empty() {
             println!("No applicable package changes for PR body. Skipping PR creation.");
             return Ok(());
@@ -335,7 +292,7 @@ fn prepare_release_pr(workspace: &Path, cli: &Cli) -> Result<()> {
     )?;
 
     // Apply release (no tags)
-    sampo::run_release(workspace, false, cli.cargo_token.as_deref())?;
+    sampo::run_release(workspace, false, config.cargo_token.as_deref())?;
 
     // Check for changes and commit
     if !git::has_changes(workspace)? {
@@ -588,12 +545,30 @@ fn build_and_upload_binary(
     Ok(())
 }
 
-impl Default for Cli {
-    fn default() -> Self {
-        Self {
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mode_parsing() {
+        assert!(matches!(Mode::parse("release"), Mode::Release));
+        assert!(matches!(Mode::parse("publish"), Mode::Publish));
+        assert!(matches!(Mode::parse("all"), Mode::All));
+        assert!(matches!(Mode::parse("release-and-publish"), Mode::All));
+        assert!(matches!(Mode::parse("prepare-pr"), Mode::PreparePr));
+        assert!(matches!(
+            Mode::parse("post-merge-publish"),
+            Mode::PostMergePublish
+        ));
+        assert!(matches!(Mode::parse("unknown"), Mode::All)); // default fallback
+    }
+
+    #[test]
+    fn test_determine_workspace_with_config_override() {
+        let config = Config {
+            working_directory: Some(PathBuf::from("/test/path")),
             mode: Mode::All,
             dry_run: false,
-            working_directory: None,
             cargo_token: None,
             args: None,
             base_branch: None,
@@ -602,29 +577,8 @@ impl Default for Cli {
             create_github_release: false,
             upload_binary: false,
             binary_name: None,
-            github_token: None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_mode_parsing() {
-        assert!(matches!(Mode::Release, Mode::Release));
-        assert!(matches!(Mode::Publish, Mode::Publish));
-        assert!(matches!(Mode::All, Mode::All));
-    }
-
-    #[test]
-    fn test_determine_workspace_with_cli_override() {
-        let cli = Cli {
-            working_directory: Some(PathBuf::from("/test/path")),
-            ..Default::default()
         };
-        let result = determine_workspace(&cli).unwrap();
+        let result = determine_workspace(&config).unwrap();
         assert_eq!(result, PathBuf::from("/test/path"));
     }
 
