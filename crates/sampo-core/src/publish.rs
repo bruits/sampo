@@ -7,7 +7,28 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-/// Main publish function that can be called from CLI or other interfaces
+/// Publishes all publishable crates in a workspace to crates.io in dependency order.
+///
+/// This function discovers all crates in the workspace, determines which ones are
+/// publishable to crates.io, validates their dependencies, and publishes them in
+/// topological order (dependencies first).
+///
+/// # Arguments
+/// * `root` - Path to the workspace root directory
+/// * `dry_run` - If true, performs validation and shows what would be published without actually publishing
+/// * `cargo_args` - Additional arguments to pass to `cargo publish`
+///
+/// # Examples
+/// ```no_run
+/// use std::path::Path;
+/// use sampo_core::run_publish;
+///
+/// // Dry run to see what would be published
+/// run_publish(Path::new("."), true, &[]).unwrap();
+///
+/// // Actual publish with custom cargo args
+/// run_publish(Path::new("."), false, &["--allow-dirty".to_string()]).unwrap();
+/// ```
 pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> io::Result<()> {
     let ws = discover_workspace(root).map_err(io::Error::other)?;
 
@@ -129,7 +150,33 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     Ok(())
 }
 
-/// Check if a crate is publishable to crates.io based on its manifest
+/// Determines if a crate is publishable to crates.io based on its Cargo.toml manifest.
+///
+/// Checks the `publish` field in the `[package]` section according to Cargo's rules:
+/// - No `publish` field: publishable (default)
+/// - `publish = false`: not publishable
+/// - `publish = ["registry1", "registry2"]`: publishable only if "crates-io" is in the array
+///
+/// # Arguments
+/// * `manifest_path` - Path to the Cargo.toml file to check
+///
+/// # Examples
+/// ```no_run
+/// use std::path::Path;
+/// use sampo_core::is_publishable_to_crates_io;
+///
+/// // Check if a crate is publishable
+/// let publishable = is_publishable_to_crates_io(Path::new("./Cargo.toml")).unwrap();
+/// if publishable {
+///     println!("This crate can be published to crates.io");
+/// }
+/// ```
+///
+/// # Errors
+/// Returns an error if:
+/// - The manifest file cannot be read
+/// - The TOML is malformed
+/// - The manifest has no `[package]` section (returns `Ok(false)`)
 pub fn is_publishable_to_crates_io(manifest_path: &Path) -> io::Result<bool> {
     let text = fs::read_to_string(manifest_path)?;
     let value: toml::Value = text
@@ -162,7 +209,26 @@ pub fn is_publishable_to_crates_io(manifest_path: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Create a git tag for a published crate
+/// Creates an annotated git tag for a published crate.
+///
+/// Creates a tag in the format `{crate_name}-v{version}` (e.g., "my-crate-v1.2.3")
+/// with a descriptive message. Skips tagging if not in a git repository or if
+/// the tag already exists.
+///
+/// # Arguments
+/// * `repo_root` - Path to the git repository root
+/// * `crate_name` - Name of the crate that was published
+/// * `version` - Version that was published
+///
+/// # Examples
+/// ```no_run
+/// use std::path::Path;
+/// use sampo_core::tag_published_crate;
+///
+/// // Tag a published crate
+/// tag_published_crate(Path::new("."), "my-crate", "1.2.3").unwrap();
+/// // Creates tag: "my-crate-v1.2.3" with message "Release my-crate 1.2.3"
+/// ```
 pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) -> io::Result<()> {
     if !repo_root.join(".git").exists() {
         // Not a git repo, skip
@@ -204,7 +270,27 @@ pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) ->
     }
 }
 
-/// Check if a version exists on crates.io
+/// Checks if a specific version of a crate already exists on crates.io.
+///
+/// Makes an HTTP request to the crates.io API to determine if the exact
+/// version is already published. Useful for skipping redundant publishes.
+///
+/// # Arguments
+/// * `crate_name` - Name of the crate to check
+/// * `version` - Exact version string to check
+///
+/// # Examples
+/// ```no_run
+/// use sampo_core::version_exists_on_crates_io;
+///
+/// // Check if serde 1.0.0 exists (it does)
+/// let exists = version_exists_on_crates_io("serde", "1.0.0").unwrap();
+/// assert!(exists);
+///
+/// // Check if a fictional version exists
+/// let exists = version_exists_on_crates_io("serde", "999.999.999").unwrap();
+/// assert!(!exists);
+/// ```
 pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Result<bool> {
     // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
     let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
@@ -244,7 +330,31 @@ pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Resul
     }
 }
 
-/// Compute topological order for publishing crates (dependencies first)
+/// Computes topological ordering for publishing crates (dependencies first).
+///
+/// Given a set of crates and their internal dependencies, returns the order
+/// in which they should be published so that dependencies are always published
+/// before the crates that depend on them.
+///
+/// # Arguments
+/// * `name_to_crate` - Map from crate names to their info
+/// * `include` - Set of crate names to include in the ordering
+///
+/// # Examples
+/// ```no_run
+/// use std::collections::{BTreeMap, BTreeSet};
+/// use sampo_core::{topo_order, types::CrateInfo};
+/// use std::path::PathBuf;
+///
+/// let mut crates = BTreeMap::new();
+/// let mut include = BTreeSet::new();
+///
+/// // Setup crates: foundation -> middleware -> app
+/// // ... (create CrateInfo instances) ...
+///
+/// let order = topo_order(&crates, &include).unwrap();
+/// // Returns: ["foundation", "middleware", "app"]
+/// ```
 pub fn topo_order(
     name_to_crate: &BTreeMap<String, &CrateInfo>,
     include: &BTreeSet<String>,
@@ -312,9 +422,9 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::fs;
     use rustc_hash::FxHashMap;
+    use std::fs;
+    use std::path::PathBuf;
 
     /// Test workspace builder for publish testing
     struct TestWorkspace {
@@ -504,7 +614,7 @@ mod tests {
     #[test]
     fn handles_empty_workspace() {
         let workspace = TestWorkspace::new();
-        
+
         // Should succeed with no output
         let result = workspace.run_publish(true);
         assert!(result.is_ok());
@@ -543,34 +653,50 @@ mod tests {
     #[test]
     fn parses_manifest_publish_field_correctly() {
         let temp_dir = tempfile::tempdir().unwrap();
-        
+
         // Test publish = false
         let manifest_false = temp_dir.path().join("false.toml");
-        fs::write(&manifest_false, "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = false\n").unwrap();
+        fs::write(
+            &manifest_false,
+            "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = false\n",
+        )
+        .unwrap();
         assert!(!is_publishable_to_crates_io(&manifest_false).unwrap());
 
         // Test publish = ["custom-registry"] (not crates-io)
         let manifest_custom = temp_dir.path().join("custom.toml");
-        fs::write(&manifest_custom, "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"custom-registry\"]\n").unwrap();
+        fs::write(
+            &manifest_custom,
+            "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"custom-registry\"]\n",
+        )
+        .unwrap();
         assert!(!is_publishable_to_crates_io(&manifest_custom).unwrap());
 
         // Test publish = ["crates-io"] (explicitly allowed)
         let manifest_allowed = temp_dir.path().join("allowed.toml");
-        fs::write(&manifest_allowed, "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"crates-io\"]\n").unwrap();
+        fs::write(
+            &manifest_allowed,
+            "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"crates-io\"]\n",
+        )
+        .unwrap();
         assert!(is_publishable_to_crates_io(&manifest_allowed).unwrap());
 
         // Test default (no publish field)
         let manifest_default = temp_dir.path().join("default.toml");
-        fs::write(&manifest_default, "[package]\nname=\"test\"\nversion=\"0.1.0\"\n").unwrap();
+        fs::write(
+            &manifest_default,
+            "[package]\nname=\"test\"\nversion=\"0.1.0\"\n",
+        )
+        .unwrap();
         assert!(is_publishable_to_crates_io(&manifest_default).unwrap());
     }
 
-    #[test] 
+    #[test]
     fn handles_missing_package_section() {
         let temp_dir = tempfile::tempdir().unwrap();
         let manifest_path = temp_dir.path().join("no-package.toml");
         fs::write(&manifest_path, "[dependencies]\nserde = \"1.0\"\n").unwrap();
-        
+
         // Should return false (not publishable) for manifests without [package]
         assert!(!is_publishable_to_crates_io(&manifest_path).unwrap());
     }
@@ -580,7 +706,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let manifest_path = temp_dir.path().join("broken.toml");
         fs::write(&manifest_path, "[package\nname=\"test\"\n").unwrap(); // Missing closing bracket
-        
+
         let result = is_publishable_to_crates_io(&manifest_path);
         assert!(result.is_err());
         assert!(result.unwrap_err().kind() == io::ErrorKind::InvalidData);

@@ -7,8 +7,6 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... And more coming soon!
 
-Deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna). Enforce [Semantic Versioning](https://semver.org/) (SemVer) across all packages.
-
 Don't know where to start? Check out Sampo's [Getting Started](./crates/sampo/README.md#getting-started) guide.
 
 ## Crates
@@ -22,11 +20,10 @@ Sampo is a monorepo that contains the following crates (Rust packages):
 | `sampo-github-bot`    | GitHub App to inspect PRs and request changesets              | <a href="https://crates.io/crates/sampo-github-bot"><img alt="Sampo GitHub Bot Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-bot"></a>          | [README](./crates/sampo-github-bot/README.md)    |
 | `sampo-github-action` | GitHub Action to automate the release and publishing process. | <a href="https://crates.io/crates/sampo-github-action"><img alt="Sampo GitHub Action Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-action"></a> | [README](./crates/sampo-github-action/README.md) |
 
-## Packages
+## Aknowledgements
 
-Additionally, Sampo contains the following packages for diverse ecosystems:
+Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), but made with Rust and designed for multi-ecosystems monorepos.
 
-| Name | Description | Registry | README |
-| ---- | ----------- | -------- | ------ |
+Sampo uses and enforces [Semantic Versioning](https://semver.org/) (SemVer), like their standard `MAJOR.MINOR.PATCH` version format and the "Version Bumps" concepts.
 
-(*Coming soon*)
+Sampo is an open-source project born from [Bruits](https://github.com/bruits), a Rust-focused collective, and lives thanks to its [contributors](https://github.com/bruits/sampo/graphs/contributors) 💛
