@@ -2,6 +2,8 @@ mod git;
 mod github;
 mod sampo;
 
+use sampo_core::workspace::discover_workspace;
+use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,60 @@ enum ActionError {
 }
 
 type Result<T> = std::result::Result<T, ActionError>;
+
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    #[serde(rename = "upload_url")]
+    upload_url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateReleaseRequest {
+    tag_name: String,
+    name: String,
+    body: String,
+    draft: bool,
+    prerelease: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscussionCategory {
+    id: u64,
+    slug: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateDiscussionRequest {
+    title: String,
+    body: String,
+    category_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct GitHubReleaseOptions {
+    /// Create GitHub releases for newly created tags during publish
+    create_github_release: bool,
+    /// Also open a GitHub Discussion for each created release
+    open_discussion: bool,
+    /// Preferred Discussions category slug (e.g., "announcements")
+    discussion_category: Option<String>,
+    /// Upload Linux binary as release asset when creating GitHub releases
+    upload_binary: bool,
+    /// Binary name to upload (defaults to the main package name)
+    binary_name: Option<String>,
+}
+
+impl GitHubReleaseOptions {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            create_github_release: config.create_github_release,
+            open_discussion: config.open_discussion,
+            discussion_category: config.discussion_category.clone(),
+            upload_binary: config.upload_binary,
+            binary_name: config.binary_name.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Mode {
@@ -78,6 +134,12 @@ struct Config {
     /// Create GitHub releases for newly created tags during publish
     create_github_release: bool,
 
+    /// Also open a GitHub Discussion for each created release
+    open_discussion: bool,
+
+    /// Preferred Discussions category slug (e.g., "announcements")
+    discussion_category: Option<String>,
+
     /// Upload Linux binary as release asset when creating GitHub releases
     upload_binary: bool,
 
@@ -123,6 +185,14 @@ impl Config {
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let open_discussion = std::env::var("INPUT_OPEN_DISCUSSION")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let discussion_category = std::env::var("INPUT_DISCUSSION_CATEGORY")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         let upload_binary = std::env::var("INPUT_UPLOAD_BINARY")
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -141,6 +211,8 @@ impl Config {
             pr_branch,
             pr_title,
             create_github_release,
+            open_discussion,
+            discussion_category,
             upload_binary,
             binary_name,
         }
@@ -216,14 +288,13 @@ fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)>
             prepare_release_pr(workspace, config)?;
         }
         Mode::PostMergePublish => {
+            let github_options = GitHubReleaseOptions::from_config(config);
             post_merge_publish(
                 workspace,
                 config.dry_run,
                 config.args.as_deref(),
                 config.cargo_token.as_deref(),
-                config.create_github_release,
-                config.upload_binary,
-                config.binary_name.as_deref(),
+                &github_options,
             )?;
             published = true;
         }
@@ -334,9 +405,7 @@ fn post_merge_publish(
     dry_run: bool,
     args: Option<&str>,
     cargo_token: Option<&str>,
-    create_github_release: bool,
-    upload_binary: bool,
-    binary_name: Option<&str>,
+    github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
     // Setup git identity for tag creation
     git::setup_bot_user(workspace)?;
@@ -363,21 +432,14 @@ fn post_merge_publish(
     }
 
     // Optionally create GitHub releases for new tags
-    if create_github_release && !new_tags.is_empty() {
+    if github_options.create_github_release && !new_tags.is_empty() {
         let repo = std::env::var("GITHUB_REPOSITORY").unwrap_or_default();
         let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
 
         if !repo.is_empty() && !token.is_empty() {
             for tag in &new_tags {
                 println!("Creating GitHub release for {}", tag);
-                create_github_release_for_tag(
-                    &repo,
-                    &token,
-                    tag,
-                    workspace,
-                    upload_binary,
-                    binary_name,
-                )?;
+                create_github_release_for_tag(&repo, &token, tag, workspace, github_options)?;
             }
         }
     }
@@ -390,16 +452,26 @@ fn create_github_release_for_tag(
     token: &str,
     tag: &str,
     workspace: &Path,
-    upload_binary: bool,
-    binary_name: Option<&str>,
+    github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
     let api = format!("https://api.github.com/repos/{}/releases", repo);
-    let name = tag.to_string();
-    let body = format!("Automated release for tag {}", tag);
-    let payload = format!(
-        r#"{{"tag_name":"{}","name":"{}","body":"{}","draft":false,"prerelease":false}}"#,
-        tag, name, body
-    );
+    let body = match build_release_body_from_changelog(workspace, tag) {
+        Some(body) => body,
+        None => format!("Automated release for tag {}", tag),
+    };
+
+    let request = CreateReleaseRequest {
+        tag_name: tag.to_string(),
+        name: tag.to_string(),
+        body: body.clone(), // Clone for later use in discussion
+        draft: false,
+        prerelease: false,
+    };
+
+    let payload = serde_json::to_string(&request).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "serialize-release-request".to_string(),
+        message: e.to_string(),
+    })?;
 
     let output = Command::new("curl")
         .args([
@@ -426,31 +498,212 @@ fn create_github_release_for_tag(
         println!("Created GitHub release for {}", tag);
     }
 
-    // Upload assets to release, extract from response, don't use serde
-    let upload_url = {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(start) = stdout.find("\"upload_url\":\"") {
-            let start = start + "\"upload_url\":\"".len();
-            if let Some(end) = stdout[start..].find('{') {
-                let url = &stdout[start..start + end];
-                url.replace("\\u0026", "&").replace("\\/", "/")
-            } else {
+    // Parse response to get upload URL for binary upload
+    let upload_url = if output.status.success() {
+        match serde_json::from_slice::<GitHubRelease>(&output.stdout) {
+            Ok(release) => {
+                // GitHub returns URLs with {?name,label} template - remove the template part
+                release
+                    .upload_url
+                    .split('{')
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            }
+            Err(_) => {
+                eprintln!("Warning: Could not parse GitHub release response");
                 String::new()
             }
-        } else {
-            String::new()
         }
+    } else {
+        String::new()
     };
 
     // If binary upload is requested, compile and upload the binary
-    if upload_binary && !upload_url.is_empty() {
-        if let Err(e) = build_and_upload_binary(workspace, &upload_url, token, binary_name) {
+    if github_options.upload_binary && !upload_url.is_empty() {
+        if let Err(e) = build_and_upload_binary(
+            workspace,
+            &upload_url,
+            token,
+            github_options.binary_name.as_deref(),
+        ) {
             eprintln!("Warning: Failed to upload binary: {}", e);
         } else {
             println!("Successfully uploaded binary for {}", tag);
         }
     }
 
+    // Optionally open a Discussion for this release
+    if github_options.open_discussion
+        && let Err(e) = create_discussion_for_release(
+            repo,
+            token,
+            tag,
+            &body,
+            github_options.discussion_category.as_deref(),
+        )
+    {
+        eprintln!("Warning: Failed to create discussion for {}: {}", tag, e);
+    }
+
+    Ok(())
+}
+
+/// Build a release body by extracting the matching section from the crate's CHANGELOG.md
+fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<String> {
+    let (crate_name, version) = parse_tag(tag)?;
+
+    // Find crate directory by name using the workspace API
+    let ws = discover_workspace(workspace).ok()?;
+    let crate_dir = ws
+        .members
+        .iter()
+        .find(|c| c.name == crate_name)
+        .map(|c| c.path.clone())
+        // Fallback to a conventional path if discovery failed to find it
+        .unwrap_or_else(|| workspace.join("crates").join(&crate_name));
+
+    let changelog = crate_dir.join("CHANGELOG.md");
+    extract_changelog_section(&changelog, &version)
+}
+
+/// Parse tags in the format "<crate>-v<version>"
+fn parse_tag(tag: &str) -> Option<(String, String)> {
+    let idx = tag.rfind("-v")?;
+    let (name, ver) = tag.split_at(idx);
+    let version = ver.trim_start_matches("-v").to_string();
+    if name.is_empty() || version.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), version))
+}
+
+/// Extract the section that starts at "## <version>" until the next "## " or EOF
+fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let needle = format!("## {}", version);
+    let start = text.find(&needle)?;
+
+    // Find the next header starting at the line after our needle
+    let next = text[start + needle.len()..]
+        .find("\n## ")
+        .map(|ofs| start + needle.len() + ofs)
+        .unwrap_or_else(|| text.len());
+
+    // Include from the beginning of the line with our needle
+    let head = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let slice = &text[head..next];
+    let body = slice.trim().to_string();
+    if body.is_empty() { None } else { Some(body) }
+}
+
+/// Create a GitHub Discussion for a release using the preferred category if available
+fn create_discussion_for_release(
+    repo: &str,
+    token: &str,
+    tag: &str,
+    body: &str,
+    preferred_category: Option<&str>,
+) -> Result<()> {
+    let categories_url = format!(
+        "https://api.github.com/repos/{}/discussions/categories",
+        repo
+    );
+
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            &categories_url,
+        ])
+        .output()
+        .map_err(ActionError::Io)?;
+
+    if !out.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "github-list-discussion-categories".to_string(),
+            message: String::from_utf8_lossy(&out.stderr).to_string(),
+        });
+    }
+
+    let resp = String::from_utf8_lossy(&out.stdout);
+    let categories: Vec<DiscussionCategory> =
+        serde_json::from_str(&resp).map_err(|e| ActionError::SampoCommandFailed {
+            operation: "github-parse-discussion-categories".to_string(),
+            message: format!("Failed to parse categories JSON: {}", e),
+        })?;
+
+    let desired_slug = preferred_category
+        .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
+        .unwrap_or("announcements");
+
+    // Find category by slug, with fallbacks
+    let category_id = categories
+        .iter()
+        .find(|cat| cat.slug == desired_slug)
+        .or_else(|| categories.iter().find(|cat| cat.slug == "announcements"))
+        .or_else(|| categories.first())
+        .map(|cat| cat.id)
+        .ok_or_else(|| ActionError::SampoCommandFailed {
+            operation: "github-find-discussion-category".to_string(),
+            message: "No discussion categories available".into(),
+        })?;
+
+    let discussions_url = format!("https://api.github.com/repos/{}/discussions", repo);
+    let title = format!("Release {}", tag);
+    let body_with_link = format!(
+        "{}\n\n—\nSee release page: https://github.com/{}/releases/tag/{}",
+        body, repo, tag
+    );
+
+    let request = CreateDiscussionRequest {
+        title,
+        body: body_with_link,
+        category_id,
+    };
+
+    let payload = serde_json::to_string(&request).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "serialize-discussion-request".to_string(),
+        message: e.to_string(),
+    })?;
+
+    let out = Command::new("curl")
+        .args([
+            "-sS",
+            "-X",
+            "POST",
+            "-H",
+            &format!("Authorization: Bearer {}", token),
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "X-GitHub-Api-Version: 2022-11-28",
+            &discussions_url,
+            "-d",
+            &payload,
+        ])
+        .output()
+        .map_err(ActionError::Io)?;
+
+    if !out.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "github-create-discussion".to_string(),
+            message: format!(
+                "Failed to create discussion: stdout={} stderr={}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        });
+    }
+
+    println!("Opened GitHub Discussion for {}", tag);
     Ok(())
 }
 
@@ -575,6 +828,8 @@ mod tests {
             pr_branch: None,
             pr_title: None,
             create_github_release: false,
+            open_discussion: false,
+            discussion_category: None,
             upload_binary: false,
             binary_name: None,
         };
@@ -586,5 +841,35 @@ mod tests {
     fn test_emit_github_output() {
         // This test would need mocking for real testing
         assert!(emit_github_output("test", true).is_ok());
+    }
+
+    #[test]
+    fn test_parse_tag() {
+        assert_eq!(
+            parse_tag("my-crate-v1.2.3"),
+            Some(("my-crate".into(), "1.2.3".into()))
+        );
+        assert_eq!(parse_tag("nope"), None);
+        assert_eq!(parse_tag("-v1.0.0"), None);
+    }
+
+    #[test]
+    fn test_extract_changelog_section() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("CHANGELOG.md");
+        let content =
+            "# my-crate\n\n## 1.2.3\n\n### Patch changes\n\n- Fix: foo\n\n## 1.2.2\n\n- Older";
+        fs::write(&file, content).unwrap();
+
+        let got = extract_changelog_section(&file, "1.2.3").unwrap();
+        assert!(got.starts_with("## 1.2.3"));
+        assert!(got.contains("Fix: foo"));
+
+        let older = extract_changelog_section(&file, "1.2.2").unwrap();
+        assert!(older.starts_with("## 1.2.2"));
+        assert!(!older.contains("1.2.3"));
     }
 }

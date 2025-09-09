@@ -36,6 +36,8 @@ jobs:
           command: post-merge-publish
           cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           create-github-release: true
+          open-discussion: true
+          discussion-category: announcements
 
       - name: Check if sampo-github-bot was updated
         id: check-bot-update

@@ -33,6 +33,13 @@ inputs:
     description: "If true, create GitHub releases for new tags (post-merge-publish mode)"
     required: false
     default: "false"
+  open-discussion:
+    description: "If true, also open a GitHub Discussion for each created release (post-merge-publish mode)"
+    required: false
+    default: "false"
+  discussion-category:
+    description: "Preferred Discussions category slug (default: 'announcements' if it exists)"
+    required: false
   upload-binary:
     description: "If true, upload Linux binary as release asset when creating GitHub releases"
     required: false
@@ -68,6 +75,8 @@ runs:
         INPUT_PR_BRANCH: ${{ inputs['pr-branch'] }}
         INPUT_PR_TITLE: ${{ inputs['pr-title'] }}
         INPUT_CREATE_GITHUB_RELEASE: ${{ inputs['create-github-release'] }}
+        INPUT_OPEN_DISCUSSION: ${{ inputs['open-discussion'] }}
+        INPUT_DISCUSSION_CATEGORY: ${{ inputs['discussion-category'] }}
         INPUT_UPLOAD_BINARY: ${{ inputs['upload-binary'] }}
         INPUT_BINARY_NAME: ${{ inputs['binary-name'] }}
         INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}

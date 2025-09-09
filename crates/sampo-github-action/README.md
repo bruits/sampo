@@ -113,6 +113,10 @@ jobs:
           cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           # optional: also create GitHub Releases for new tags
           create-github-release: true
+          # optional: open a GitHub Discussion per release
+          open-discussion: true
+          # optional: preferred discussions category slug (falls back gracefully)
+          discussion-category: announcements
           # optional: upload Linux binary to GitHub releases
           upload-binary: true
           # optional: specify binary name (defaults to main package name)
@@ -139,6 +143,8 @@ Notes:
 - `pr-branch`: working branch used for the Release PR (prepare-pr)
 - `pr-title`: title of the Release PR (prepare-pr)
 - `create-github-release`: if `true`, create GitHub Releases for new tags (post-merge-publish)
+- `open-discussion`: if `true`, create a GitHub Discussion for each created release (post-merge-publish)
+- `discussion-category`: preferred Discussions category slug (default preference: `announcements` when available)
 - `upload-binary`: if `true`, upload Linux binary as release asset when creating GitHub releases (post-merge-publish)
 - `binary-name`: binary name to upload (defaults to the main package name)
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env)

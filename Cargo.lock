@@ -1727,6 +1727,8 @@ version = "0.3.0"
 dependencies = [
  "rustc-hash",
  "sampo-core",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "toml",
