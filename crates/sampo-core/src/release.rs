@@ -762,8 +762,10 @@ fn update_dependency_version(
                 let indent = line.len() - line.trim_start().len();
                 let spaces = " ".repeat(indent);
 
-                // Check if it's a simple string version or a table with path
-                if trimmed.contains("{ path =") || trimmed.contains("{path =") {
+                if trimmed.contains("workspace = true") || trimmed.contains("workspace=true") {
+                    // Workspace-based dependency - leave unchanged
+                    result_lines.push(line.to_string());
+                } else if trimmed.contains("{ path =") || trimmed.contains("{path =") {
                     // It's a table format with path - preserve path, update version
                     let updated_line = update_dependency_table_line(line, new_version);
                     result_lines.push(updated_line);
@@ -776,7 +778,7 @@ fn update_dependency_version(
                 } else {
                     // It's likely a simple string version, convert to table with version
                     result_lines.push(format!(
-                        "{}\"{}\" = {{ version = \"{}\" }}",
+                        "{}{} = {{ version = \"{}\" }}",
                         spaces, dep_name, new_version
                     ));
                     was_updated = true;
@@ -991,4 +993,26 @@ fn validate_fixed_dependencies(cfg: &Config, ws: &Workspace) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skips_workspace_dependencies_when_updating() {
+        let input = "[dependencies]\nfoo = { workspace = true, optional = true }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "1.2.3").unwrap();
+        assert_eq!(out.trim_end(), input.trim_end());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn converts_simple_dep_without_quotes() {
+        let input = "[dependencies]\nbar = \"0.1.0\"\n";
+        let (out, changed) = update_dependency_version(input, "bar", "0.2.0").unwrap();
+        assert!(changed);
+        assert!(out.contains("bar = { version = \"0.2.0\" }"));
+        assert!(!out.contains("\"bar\""));
+    }
 }
