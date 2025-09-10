@@ -1,5 +1,12 @@
 # sampo-core
 
+## 0.2.1
+
+### Patch changes
+
+- [1c47715](https://github.com/bruits/sampo/commit/1c47715b40df61d4768f371826858c6d5f7fda71) Bump `sampo-core` version to propagate an unpublished fix to `sampo-github-action` and `sampo` CLI. Should definitely fix the malformed `Cargo.toml` issue in release PRs. — Thanks @goulvenclech!
+
+
 ## 0.2.0
 
 ### Minor changes

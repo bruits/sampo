@@ -1,5 +1,12 @@
 # sampo-github-action
 
+## 0.4.2
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.2.1
+
+
 ## 0.4.1
 
 ### Patch changes
