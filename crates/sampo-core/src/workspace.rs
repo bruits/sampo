@@ -184,7 +184,7 @@ fn collect_internal_deps(
     for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
             for (dep_name, dep_val) in tbl {
-                if is_internal_dep(crate_dir, name_to_path, dep_val) {
+                if is_internal_dep(crate_dir, name_to_path, dep_name, dep_val) {
                     internal.insert(dep_name.clone());
                 }
             }
@@ -197,6 +197,7 @@ fn collect_internal_deps(
 fn is_internal_dep(
     crate_dir: &Path,
     name_to_path: &BTreeMap<String, PathBuf>,
+    dep_name: &str,
     dep_val: &toml::Value,
 ) -> bool {
     if let Some(tbl) = dep_val.as_table() {
@@ -211,7 +212,8 @@ fn is_internal_dep(
         if let Some(workspace_val) = tbl.get("workspace")
             && workspace_val.as_bool() == Some(true)
         {
-            return true;
+            // Only internal if dependency name is another workspace member
+            return name_to_path.contains_key(dep_name);
         }
     }
     false
@@ -347,5 +349,28 @@ mod tests {
         let x = ws.members.iter().find(|c| c.name == "x").unwrap();
         assert!(x.internal_deps.contains("y"));
         assert!(x.internal_deps.contains("z"));
+    }
+
+    #[test]
+    fn workspace_dep_external_is_not_internal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let crates_dir = root.join("crates");
+        fs::create_dir_all(crates_dir.join("x")).unwrap();
+        fs::write(
+            crates_dir.join("x/Cargo.toml"),
+            "[package]\nname=\"x\"\nversion=\"0.1.0\"\n[dependencies]\nserde={ workspace=true }\n",
+        )
+        .unwrap();
+
+        let ws = discover_workspace(root).unwrap();
+        let x = ws.members.iter().find(|c| c.name == "x").unwrap();
+        assert!(!x.internal_deps.contains("serde"));
     }
 }
