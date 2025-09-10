@@ -23,6 +23,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           command: prepare-pr
+          use-local-build: true
           # Optional overrides (defaults shown):
           # base-branch: main
           # pr-branch: release/sampo

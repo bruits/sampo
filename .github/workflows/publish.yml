@@ -38,6 +38,7 @@ jobs:
           create-github-release: true
           open-discussion: true
           discussion-category: announcements
+          use-local-build: true
 
       - name: Check if sampo-github-bot was updated
         id: check-bot-update

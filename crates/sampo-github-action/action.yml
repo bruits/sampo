@@ -50,6 +50,10 @@ inputs:
   github-token:
     description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"
     required: false
+  use-local-build:
+    description: "If true, build and use the local version instead of installing from crates.io"
+    required: false
+    default: "false"
 
 outputs:
   released:
@@ -80,6 +84,7 @@ runs:
         INPUT_UPLOAD_BINARY: ${{ inputs['upload-binary'] }}
         INPUT_BINARY_NAME: ${{ inputs['binary-name'] }}
         INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}
+        INPUT_USE_LOCAL_BUILD: ${{ inputs['use-local-build'] }}
       run: |
         set -euo pipefail
 
@@ -106,9 +111,25 @@ runs:
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
         fi
 
-        # Install sampo-github-action binary
-        echo "Installing sampo-github-action..."
-        cargo binstall --no-confirm sampo-github-action
+        # Install or build sampo-github-action binary
+        if [[ "${INPUT_USE_LOCAL_BUILD:-}" == "true" || "${INPUT_USE_LOCAL_BUILD:-}" == "1" ]]; then
+          echo "Building local sampo-github-action..."
+          if [[ -f "${GITHUB_WORKSPACE}/Cargo.toml" && -d "${GITHUB_WORKSPACE}/crates/sampo-github-action" ]]; then
+            echo "Found local sampo repository, building from source..."
+            cd "${GITHUB_WORKSPACE}"
+            cargo build --release --bin sampo-github-action
+            # Add the binary to PATH
+            mkdir -p "$HOME/.local/bin"
+            cp target/release/sampo-github-action "$HOME/.local/bin/"
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          else
+            echo "Local build requested but sampo repository structure not found, falling back to published version..."
+            cargo binstall --no-confirm sampo-github-action
+          fi
+        else
+          echo "Installing sampo-github-action..."
+          cargo binstall --no-confirm sampo-github-action
+        fi
 
         # Install Linux cross-compilation target if upload-binary is enabled
         if [[ "${INPUT_UPLOAD_BINARY:-}" == "true" || "${INPUT_UPLOAD_BINARY:-}" == "1" ]]; then
