@@ -1,33 +1,24 @@
+[package]
+name = "sampo-github-action"
+version = "0.4.1"
+license = "MIT"
+authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
+edition = "2024"
+description = "GitHub Action runner for Sampo CLI (release/publish orchestrator)"
+homepage = "https://github.com/bruits/sampo"
+repository = "https://github.com/bruits/sampo"
+readme = "README.md"
+keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
+categories = ["development-tools"]
+
 [dependencies]
-rustc-hash = "2.0"
-serde_json = "1.0"
+sampo-core = { version = "0.2.0", path = "../sampo-core" }
 thiserror = "1.0"
 toml = "0.8"
-
-[dependencies.reqwest]
-features = ["json", "blocking"]
-version = "0.12"
-
-[dependencies.sampo-core]
-path = "../sampo-core"
-version = "0.2.0"
-
-[dependencies.serde]
-features = ["derive"]
-version = "1.0"
+rustc-hash = "2.0"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 [dev-dependencies]
 tempfile = "3.0"
-
-[package]
-authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
-categories = ["development-tools"]
-description = "GitHub Action runner for Sampo CLI (release/publish orchestrator)"
-edition = "2024"
-homepage = "https://github.com/bruits/sampo"
-keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
-license = "MIT"
-name = "sampo-github-action"
-readme = "README.md"
-repository = "https://github.com/bruits/sampo"
-version = "0.4.1"
