@@ -1,3 +1,4 @@
+use crate::is_publishable_to_crates_io;
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
     changeset::ChangesetInfo, config::Config, detect_changesets_dir,
@@ -376,9 +377,22 @@ fn compute_initial_bumps(
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
+    // Build quick lookup for crate info
+    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    for c in &ws.members {
+        by_name.insert(c.name.clone(), c);
+    }
+
     for cs in changesets {
+        let mut consumed_changeset = false;
         for pkg in &cs.packages {
-            used_paths.insert(cs.path.clone());
+            if should_ignore_package(pkg, ws, cfg, &by_name)? {
+                continue;
+            }
+
+            // Mark this changeset as consumed since at least one package is applicable
+            consumed_changeset = true;
+
             bump_by_pkg
                 .entry(pkg.clone())
                 .and_modify(|b| {
@@ -409,9 +423,105 @@ fn compute_initial_bumps(
                 .or_default()
                 .push((enriched, cs.bump));
         }
+        if consumed_changeset {
+            used_paths.insert(cs.path.clone());
+        }
     }
 
     Ok((bump_by_pkg, messages_by_pkg, used_paths))
+}
+
+fn should_ignore_package(
+    pkg_name: &str,
+    ws: &Workspace,
+    cfg: &Config,
+    by_name: &BTreeMap<String, &CrateInfo>,
+) -> io::Result<bool> {
+    // Unknown package: do not ignore by default
+    let info = match by_name.get(pkg_name) {
+        Some(i) => *i,
+        None => return Ok(false),
+    };
+
+    // 1) ignore_unpublished: skip crates that are not publishable to crates.io
+    if cfg.ignore_unpublished {
+        let manifest = info.path.join("Cargo.toml");
+        if !is_publishable_to_crates_io(&manifest)? {
+            return Ok(true);
+        }
+    }
+
+    // 2) ignore list with simple wildcard matching
+    if !cfg.ignore.is_empty() {
+        let rel = info
+            .path
+            .strip_prefix(&ws.root)
+            .unwrap_or(&info.path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for pat in &cfg.ignore {
+            if wildcard_match(pat, pkg_name) || wildcard_match(pat, &rel) {
+                return Ok(true);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+/// Simple wildcard match supporting '*' as any sequence (case-sensitive)
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    // Fast path: exact match
+    if pattern == text {
+        return true;
+    }
+    // If pattern doesn't contain '*', do direct equality
+    if !pattern.contains('*') {
+        return pattern == text;
+    }
+
+    // Split pattern around '*'
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.is_empty() {
+        return true;
+    }
+
+    // Handle anchored start
+    let mut idx = 0usize;
+    if !parts[0].is_empty() {
+        if let Some(pos) = text.find(parts[0]) {
+            if pos != 0 {
+                return false;
+            }
+            idx = parts[0].len();
+        } else {
+            return false;
+        }
+    }
+
+    // Handle middle parts
+    for mid in parts.iter().skip(1).take(parts.len().saturating_sub(2)) {
+        if mid.is_empty() {
+            continue;
+        }
+        if let Some(pos) = text[idx..].find(mid) {
+            idx += pos + mid.len();
+        } else {
+            return false;
+        }
+    }
+
+    // Handle anchored end
+    if let Some(last) = parts.last()
+        && !last.is_empty()
+    {
+        if let Some(pos) = text[idx..].rfind(last) {
+            return idx + pos + last.len() == text.len();
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 /// Build reverse dependency graph: dep -> set of dependents

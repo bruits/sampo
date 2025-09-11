@@ -12,6 +12,8 @@ pub struct Config {
     pub changelog_show_acknowledgments: bool,
     pub fixed_dependencies: Vec<Vec<String>>,
     pub linked_dependencies: Vec<Vec<String>>,
+    pub ignore_unpublished: bool,
+    pub ignore: Vec<String>,
 }
 
 impl Default for Config {
@@ -23,6 +25,8 @@ impl Default for Config {
             changelog_show_acknowledgments: true,
             fixed_dependencies: Vec::new(),
             linked_dependencies: Vec::new(),
+            ignore_unpublished: false,
+            ignore: Vec::new(),
         }
     }
 }
@@ -125,6 +129,26 @@ impl Config {
             .map_err(SampoError::Config)?
             .unwrap_or_default();
 
+        let ignore_unpublished = value
+            .get("packages")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("ignore_unpublished"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let ignore = value
+            .get("packages")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("ignore"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+
         let linked_dependencies = value
             .get("packages")
             .and_then(|v| v.as_table())
@@ -207,6 +231,8 @@ impl Config {
             changelog_show_acknowledgments,
             fixed_dependencies,
             linked_dependencies,
+            ignore_unpublished,
+            ignore,
         })
     }
 }
@@ -285,6 +311,29 @@ mod tests {
             config.fixed_dependencies,
             vec![vec!["pkg-a".to_string(), "pkg-b".to_string()]]
         );
+    }
+
+    #[test]
+    fn reads_ignore_unpublished_and_ignore_list() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[packages]\nignore_unpublished = true\nignore = [\"internal-*\", \"examples/*\"]\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+        assert!(config.ignore_unpublished);
+        assert_eq!(config.ignore, vec!["internal-*", "examples/*"]);
+    }
+
+    #[test]
+    fn defaults_ignore_options() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config::load(temp.path()).unwrap();
+        assert!(!config.ignore_unpublished);
+        assert!(config.ignore.is_empty());
     }
 
     #[test]

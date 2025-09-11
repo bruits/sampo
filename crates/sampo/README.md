@@ -85,6 +85,12 @@ show_acknowledgments = true
 [packages]
 fixed_dependencies = [["pkg-a", "pkg-b"], ["pkg-c", "pkg-d"]]
 linked_dependencies = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
+ignore_unpublished = false
+ignore = [
+  "package-a",
+  "internal-*",
+  "examples/*"
+]
 ```
 
 ### `[github]` section
@@ -106,6 +112,13 @@ Sampo detects packages within the same repository that depend on each other and 
 `linked_dependencies`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of package names. When any package in a group is updated, all packages in the same group that are affected or have internal dependencies within the group receive the highest version bump level from the group. For example: if `linked_dependencies = [["a", "b"]]` where `a` depends on `b`, when `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0`. If `a` is later updated to `2.1.0` (minor), `b` remains at `2.0.0` since it's not affected. Finally, if `b` has a patch update, both `a` and `b` will be bumped with patch level since it's the highest bump in the group.
 
 Note: Packages cannot appear in both `fixed_dependencies` and `linked_dependencies` configurations.
+
+`ignore_unpublished`: If `true`, packages that are not publishable to crates.io (`publish = false` or registry restrictions not including `"crates-io"`) are ignored during the release step. Changesets targeting only ignored packages are left unconsumed.
+
+`ignore`: A list of glob-like patterns to ignore packages by name or relative path. `*` matches any sequence. Examples:
+- `internal-*`: ignores packages with names like `internal-tool`.
+- `examples/*`: ignores any package whose relative path starts with `examples/`.
+- `package-a`: ignores the specific package.
 
 ## Commands
 
