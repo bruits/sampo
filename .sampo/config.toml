@@ -1,5 +1,5 @@
 # Sampo configuration
 version = 1
 
-[packages]
-linked_dependencies = [["sampo", "sampo-core"]]
+[internal_dependencies]
+linked = [["sampo", "sampo-core"]]

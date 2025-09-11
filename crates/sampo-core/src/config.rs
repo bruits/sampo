@@ -74,9 +74,9 @@ impl Config {
             .unwrap_or(true);
 
         let fixed_dependencies = value
-            .get("packages")
+            .get("internal_dependencies")
             .and_then(|v| v.as_table())
-            .and_then(|t| t.get("fixed_dependencies"))
+            .and_then(|t| t.get("fixed"))
             .and_then(|v| v.as_array())
             .map(|outer_arr| -> Result<Vec<Vec<String>>, String> {
                 // Check if all elements are arrays (groups format)
@@ -88,13 +88,13 @@ impl Config {
                         // Mixed format
                         let non_array = outer_arr.iter().find(|item| !item.is_array()).unwrap();
                         return Err(format!(
-                            "fixed_dependencies must be an array of arrays, found mixed format with: {}. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]",
+                            "internal_dependencies.fixed must be an array of arrays, found mixed format with: {}. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]",
                             non_array
                         ));
                     } else {
                         // All strings (flat format)
                         return Err(
-                            "fixed_dependencies must be an array of arrays. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]".to_string()
+                            "internal_dependencies.fixed must be an array of arrays. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]".to_string()
                         );
                     }
                 }
@@ -150,9 +150,9 @@ impl Config {
             .unwrap_or_default();
 
         let linked_dependencies = value
-            .get("packages")
+            .get("internal_dependencies")
             .and_then(|v| v.as_table())
-            .and_then(|t| t.get("linked_dependencies"))
+            .and_then(|t| t.get("linked"))
             .and_then(|v| v.as_array())
             .map(|outer_arr| -> Result<Vec<Vec<String>>, String> {
                 // Check if all elements are arrays (groups format)
@@ -164,13 +164,13 @@ impl Config {
                         // Mixed format
                         let non_array = outer_arr.iter().find(|item| !item.is_array()).unwrap();
                         return Err(format!(
-                            "linked_dependencies must be an array of arrays, found mixed format with: {}. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]",
+                            "internal_dependencies.linked must be an array of arrays, found mixed format with: {}. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]",
                             non_array
                         ));
                     } else {
                         // All strings (flat format)
                         return Err(
-                            "linked_dependencies must be an array of arrays. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]".to_string()
+                            "internal_dependencies.linked must be an array of arrays. Use [[\"a\", \"b\"]] instead of [\"a\", \"b\"]".to_string()
                         );
                     }
                 }
@@ -217,7 +217,7 @@ impl Config {
             for package in group {
                 if all_fixed_packages.contains(package) {
                     return Err(SampoError::Config(format!(
-                        "Package '{}' cannot appear in both fixed_dependencies and linked_dependencies",
+                        "Package '{}' cannot appear in both internal_dependencies.fixed and internal_dependencies.linked",
                         package
                     )));
                 }
@@ -302,7 +302,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nfixed_dependencies = [[\"pkg-a\", \"pkg-b\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"pkg-a\", \"pkg-b\"]]\n",
         )
         .unwrap();
 
@@ -342,7 +342,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nfixed_dependencies = [[\"pkg-a\", \"pkg-b\"], [\"pkg-c\", \"pkg-d\", \"pkg-e\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"pkg-a\", \"pkg-b\"], [\"pkg-c\", \"pkg-d\", \"pkg-e\"]]\n",
         )
         .unwrap();
 
@@ -373,7 +373,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nfixed_dependencies = [\"pkg-a\", \"pkg-b\"]\n",
+            "[internal_dependencies]\nfixed = [\"pkg-a\", \"pkg-b\"]\n",
         )
         .unwrap();
 
@@ -390,7 +390,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nfixed_dependencies = [[\"pkg-a\", \"pkg-b\"], [\"pkg-b\", \"pkg-c\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"pkg-a\", \"pkg-b\"], [\"pkg-b\", \"pkg-c\"]]\n",
         )
         .unwrap();
 
@@ -406,7 +406,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nlinked_dependencies = [[\"pkg-a\", \"pkg-b\"]]\n",
+            "[internal_dependencies]\nlinked = [[\"pkg-a\", \"pkg-b\"]]\n",
         )
         .unwrap();
 
@@ -423,7 +423,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nlinked_dependencies = [[\"pkg-a\", \"pkg-b\"], [\"pkg-c\", \"pkg-d\", \"pkg-e\"]]\n",
+            "[internal_dependencies]\nlinked = [[\"pkg-a\", \"pkg-b\"], [\"pkg-c\", \"pkg-d\", \"pkg-e\"]]\n",
         )
         .unwrap();
 
@@ -454,7 +454,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nlinked_dependencies = [[\"pkg-a\", \"pkg-b\"], [\"pkg-b\", \"pkg-c\"]]\n",
+            "[internal_dependencies]\nlinked = [[\"pkg-a\", \"pkg-b\"], [\"pkg-b\", \"pkg-c\"]]\n",
         )
         .unwrap();
 
@@ -470,7 +470,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nfixed_dependencies = [[\"pkg-a\", \"pkg-b\"]]\nlinked_dependencies = [[\"pkg-b\", \"pkg-c\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"pkg-a\", \"pkg-b\"]]\nlinked = [[\"pkg-b\", \"pkg-c\"]]\n",
         )
         .unwrap();
 
@@ -478,7 +478,7 @@ mod tests {
         assert!(result.is_err());
         let error_msg = format!("{}", result.unwrap_err());
         assert!(error_msg.contains(
-            "Package 'pkg-b' cannot appear in both fixed_dependencies and linked_dependencies"
+            "Package 'pkg-b' cannot appear in both internal_dependencies.fixed and internal_dependencies.linked"
         ));
     }
 
@@ -488,7 +488,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[packages]\nfixed_dependencies = [[\"pkg-a\", \"pkg-b\"]]\nlinked_dependencies = [[\"pkg-c\", \"pkg-d\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"pkg-a\", \"pkg-b\"]]\nlinked = [[\"pkg-c\", \"pkg-d\"]]\n",
         )
         .unwrap();
 

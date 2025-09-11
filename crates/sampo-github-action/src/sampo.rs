@@ -355,7 +355,7 @@ mod tests {
         fs::create_dir_all(&sampo_dir).unwrap();
         fs::write(
             sampo_dir.join("config.toml"),
-            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n",
         )
         .unwrap();
 
@@ -418,7 +418,7 @@ mod tests {
         fs::create_dir_all(&sampo_dir).unwrap();
         fs::write(
             sampo_dir.join("config.toml"),
-            "[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n",
+            "[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n",
         )
         .unwrap();
 
