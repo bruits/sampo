@@ -145,8 +145,10 @@ mod tests {
     #[test]
     fn filters_by_name_and_path() {
         let ws = dummy_ws();
-        let mut cfg = Config::default();
-        cfg.ignore = vec!["internal-*".into(), "examples/*".into()];
+        let cfg = Config {
+            ignore: vec!["internal-*".into(), "examples/*".into()],
+            ..Default::default()
+        };
 
         let names = list_visible_packages(&ws, &cfg).unwrap();
         assert_eq!(names, vec!["normal".to_string()]);
@@ -155,8 +157,10 @@ mod tests {
     #[test]
     fn should_ignore_crate_by_name_pattern() {
         let ws = dummy_ws();
-        let mut cfg = Config::default();
-        cfg.ignore = vec!["internal-*".into()];
+        let cfg = Config {
+            ignore: vec!["internal-*".into()],
+            ..Default::default()
+        };
 
         let internal_crate = &ws.members[0]; // "internal-tool"
         let normal_crate = &ws.members[2]; // "normal"
@@ -168,8 +172,10 @@ mod tests {
     #[test]
     fn should_ignore_crate_by_path_pattern() {
         let ws = dummy_ws();
-        let mut cfg = Config::default();
-        cfg.ignore = vec!["examples/*".into()];
+        let cfg = Config {
+            ignore: vec!["examples/*".into()],
+            ..Default::default()
+        };
 
         let examples_crate = &ws.members[1]; // "examples-lib" at "/repo/examples/lib"
         let normal_crate = &ws.members[2]; // "normal"
@@ -181,8 +187,10 @@ mod tests {
     #[test]
     fn filter_members_returns_non_ignored_crates() {
         let ws = dummy_ws();
-        let mut cfg = Config::default();
-        cfg.ignore = vec!["internal-*".into(), "examples/*".into()];
+        let cfg = Config {
+            ignore: vec!["internal-*".into(), "examples/*".into()],
+            ..Default::default()
+        };
 
         let filtered = filter_members(&ws, &cfg).unwrap();
         assert_eq!(filtered.len(), 1);
