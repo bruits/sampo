@@ -1,3 +1,4 @@
+use crate::filters::should_ignore_crate;
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
     changeset::ChangesetInfo, config::Config, detect_changesets_dir,
@@ -376,9 +377,24 @@ fn compute_initial_bumps(
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
+    // Build quick lookup for crate info
+    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    for c in &ws.members {
+        by_name.insert(c.name.clone(), c);
+    }
+
     for cs in changesets {
+        let mut consumed_changeset = false;
         for pkg in &cs.packages {
-            used_paths.insert(cs.path.clone());
+            if let Some(info) = by_name.get(pkg)
+                && should_ignore_crate(cfg, ws, info)?
+            {
+                continue;
+            }
+
+            // Mark this changeset as consumed since at least one package is applicable
+            consumed_changeset = true;
+
             bump_by_pkg
                 .entry(pkg.clone())
                 .and_modify(|b| {
@@ -408,6 +424,9 @@ fn compute_initial_bumps(
                 .entry(pkg.clone())
                 .or_default()
                 .push((enriched, cs.bump));
+        }
+        if consumed_changeset {
+            used_paths.insert(cs.path.clone());
         }
     }
 

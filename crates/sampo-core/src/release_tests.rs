@@ -112,6 +112,30 @@ mod tests {
             self
         }
 
+        fn set_publishable(&self, crate_name: &str, publishable: bool) -> &Self {
+            let crate_dir = self.crates.get(crate_name).expect("crate must exist");
+            let manifest_path = crate_dir.join("Cargo.toml");
+            let current_manifest = fs::read_to_string(&manifest_path).unwrap();
+
+            let new_manifest = if publishable {
+                // Remove any publish = false lines (simple approach)
+                current_manifest
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("publish = false"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                let mut s = current_manifest;
+                if !s.contains("publish = false") {
+                    s.push_str("\npublish = false\n");
+                }
+                s
+            };
+
+            fs::write(manifest_path, new_manifest).unwrap();
+            self
+        }
+
         fn run_release(&self, dry_run: bool) -> Result<ReleaseOutput, std::io::Error> {
             run_release(&self.root, dry_run)
         }
@@ -371,7 +395,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("a", "b", "1.0.0")
-            .set_config("[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n")
+            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n")
             .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
 
         workspace.run_release(false).unwrap();
@@ -397,7 +421,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("b", "a", "1.0.0") // b depends on a (reverse)
-            .set_config("[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n")
+            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n")
             .add_changeset(&["a"], Bump::Minor, "feat: a adds new feature");
 
         workspace.run_release(false).unwrap();
@@ -422,7 +446,7 @@ tempfile = "3.0"
             .add_crate("b", "1.0.0")
             .add_crate("c", "1.0.0")
             .add_crate("d", "1.0.0")
-            .set_config("[packages]\nfixed_dependencies = [[\"a\", \"b\"], [\"c\", \"d\"]]\n")
+            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"], [\"c\", \"d\"]]\n")
             .add_changeset(&["a"], Bump::Minor, "feat: a feature");
 
         workspace.run_release(false).unwrap();
@@ -441,7 +465,7 @@ tempfile = "3.0"
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("a", "1.0.0")
-            .set_config("[packages]\nfixed_dependencies = [[\"a\", \"nonexistent\"]]\n");
+            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"nonexistent\"]]\n");
 
         let result = workspace.run_release(false);
         assert!(result.is_err());
@@ -457,7 +481,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("a", "b", "1.0.0") // a depends on b
-            .set_config("[packages]\nlinked_dependencies = [[\"a\", \"b\"]]\n")
+            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\"]]\n")
             .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
 
         workspace.run_release(false).unwrap();
@@ -477,7 +501,7 @@ tempfile = "3.0"
             .add_crate("c", "1.0.0")
             .add_dependency("a", "b", "1.0.0") // a depends on b
             .add_dependency("c", "b", "1.0.0") // c depends on b
-            .set_config("[packages]\nlinked_dependencies = [[\"a\", \"b\", \"c\"]]\n")
+            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\", \"c\"]]\n")
             .add_changeset(&["b"], Bump::Minor, "feat: b new feature")
             .add_changeset(&["c"], Bump::Patch, "fix: c bug fix");
 
@@ -500,7 +524,7 @@ tempfile = "3.0"
             .add_crate("b", "1.0.0")
             .add_crate("c", "1.0.0") // c is in group but has no dependencies
             .add_dependency("a", "b", "1.0.0") // a depends on b
-            .set_config("[packages]\nlinked_dependencies = [[\"a\", \"b\", \"c\"]]\n")
+            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\", \"c\"]]\n")
             .add_changeset(&["b"], Bump::Minor, "feat: b new feature");
 
         workspace.run_release(false).unwrap();
@@ -523,7 +547,7 @@ tempfile = "3.0"
             .add_crate("unaffected_in_group", "1.0.0")    // In group but no relation
             .add_crate("outside_group", "1.0.0")          // Not in group at all
             .add_dependency("affected_by_cascade", "affected_directly", "1.0.0")
-            .set_config("[packages]\nlinked_dependencies = [[\"affected_directly\", \"affected_by_cascade\", \"unaffected_in_group\"]]\n")
+            .set_config("[internal_dependencies]\nlinked = [[\"affected_directly\", \"affected_by_cascade\", \"unaffected_in_group\"]]\n")
             .add_changeset(&["affected_directly"], Bump::Minor, "feat: new feature");
 
         workspace.run_release(false).unwrap();
@@ -568,7 +592,7 @@ tempfile = "3.0"
             .add_crate("pkg_c", "1.0.0")           // In group but no changeset, no deps
             .add_crate("pkg_d", "1.0.0")           // Depends on pkg_a
             .add_dependency("pkg_d", "pkg_a", "1.0.0")
-            .set_config("[packages]\nlinked_dependencies = [[\"pkg_a\", \"pkg_b\", \"pkg_c\", \"pkg_d\"]]\n")
+            .set_config("[internal_dependencies]\nlinked = [[\"pkg_a\", \"pkg_b\", \"pkg_c\", \"pkg_d\"]]\n")
             .add_changeset(&["pkg_a"], Bump::Major, "breaking: major change in a")
             .add_changeset(&["pkg_b"], Bump::Minor, "feat: minor change in b");
 
@@ -608,7 +632,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             // Note: no dependency between a and b
-            .set_config("[packages]\nfixed_dependencies = [[\"a\", \"b\"]]\n")
+            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n")
             .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
 
         workspace.run_release(false).unwrap();
@@ -648,7 +672,7 @@ tempfile = "3.0"
             .add_crate("pkg_c", "1.0.0") // In group, depends on pkg_d (outside group)
             .add_crate("pkg_d", "1.0.0") // Not in group but has changeset
             .add_dependency("pkg_c", "pkg_d", "1.0.0")
-            .set_config("[packages]\nfixed_dependencies = [[\"pkg_a\", \"pkg_b\", \"pkg_c\"]]\n")
+            .set_config("[internal_dependencies]\nfixed = [[\"pkg_a\", \"pkg_b\", \"pkg_c\"]]\n")
             .add_changeset(&["pkg_b"], Bump::Minor, "feat: pkg_b new feature")
             .add_changeset(&["pkg_d"], Bump::Patch, "fix: pkg_d bug fix");
 
@@ -703,7 +727,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("a", "b", "1.0.0")
-            .set_config("[packages]\nlinked_dependencies = [[\"a\", \"b\"]]\n");
+            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\"]]\n");
 
         // Step 2: b is updated to 2.0.0 (major), a should also get 2.0.0
         workspace.add_changeset(&["b"], Bump::Major, "breaking: b major update");
@@ -806,6 +830,86 @@ tempfile = "3.0"
     }
 
     #[test]
+    fn ignores_unpublished_packages_when_configured() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("public", "1.0.0")
+            .add_crate("private", "1.0.0");
+
+        // Mark private as non-publishable
+        workspace.set_publishable("private", false);
+
+        // Configure to ignore unpublished packages
+        workspace.set_config("[packages]\nignore_unpublished = true\n");
+
+        // Add changesets for both
+        workspace
+            .add_changeset(&["public"], Bump::Patch, "fix: public bug")
+            .add_changeset(&["private"], Bump::Patch, "fix: private bug");
+
+        let result = workspace.run_release(false).unwrap();
+        // Only one package should be released
+        assert_eq!(result.released_packages.len(), 1);
+        assert_eq!(result.released_packages[0].name, "public");
+
+        // Verify versions: public bumped, private unchanged
+        workspace.assert_crate_version("public", "1.0.1");
+        workspace.assert_crate_version("private", "1.0.0");
+
+        // Verify that the changeset for private was NOT consumed (still present)
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        let remaining_files: Vec<_> = std::fs::read_dir(&changesets_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .collect();
+        // One changeset should remain (the private one)
+        assert_eq!(remaining_files.len(), 1);
+    }
+
+    #[test]
+    fn ignores_specific_packages_by_pattern() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("internal-tool", "0.1.0")
+            .add_crate("example-lib", "0.1.0")
+            .add_crate("normal-lib", "0.1.0");
+
+        // Configure ignore patterns (by name)
+        workspace.set_config("[packages]\nignore = [\"internal-*\", \"example-*\"]\n");
+
+        // Add one changeset that only targets ignored packages
+        workspace.add_changeset(
+            &["internal-tool", "example-lib"],
+            Bump::Patch,
+            "ignored changes",
+        );
+        // And one for a normal package
+        workspace.add_changeset(&["normal-lib"], Bump::Minor, "feat: normal update");
+
+        let out = workspace.run_release(false).unwrap();
+
+        // Only normal-lib should be released
+        assert_eq!(out.released_packages.len(), 1);
+        assert_eq!(out.released_packages[0].name, "normal-lib");
+
+        // Versions: normal updated, ignored unchanged
+        workspace.assert_crate_version("normal-lib", "0.2.0");
+        workspace.assert_crate_version("internal-tool", "0.1.0");
+        workspace.assert_crate_version("example-lib", "0.1.0");
+
+        // The changeset that only targeted ignored packages should remain on disk
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        let remaining_files: Vec<_> = std::fs::read_dir(&changesets_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .collect();
+        // After consuming the normal changeset, one ignored-only changeset should remain
+        assert_eq!(remaining_files.len(), 1);
+    }
+
+    #[test]
     fn infers_bump_from_version_changes() {
         assert_eq!(infer_bump_from_versions("1.0.0", "2.0.0"), Bump::Major);
         assert_eq!(infer_bump_from_versions("1.0.0", "1.1.0"), Bump::Minor);
@@ -851,6 +955,8 @@ tempfile = "3.0"
             changelog_show_acknowledgments: true,
             fixed_dependencies: vec![vec!["pkg-a".to_string(), "pkg-c".to_string()]],
             linked_dependencies: vec![],
+            ignore_unpublished: false,
+            ignore: vec![],
         };
 
         // Create changeset that affects pkg-b only

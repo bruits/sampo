@@ -1,6 +1,8 @@
 use crate::cli::AddArgs;
 use crate::names;
-use sampo_core::{Bump, discover_workspace, render_changeset_markdown};
+use sampo_core::{
+    Bump, Config, discover_workspace, filters::list_visible_packages, render_changeset_markdown,
+};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
@@ -12,7 +14,12 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
     // Discover workspace (optional but helps list packages)
     let (root, packages) = match discover_workspace(&cwd) {
         Ok(ws) => {
-            let names = ws.members.into_iter().map(|c| c.name).collect::<Vec<_>>();
+            // Load config to respect ignore rules when listing packages
+            let cfg = Config::load(&ws.root).unwrap_or_default();
+            let names = match list_visible_packages(&ws, &cfg) {
+                Ok(v) => v,
+                Err(_) => ws.members.into_iter().map(|c| c.name).collect::<Vec<_>>(),
+            };
             (ws.root, names)
         }
         Err(_) => (cwd.clone(), Vec::new()),
