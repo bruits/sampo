@@ -88,24 +88,6 @@ pub fn load_changesets(dir: &Path) -> io::Result<Vec<ChangesetInfo>> {
     Ok(out)
 }
 
-/// Detect the changesets directory, respecting custom configuration
-pub fn detect_changesets_dir(workspace: &Path) -> PathBuf {
-    let base = workspace.join(".sampo");
-    let cfg_path = base.join("config.toml");
-    if cfg_path.exists()
-        && let Ok(text) = std::fs::read_to_string(&cfg_path)
-        && let Ok(value) = text.parse::<toml::Value>()
-        && let Some(dir) = value
-            .get("changesets")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("dir"))
-            .and_then(|v| v.as_str())
-    {
-        return base.join(dir);
-    }
-    base.join("changesets")
-}
-
 /// Render a changeset as markdown with frontmatter
 pub fn render_changeset_markdown(packages: &[String], bump: Bump, message: &str) -> String {
     use std::fmt::Write as _;
@@ -177,28 +159,6 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let changesets = load_changesets(temp.path()).unwrap();
         assert!(changesets.is_empty());
-    }
-
-    #[test]
-    fn detect_changesets_dir_defaults() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = detect_changesets_dir(temp.path());
-        assert_eq!(dir, temp.path().join(".sampo/changesets"));
-    }
-
-    #[test]
-    fn detect_changesets_dir_custom() {
-        let temp = tempfile::tempdir().unwrap();
-        let sampo_dir = temp.path().join(".sampo");
-        fs::create_dir_all(&sampo_dir).unwrap();
-        fs::write(
-            sampo_dir.join("config.toml"),
-            "[changesets]\ndir = \"custom-changesets\"\n",
-        )
-        .unwrap();
-
-        let dir = detect_changesets_dir(temp.path());
-        assert_eq!(dir, temp.path().join(".sampo/custom-changesets"));
     }
 
     // Additional tests for comprehensive coverage

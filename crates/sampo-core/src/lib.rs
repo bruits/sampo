@@ -10,10 +10,7 @@ pub mod types;
 pub mod workspace;
 
 // Re-export commonly used items
-pub use changeset::{
-    ChangesetInfo, detect_changesets_dir, load_changesets, parse_changeset,
-    render_changeset_markdown,
-};
+pub use changeset::{ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown};
 pub use config::Config;
 pub use enrichment::{
     CommitInfo, GitHubUserInfo, detect_github_repo_slug, detect_github_repo_slug_with_config,

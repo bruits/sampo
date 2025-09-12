@@ -1,9 +1,8 @@
 use crate::filters::should_ignore_crate;
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
-    changeset::ChangesetInfo, config::Config, detect_changesets_dir,
-    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    get_commit_hash_for_path, load_changesets,
+    changeset::ChangesetInfo, config::Config, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet};
@@ -279,18 +278,18 @@ type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_ver
 
 /// Main release function that can be called from CLI or other interfaces
 pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseOutput> {
-    let ws = discover_workspace(root).map_err(io::Error::other)?;
-    let cfg = Config::load(&ws.root).map_err(io::Error::other)?;
+    let workspace = discover_workspace(root).map_err(io::Error::other)?;
+    let config = Config::load(&workspace.root).map_err(io::Error::other)?;
 
     // Validate fixed dependencies configuration
-    validate_fixed_dependencies(&cfg, &ws).map_err(io::Error::other)?;
+    validate_fixed_dependencies(&config, &workspace).map_err(io::Error::other)?;
 
-    let changesets_dir = detect_changesets_dir(&ws.root);
+    let changesets_dir = workspace.root.join(".sampo").join("changesets");
     let changesets = load_changesets(&changesets_dir)?;
     if changesets.is_empty() {
         println!(
             "No changesets found in {}",
-            ws.root.join(".sampo").join("changesets").display()
+            workspace.root.join(".sampo").join("changesets").display()
         );
         return Ok(ReleaseOutput {
             released_packages: vec![],
@@ -300,7 +299,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseO
 
     // Compute initial bumps from changesets
     let (mut bump_by_pkg, mut messages_by_pkg, used_paths) =
-        compute_initial_bumps(&changesets, &ws, &cfg)?;
+        compute_initial_bumps(&changesets, &workspace, &config)?;
 
     if bump_by_pkg.is_empty() {
         println!("No applicable packages found in changesets.");
@@ -311,12 +310,12 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseO
     }
 
     // Build dependency graph and apply cascading logic
-    let dependents = build_dependency_graph(&ws);
-    apply_dependency_cascade(&mut bump_by_pkg, &dependents, &cfg);
-    apply_linked_dependencies(&mut bump_by_pkg, &cfg);
+    let dependents = build_dependency_graph(&workspace);
+    apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config);
+    apply_linked_dependencies(&mut bump_by_pkg, &config);
 
     // Prepare and validate release plan
-    let releases = prepare_release_plan(&bump_by_pkg, &ws)?;
+    let releases = prepare_release_plan(&bump_by_pkg, &workspace)?;
     if releases.is_empty() {
         println!("No matching workspace crates to release.");
         return Ok(ReleaseOutput {
@@ -350,7 +349,13 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseO
     }
 
     // Apply changes
-    apply_releases(&releases, &ws, &mut messages_by_pkg, &changesets, &cfg)?;
+    apply_releases(
+        &releases,
+        &workspace,
+        &mut messages_by_pkg,
+        &changesets,
+        &config,
+    )?;
 
     // Clean up
     cleanup_consumed_changesets(used_paths)?;
@@ -989,10 +994,11 @@ fn update_changelog(
 }
 
 /// Validate fixed dependencies configuration against the workspace
-fn validate_fixed_dependencies(cfg: &Config, ws: &Workspace) -> Result<(), String> {
-    let workspace_packages: FxHashSet<String> = ws.members.iter().map(|c| c.name.clone()).collect();
+fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result<(), String> {
+    let workspace_packages: FxHashSet<String> =
+        workspace.members.iter().map(|c| c.name.clone()).collect();
 
-    for (group_idx, group) in cfg.fixed_dependencies.iter().enumerate() {
+    for (group_idx, group) in config.fixed_dependencies.iter().enumerate() {
         for package in group {
             if !workspace_packages.contains(package) {
                 let available_packages: Vec<String> = workspace_packages.iter().cloned().collect();

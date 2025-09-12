@@ -1,10 +1,9 @@
 use crate::{ActionError, Result};
 use sampo_core::format_markdown_list_item;
 use sampo_core::{
-    Bump, Config, detect_all_dependency_explanations, detect_changesets_dir,
-    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
-    run_release as core_release,
+    Bump, Config, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    run_publish as core_publish, run_release as core_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -107,7 +106,7 @@ pub fn build_release_pr_body(
         return Ok(String::new());
     }
 
-    let changesets_dir = detect_changesets_dir(workspace);
+    let changesets_dir = workspace.join(".sampo").join("changesets");
     let changesets = load_changesets(&changesets_dir)?;
 
     // Load workspace for dependency explanations

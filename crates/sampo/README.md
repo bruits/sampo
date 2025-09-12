@@ -22,7 +22,7 @@ This command creates a `.sampo` directory at your repository root:
 .sampo/
 ├─ changesets/ <- Individual changeset files describing pending changes
 ├─ config.toml <- Sampo configuration (package settings, registry options)
-└─ README.md <- A copy of this documentation
+└─ README.md <- Quick links to the online documentation
 ```
 
 ### Main concepts
@@ -105,7 +105,7 @@ linked = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 
 ### `[packages]` section
 
-`ignore_unpublished`: If `true`, packages that are not publishable to crates.io (`publish = false` or registry restrictions not including `"crates-io"`) are ignored during the release step. Changesets targeting only ignored packages are left unconsumed.
+`ignore_unpublished`: If `true`, packages that are not publishable to crates.io (`publish = false` or registry restrictions not including `"crates-io"`) are ignored during the release step. Changesets targeting only ignored packages are left unconsumed. (default: `false`)
 
 `ignore`: A list of glob-like patterns to ignore packages by name or relative path. `*` matches any sequence. Examples:
 - `internal-*`: ignores packages with names like `internal-tool`.

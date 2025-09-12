@@ -32,7 +32,7 @@ fn init_at_root(root: &Path) -> io::Result<InitReport> {
 
     let readme_path = dir.join("README.md");
     if !readme_path.exists() {
-        fs::write(&readme_path, CRATE_README)?;
+        fs::write(&readme_path, README_SNIPPET)?;
         created_readme = true;
     }
 
@@ -50,16 +50,35 @@ fn init_at_root(root: &Path) -> io::Result<InitReport> {
     })
 }
 
-// Embed the crate's README so `sampo init` can copy it into `.sampo/README.md`
-// regardless of how the binary is installed.
-const CRATE_README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
+const README_SNIPPET: &str = r#"# Sampo
+
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries.
+
+## Quick links
+- Getting started: https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#getting-started
+- Configuration: https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#configuration
+- Commands: https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#commands
+- GitHub Action (CI): https://github.com/bruits/sampo/blob/main/crates/sampo-github-action/README.md
+- GitHub Bot: https://github.com/bruits/sampo/blob/main/crates/sampo-github-bot/README.md
+"#;
 
 const DEFAULT_CONFIG: &str = r#"# Sampo configuration
 version = 1
 
-[changesets]
-# Relative to the `.sampo` directory
-dir = "changesets"
+[github]
+# By default, Sampo tries to infer the repository from the git remote.
+# You can override or clarify it here if needed.
+# repository = "owner/repo"
+
+[changelog]
+# Options for release notes generation.
+# show_commit_hash = true (default)
+# show_acknowledgments = true (default)
+
+[packages]
+# Options for package discovery and filtering.
+# ignore_unpublished = false (default)
+# ignore = ["internal-*", "examples/*"]
 "#;
 
 #[cfg(test)]
