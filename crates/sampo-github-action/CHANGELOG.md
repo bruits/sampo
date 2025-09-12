@@ -1,5 +1,42 @@
 # sampo-github-action
 
+## 0.5.0
+
+### Minor changes
+
+- [66a075b](https://github.com/bruits/sampo/commit/66a075b33aed9d7e00498c541b79fbb7fcf4eb09) ⚠️ **breaking change:** Rename dependent package options from `fixed_dependencies` and `linked_dependencies` to `fixed` and `linked`.
+  
+  ```diff
+  // .sampo/config.toml
+  [packages]
+  -  fixed_dependencies = [["pkg-a", "pkg-b"], ["pkg-c", "pkg-d", "pkg-e"]]
+  -  linked_dependencies = [["pkg-f", "pkg-g"]]
+  +  fixed = [["pkg-a", "pkg-b"], ["pkg-c", "pkg-d", "pkg-e"]]
+  +  linked = [["pkg-f", "pkg-g"]]
+  ```
+   — Thanks @goulvenclech!
+- [3736d06](https://github.com/bruits/sampo/commit/3736d06afedfa80f09e635d15e0e32c141889a1d) Add support for ignoring packages during releases and in CLI package lists. You can now exclude unpublishable packages or specific packages by name/path patterns from Sampo operations.
+  
+  ```toml
+  [packages]
+  # Skip packages that aren't publishable to crates.io
+  ignore_unpublished = true
+  # Skip packages matching these patterns
+  ignore = [
+    "internal-*",     # Ignore by name pattern
+    "examples/*",     # Ignore by workspace path
+    "benchmarks/*"
+  ]
+  ```
+   — Thanks @goulvenclech!
+
+### Patch changes
+
+- [b4a7ea6](https://github.com/bruits/sampo/commit/b4a7ea6c0bfb693ccbe77d0ffc6b72d540a164ff) Fixed a formatting issue in release notes when a block of code was followed immediately by the contributor acknowledgment text. — Thanks @goulvenclech!
+- [b4a7ea6](https://github.com/bruits/sampo/commit/b4a7ea6c0bfb693ccbe77d0ffc6b72d540a164ff) Nesting should be preserved in release notes, even for nested lists. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.3.0
+
+
 ## 0.4.2
 
 ### Patch changes
