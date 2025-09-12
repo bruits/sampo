@@ -89,8 +89,6 @@ ignore = [
   "internal-*",
   "examples/*"
 ]
-
-[internal_dependencies]
 fixed = [["pkg-a", "pkg-b"], ["pkg-c", "pkg-d"]]
 linked = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 ```
@@ -112,14 +110,11 @@ linked = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 `ignore`: A list of glob-like patterns to ignore packages by name or relative path. `*` matches any sequence. Examples:
 - `internal-*`: ignores packages with names like `internal-tool`.
 - `examples/*`: ignores any package whose relative path starts with `examples/`.
-
-### `[internal_dependencies]` section
-
-Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when an internal dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
+Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of package names. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["a", "b"], ["c", "d"]]` and `a` is updated to `2.0.0` (major), then `b` will also be bumped to `2.0.0`, but `c` and `d` remain unchanged.
 
-`linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of package names. When any package in a group is updated, all packages in the same group that are affected or have internal dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["a", "b"]]` where `a` depends on `b`, when `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0`. If `a` is later updated to `2.1.0` (minor), `b` remains at `2.0.0` since it's not affected. Finally, if `b` has a patch update, both `a` and `b` will be bumped with patch level since it's the highest bump in the group.
+`linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of package names. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["a", "b"]]` where `a` depends on `b`, when `b` is updated to `2.0.0` (major), then `a` will also be bumped to `2.0.0`. If `a` is later updated to `2.1.0` (minor), `b` remains at `2.0.0` since it's not affected. Finally, if `b` has a patch update, both `a` and `b` will be bumped with patch level since it's the highest bump in the group.
 
 Note: Packages cannot appear in both `fixed` and `linked` configurations.
 

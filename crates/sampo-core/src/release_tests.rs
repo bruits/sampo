@@ -395,7 +395,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("a", "b", "1.0.0")
-            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n")
+            .set_config("[packages]\nfixed = [[\"a\", \"b\"]]\n")
             .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
 
         workspace.run_release(false).unwrap();
@@ -421,7 +421,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("b", "a", "1.0.0") // b depends on a (reverse)
-            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n")
+            .set_config("[packages]\nfixed = [[\"a\", \"b\"]]\n")
             .add_changeset(&["a"], Bump::Minor, "feat: a adds new feature");
 
         workspace.run_release(false).unwrap();
@@ -446,7 +446,7 @@ tempfile = "3.0"
             .add_crate("b", "1.0.0")
             .add_crate("c", "1.0.0")
             .add_crate("d", "1.0.0")
-            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"], [\"c\", \"d\"]]\n")
+            .set_config("[packages]\nfixed = [[\"a\", \"b\"], [\"c\", \"d\"]]\n")
             .add_changeset(&["a"], Bump::Minor, "feat: a feature");
 
         workspace.run_release(false).unwrap();
@@ -465,7 +465,7 @@ tempfile = "3.0"
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("a", "1.0.0")
-            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"nonexistent\"]]\n");
+            .set_config("[packages]\nfixed = [[\"a\", \"nonexistent\"]]\n");
 
         let result = workspace.run_release(false);
         assert!(result.is_err());
@@ -481,7 +481,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("a", "b", "1.0.0") // a depends on b
-            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\"]]\n")
+            .set_config("[packages]\nlinked = [[\"a\", \"b\"]]\n")
             .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
 
         workspace.run_release(false).unwrap();
@@ -501,7 +501,7 @@ tempfile = "3.0"
             .add_crate("c", "1.0.0")
             .add_dependency("a", "b", "1.0.0") // a depends on b
             .add_dependency("c", "b", "1.0.0") // c depends on b
-            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\", \"c\"]]\n")
+            .set_config("[packages]\nlinked = [[\"a\", \"b\", \"c\"]]\n")
             .add_changeset(&["b"], Bump::Minor, "feat: b new feature")
             .add_changeset(&["c"], Bump::Patch, "fix: c bug fix");
 
@@ -524,7 +524,7 @@ tempfile = "3.0"
             .add_crate("b", "1.0.0")
             .add_crate("c", "1.0.0") // c is in group but has no dependencies
             .add_dependency("a", "b", "1.0.0") // a depends on b
-            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\", \"c\"]]\n")
+            .set_config("[packages]\nlinked = [[\"a\", \"b\", \"c\"]]\n")
             .add_changeset(&["b"], Bump::Minor, "feat: b new feature");
 
         workspace.run_release(false).unwrap();
@@ -547,7 +547,7 @@ tempfile = "3.0"
             .add_crate("unaffected_in_group", "1.0.0")    // In group but no relation
             .add_crate("outside_group", "1.0.0")          // Not in group at all
             .add_dependency("affected_by_cascade", "affected_directly", "1.0.0")
-            .set_config("[internal_dependencies]\nlinked = [[\"affected_directly\", \"affected_by_cascade\", \"unaffected_in_group\"]]\n")
+            .set_config("[packages]\nlinked = [[\"affected_directly\", \"affected_by_cascade\", \"unaffected_in_group\"]]\n")
             .add_changeset(&["affected_directly"], Bump::Minor, "feat: new feature");
 
         workspace.run_release(false).unwrap();
@@ -592,7 +592,7 @@ tempfile = "3.0"
             .add_crate("pkg_c", "1.0.0")           // In group but no changeset, no deps
             .add_crate("pkg_d", "1.0.0")           // Depends on pkg_a
             .add_dependency("pkg_d", "pkg_a", "1.0.0")
-            .set_config("[internal_dependencies]\nlinked = [[\"pkg_a\", \"pkg_b\", \"pkg_c\", \"pkg_d\"]]\n")
+            .set_config("[packages]\nlinked = [[\"pkg_a\", \"pkg_b\", \"pkg_c\", \"pkg_d\"]]\n")
             .add_changeset(&["pkg_a"], Bump::Major, "breaking: major change in a")
             .add_changeset(&["pkg_b"], Bump::Minor, "feat: minor change in b");
 
@@ -632,7 +632,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             // Note: no dependency between a and b
-            .set_config("[internal_dependencies]\nfixed = [[\"a\", \"b\"]]\n")
+            .set_config("[packages]\nfixed = [[\"a\", \"b\"]]\n")
             .add_changeset(&["b"], Bump::Major, "breaking: b breaking change");
 
         workspace.run_release(false).unwrap();
@@ -672,7 +672,7 @@ tempfile = "3.0"
             .add_crate("pkg_c", "1.0.0") // In group, depends on pkg_d (outside group)
             .add_crate("pkg_d", "1.0.0") // Not in group but has changeset
             .add_dependency("pkg_c", "pkg_d", "1.0.0")
-            .set_config("[internal_dependencies]\nfixed = [[\"pkg_a\", \"pkg_b\", \"pkg_c\"]]\n")
+            .set_config("[packages]\nfixed = [[\"pkg_a\", \"pkg_b\", \"pkg_c\"]]\n")
             .add_changeset(&["pkg_b"], Bump::Minor, "feat: pkg_b new feature")
             .add_changeset(&["pkg_d"], Bump::Patch, "fix: pkg_d bug fix");
 
@@ -727,7 +727,7 @@ tempfile = "3.0"
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
             .add_dependency("a", "b", "1.0.0")
-            .set_config("[internal_dependencies]\nlinked = [[\"a\", \"b\"]]\n");
+            .set_config("[packages]\nlinked = [[\"a\", \"b\"]]\n");
 
         // Step 2: b is updated to 2.0.0 (major), a should also get 2.0.0
         workspace.add_changeset(&["b"], Bump::Major, "breaking: b major update");
