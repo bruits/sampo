@@ -174,7 +174,7 @@ async fn enrich_changeset_message_async(
         String::new()
     };
 
-    format_enriched_message(message, &commit_prefix, &acknowledgment_suffix)
+    crate::markdown::compose_markdown_with_affixes(message, &commit_prefix, &acknowledgment_suffix)
 }
 
 /// Get commit information for a specific commit hash
@@ -254,28 +254,6 @@ async fn build_acknowledgment_suffix(
 
     // Fallback to just the Git author name
     format!(" — Thanks {}!", commit.author_name)
-}
-
-/// Format the final enriched message
-fn format_enriched_message(
-    message: &str,
-    commit_prefix: &str,
-    acknowledgment_suffix: &str,
-) -> String {
-    if acknowledgment_suffix.is_empty() {
-        return format!("{}{}", commit_prefix, message);
-    }
-
-    // If the message ends with a Markdown code fence (```), appending the acknowledgment
-    // on the same line would break the fence closing. In that case, put the acknowledgment
-    // on its own line to keep Markdown rendering correct.
-    let trimmed_ends_with_fence = message.trim_end().ends_with("```");
-    if trimmed_ends_with_fence {
-        // Ensure the acknowledgment starts on a new line
-        format!("{}{}\n{}", commit_prefix, message, acknowledgment_suffix)
-    } else {
-        format!("{}{}{}", commit_prefix, message, acknowledgment_suffix)
-    }
 }
 
 /// Get GitHub user information for a commit
@@ -475,26 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn format_enriched_message_complete() {
-        let message =
-            format_enriched_message("feat: add new feature", "[abcd](link) ", " — Thanks @user!");
-        assert_eq!(
-            message,
-            "[abcd](link) feat: add new feature — Thanks @user!"
-        );
-    }
-
-    #[test]
-    fn format_enriched_message_preserves_code_fence_closing() {
-        // When a message ends with a code fence, the acknowledgment must not
-        // be appended to the same line as the closing ```.
-        let message = "Here is code:\n```rust\nfn main() {}\n```";
-        let result = format_enriched_message(message, "[abcd](link) ", " — Thanks @user!");
-
-        // Expect the acknowledgment to start on a new line
-        let expected = "[abcd](link) Here is code:\n```rust\nfn main() {}\n```\n — Thanks @user!";
-        assert_eq!(result, expected);
-    }
+    fn format_enriched_message_complete_is_covered_in_markdown_tests() {}
 
     #[test]
     fn enrich_changeset_message_integration() {

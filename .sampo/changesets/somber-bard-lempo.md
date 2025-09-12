@@ -1,5 +1,6 @@
 ---
 packages:
+  - sampo
   - sampo-core
   - sampo-github-action
 release: patch
