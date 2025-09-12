@@ -3,6 +3,7 @@ pub mod config;
 pub mod enrichment;
 pub mod errors;
 pub mod filters;
+pub mod markdown;
 pub mod publish;
 pub mod release;
 pub mod types;
@@ -20,6 +21,7 @@ pub use enrichment::{
 };
 pub use errors::SampoError;
 pub use filters::{filter_members, list_visible_packages, should_ignore_crate, wildcard_match};
+pub use markdown::format_markdown_list_item;
 pub use publish::{
     is_publishable_to_crates_io, run_publish, tag_published_crate, topo_order,
     version_exists_on_crates_io,

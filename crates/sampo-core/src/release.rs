@@ -961,27 +961,21 @@ fn update_changelog(
     if !merged_major.is_empty() {
         section.push_str("### Major changes\n\n");
         for msg in &merged_major {
-            section.push_str("- ");
-            section.push_str(msg);
-            section.push('\n');
+            section.push_str(&crate::markdown::format_markdown_list_item(msg));
         }
         section.push('\n');
     }
     if !merged_minor.is_empty() {
         section.push_str("### Minor changes\n\n");
         for msg in &merged_minor {
-            section.push_str("- ");
-            section.push_str(msg);
-            section.push('\n');
+            section.push_str(&crate::markdown::format_markdown_list_item(msg));
         }
         section.push('\n');
     }
     if !merged_patch.is_empty() {
         section.push_str("### Patch changes\n\n");
         for msg in &merged_patch {
-            section.push_str("- ");
-            section.push_str(msg);
-            section.push('\n');
+            section.push_str(&crate::markdown::format_markdown_list_item(msg));
         }
         section.push('\n');
     }

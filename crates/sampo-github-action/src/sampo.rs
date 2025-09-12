@@ -1,4 +1,5 @@
 use crate::{ActionError, Result};
+use sampo_core::format_markdown_list_item;
 use sampo_core::{
     Bump, Config, detect_all_dependency_explanations, detect_changesets_dir,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
@@ -210,9 +211,7 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
     if !changes.is_empty() {
         output.push_str(&format!("### {}\n\n", section_title));
         for change in changes {
-            output.push_str("- ");
-            output.push_str(change);
-            output.push('\n');
+            output.push_str(&format_markdown_list_item(change));
         }
         output.push('\n');
     }
@@ -241,6 +240,18 @@ mod tests {
         append_changes_section(&mut output, "Major changes", &changes);
 
         assert_eq!(output, "");
+    }
+
+    #[test]
+    fn test_append_changes_section_multiline_with_nested_list() {
+        let mut output = String::new();
+        let changes = vec!["feat: big change with details\n- add A\n- add B".to_string()];
+
+        append_changes_section(&mut output, "Minor changes", &changes);
+
+        let expected =
+            "### Minor changes\n\n- feat: big change with details\n  - add A\n  - add B\n\n";
+        assert_eq!(output, expected);
     }
 
     #[test]
