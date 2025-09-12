@@ -262,7 +262,20 @@ fn format_enriched_message(
     commit_prefix: &str,
     acknowledgment_suffix: &str,
 ) -> String {
-    format!("{}{}{}", commit_prefix, message, acknowledgment_suffix)
+    if acknowledgment_suffix.is_empty() {
+        return format!("{}{}", commit_prefix, message);
+    }
+
+    // If the message ends with a Markdown code fence (```), appending the acknowledgment
+    // on the same line would break the fence closing. In that case, put the acknowledgment
+    // on its own line to keep Markdown rendering correct.
+    let trimmed_ends_with_fence = message.trim_end().ends_with("```");
+    if trimmed_ends_with_fence {
+        // Ensure the acknowledgment starts on a new line
+        format!("{}{}\n{}", commit_prefix, message, acknowledgment_suffix)
+    } else {
+        format!("{}{}{}", commit_prefix, message, acknowledgment_suffix)
+    }
 }
 
 /// Get GitHub user information for a commit
@@ -469,6 +482,18 @@ mod tests {
             message,
             "[abcd](link) feat: add new feature — Thanks @user!"
         );
+    }
+
+    #[test]
+    fn format_enriched_message_preserves_code_fence_closing() {
+        // When a message ends with a code fence, the acknowledgment must not
+        // be appended to the same line as the closing ```.
+        let message = "Here is code:\n```rust\nfn main() {}\n```";
+        let result = format_enriched_message(message, "[abcd](link) ", " — Thanks @user!");
+
+        // Expect the acknowledgment to start on a new line
+        let expected = "[abcd](link) Here is code:\n```rust\nfn main() {}\n```\n — Thanks @user!";
+        assert_eq!(result, expected);
     }
 
     #[test]

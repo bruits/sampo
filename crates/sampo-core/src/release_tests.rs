@@ -587,10 +587,10 @@ tempfile = "3.0"
         // The unaffected package should still not be bumped
         let mut workspace = TestWorkspace::new();
         workspace
-            .add_crate("pkg_a", "1.0.0")           // Has major changeset
-            .add_crate("pkg_b", "1.0.0")           // Has minor changeset
-            .add_crate("pkg_c", "1.0.0")           // In group but no changeset, no deps
-            .add_crate("pkg_d", "1.0.0")           // Depends on pkg_a
+            .add_crate("pkg_a", "1.0.0") // Has major changeset
+            .add_crate("pkg_b", "1.0.0") // Has minor changeset
+            .add_crate("pkg_c", "1.0.0") // In group but no changeset, no deps
+            .add_crate("pkg_d", "1.0.0") // Depends on pkg_a
             .add_dependency("pkg_d", "pkg_a", "1.0.0")
             .set_config("[packages]\nlinked = [[\"pkg_a\", \"pkg_b\", \"pkg_c\", \"pkg_d\"]]\n")
             .add_changeset(&["pkg_a"], Bump::Major, "breaking: major change in a")
