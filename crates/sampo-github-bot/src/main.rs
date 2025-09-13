@@ -1,3 +1,5 @@
+mod error;
+
 use axum::{
     Router,
     extract::{Request, State},
@@ -14,6 +16,7 @@ use sha2::Sha256;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
+use crate::error::{Result, BotError, VerifyError};
 
 #[derive(Clone)]
 struct AppState {
@@ -30,7 +33,7 @@ struct Claims {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -89,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn webhook(
     State(state): State<AppState>,
     req: Request,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
     // Take headers before consuming body
     let headers = req.headers().clone();
     let event = headers
@@ -216,7 +219,7 @@ async fn webhook(
     Ok((StatusCode::OK, "ok"))
 }
 
-fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<(), VerifyError> {
+fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> std::result::Result<(), VerifyError> {
     let sig = headers
         .get("X-Hub-Signature-256")
         .ok_or(VerifyError::MissingHeader)?
@@ -232,18 +235,6 @@ fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<()
         .map_err(|_| VerifyError::Internal("bad secret".into()))?;
     mac.update(body);
     mac.verify_slice(&given).map_err(|_| VerifyError::Mismatch)
-}
-
-#[derive(thiserror::Error, Debug)]
-enum VerifyError {
-    #[error("missing signature header")]
-    MissingHeader,
-    #[error("invalid signature header")]
-    InvalidHeader,
-    #[error("signature mismatch")]
-    Mismatch,
-    #[error("internal: {0}")]
-    Internal(String),
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
@@ -275,7 +266,7 @@ async fn pr_has_changeset(
     owner: &str,
     repo: &str,
     pr: u64,
-) -> octocrab::Result<bool> {
+) -> Result<bool> {
     let files = octo.pulls(owner, repo).list_files(pr).await?;
     let mut page = files;
     let mut any = false;
@@ -348,7 +339,7 @@ async fn upsert_sticky_comment(
     pr: u64,
     marker: &str,
     body: &str,
-) -> octocrab::Result<()> {
+) -> Result<()> {
     // Look for existing comment with marker
     let mut existing: Option<octocrab::models::CommentId> = None;
     let mut page = octo.issues(owner, repo).list_comments(pr).send().await?;
@@ -385,7 +376,7 @@ fn comment_has_marker(c: &Comment, marker: &str) -> bool {
 fn create_jwt(
     app_id: u64,
     private_key: &EncodingKey,
-) -> Result<String, jsonwebtoken::errors::Error> {
+) -> Result<String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("SystemTime before UNIX_EPOCH")
@@ -400,7 +391,7 @@ fn create_jwt(
     let mut header = Header::new(Algorithm::RS256);
     header.typ = Some("JWT".to_string());
 
-    encode(&header, &claims, private_key)
+    Ok(encode(&header, &claims, private_key)?)
 }
 
 /// Get installation ID for a repository
@@ -408,7 +399,7 @@ async fn get_installation_id(
     app_jwt: &str,
     owner: &str,
     repo: &str,
-) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<u64> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://api.github.com/repos/{}/{}/installation",
@@ -424,21 +415,21 @@ async fn get_installation_id(
         .await?;
 
     if !response.status().is_success() {
-        return Err(format!("Failed to get installation: {}", response.status()).into());
+        return Err(BotError::Internal(format!("Failed to get installation: {}", response.status())));
     }
 
     let installation: serde_json::Value = response.json().await?;
     installation
         .get("id")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| "Installation ID not found".into())
+        .ok_or_else(|| BotError::Internal("Installation ID not found".into()))
 }
 
 /// Get installation access token
 async fn get_installation_token(
     app_jwt: &str,
     installation_id: u64,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<String> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://api.github.com/app/installations/{}/access_tokens",
@@ -454,7 +445,7 @@ async fn get_installation_token(
         .await?;
 
     if !response.status().is_success() {
-        return Err(format!("Failed to get installation token: {}", response.status()).into());
+        return Err(BotError::Internal(format!("Failed to get installation token: {}", response.status())));
     }
 
     let token_response: serde_json::Value = response.json().await?;
@@ -462,7 +453,7 @@ async fn get_installation_token(
         .get("token")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| "Installation token not found".into())
+        .ok_or_else(|| BotError::Internal("Installation token not found".into()))
 }
 
 /// Create an authenticated octocrab client for a specific repository
@@ -470,7 +461,7 @@ async fn get_installation_client(
     state: &AppState,
     owner: &str,
     repo: &str,
-) -> Result<octocrab::Octocrab, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<octocrab::Octocrab> {
     // Create JWT
     let jwt = create_jwt(state.app_id, &state.private_key)?;
 
@@ -491,6 +482,7 @@ async fn get_installation_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::VerifyError;
 
     #[test]
     fn hex_decode_works() {
