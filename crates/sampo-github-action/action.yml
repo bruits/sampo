@@ -88,6 +88,11 @@ runs:
       run: |
         set -euo pipefail
 
+        # If an explicit token input is provided, use it
+        if [[ -n "${INPUT_GITHUB_TOKEN:-}" ]]; then
+          export GITHUB_TOKEN="${INPUT_GITHUB_TOKEN}"
+        fi
+
         # Ensure Rust available
         if ! command -v cargo >/dev/null 2>&1; then
           echo "Installing Rust toolchain..."

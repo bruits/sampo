@@ -334,9 +334,25 @@ impl GitHubClient {
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
+            // Provide actionable context for common failure modes
+            let hint = if status.as_u16() == 404 {
+                "Hint: Discussions may be disabled on this repository, or the token lacks discussions permissions. Enable Discussions in Settings and grant `permissions: discussions: write` in the workflow."
+            } else if status.as_u16() == 410 {
+                "Hint: Discussions are disabled for this repository. Enable Discussions in Settings > Features."
+            } else if status.as_u16() == 403 {
+                "Hint: Missing permissions. Grant `permissions: discussions: write` in the workflow."
+            } else {
+                ""
+            };
             Err(ActionError::SampoCommandFailed {
                 operation: "github-list-discussion-categories".to_string(),
-                message: format!("Failed to get categories ({}): {}", status, error_text),
+                message: format!(
+                    "Failed to get categories ({}): {}{}{}",
+                    status,
+                    error_text,
+                    if hint.is_empty() { "" } else { " — " },
+                    hint
+                ),
             })
         }
     }
@@ -398,9 +414,24 @@ impl GitHubClient {
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
+            let hint = if status.as_u16() == 404 {
+                "Hint: Discussions may be disabled on this repository, or the token lacks discussions permissions. Enable Discussions in Settings and grant `permissions: discussions: write` in the workflow."
+            } else if status.as_u16() == 410 {
+                "Hint: Discussions are disabled for this repository. Enable Discussions in Settings > Features."
+            } else if status.as_u16() == 403 {
+                "Hint: Missing permissions. Grant `permissions: discussions: write` in the workflow."
+            } else {
+                ""
+            };
             Err(ActionError::SampoCommandFailed {
                 operation: "github-create-discussion".to_string(),
-                message: format!("Failed to create discussion ({}): {}", status, error_text),
+                message: format!(
+                    "Failed to create discussion ({}): {}{}{}",
+                    status,
+                    error_text,
+                    if hint.is_empty() { "" } else { " — " },
+                    hint
+                ),
             })
         }
     }

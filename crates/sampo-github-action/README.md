@@ -56,6 +56,7 @@ on:
 
 permissions:
   contents: write
+  discussions: write
   pull-requests: write
 
 jobs:
@@ -130,7 +131,7 @@ Notes:
 - prepare-pr runs `sampo release` on a release branch and opens/updates a PR.
 - post-merge-publish runs only when the Release PR is merged into `main`. It creates any missing tags for the current crate versions on the main branch, pushes them, and runs `sampo publish`. It can also create GitHub Releases for the new tags.
 - Adjust the branch/title condition in the workflow if you customize the release PR branch name.
-- Ensure the workflow has `contents: write` (and `pull-requests: write` for prepare-pr) permissions.
+- Ensure the workflow has `contents: write` (and `pull-requests: write` for prepare-pr) permissions. To open Discussions, also grant `discussions: write` and enable Discussions in the repository settings.
 
 ### Inputs
 
