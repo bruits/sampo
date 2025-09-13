@@ -1,5 +1,13 @@
 # sampo
 
+## 0.6.1
+
+### Patch changes
+
+- [061a5f3](https://github.com/bruits/sampo/commit/061a5f368f6409a868d94dc60f39f0fc1c138727) `packages.ignore` and `packages.ignore_unpublished` configuration options now work as intended for release and publishing steps. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.3.1
+
+
 ## 0.6.0
 
 ### Minor changes
