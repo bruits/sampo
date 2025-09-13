@@ -1,5 +1,9 @@
 use crate::types::CrateInfo;
-use crate::{errors::{Result, SampoError}, Config, discover_workspace, filters::should_ignore_crate};
+use crate::{
+    Config, discover_workspace,
+    errors::{Result, SampoError},
+    filters::should_ignore_crate,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -185,9 +189,9 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 pub fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let value: toml::Value = text
-        .parse()
-        .map_err(|e| SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display())))?;
+    let value: toml::Value = text.parse().map_err(|e| {
+        SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
+    })?;
 
     let pkg = match value.get("package").and_then(|v| v.as_table()) {
         Some(p) => p,

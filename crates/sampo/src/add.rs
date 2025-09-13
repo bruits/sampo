@@ -1,8 +1,8 @@
 use crate::cli::AddArgs;
 use crate::names;
 use sampo_core::{
-    errors::Result,
-    Bump, Config, discover_workspace, filters::list_visible_packages, render_changeset_markdown,
+    Bump, Config, discover_workspace, errors::Result, filters::list_visible_packages,
+    render_changeset_markdown,
 };
 use std::collections::BTreeSet;
 use std::fs;

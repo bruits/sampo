@@ -1,10 +1,10 @@
+use crate::errors::Result;
 use crate::{
     Config,
     publish::is_publishable_to_crates_io,
     types::{CrateInfo, Workspace},
 };
 use std::collections::BTreeSet;
-use crate::errors::Result;
 
 /// Determines whether a crate should be ignored based on configuration.
 ///

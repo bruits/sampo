@@ -1,3 +1,4 @@
+use crate::errors::{Result, SampoError};
 use crate::filters::should_ignore_crate;
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
@@ -5,7 +6,6 @@ use crate::{
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use rustc_hash::FxHashSet;
-use crate::errors::{Result, SampoError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -377,7 +377,7 @@ fn compute_initial_bumps(
     changesets: &[ChangesetInfo],
     ws: &Workspace,
     cfg: &Config,
-    ) -> Result<InitialBumpsResult> {
+) -> Result<InitialBumpsResult> {
     let mut bump_by_pkg: BTreeMap<String, Bump> = BTreeMap::new();
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
     let mut used_paths: BTreeSet<std::path::PathBuf> = BTreeSet::new();

@@ -16,8 +16,9 @@ pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
     let mut name_to_path: BTreeMap<String, PathBuf> = BTreeMap::new();
     for member_dir in &members {
         let manifest_path = member_dir.join("Cargo.toml");
-        let text = fs::read_to_string(&manifest_path)
-            .map_err(|e| WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path)))?;
+        let text = fs::read_to_string(&manifest_path).map_err(|e| {
+            WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
+        })?;
         let value: toml::Value = text.parse().map_err(|e| {
             WorkspaceError::InvalidToml(format!("{}: {}", manifest_path.display(), e))
         })?;
@@ -95,8 +96,9 @@ fn find_workspace_root(start_dir: &Path) -> Result<(PathBuf, toml::Value)> {
     loop {
         let toml_path = current.join("Cargo.toml");
         if toml_path.exists() {
-            let text = fs::read_to_string(&toml_path)
-                .map_err(|e| WorkspaceError::Io(crate::errors::io_error_with_path(e, &toml_path)))?;
+            let text = fs::read_to_string(&toml_path).map_err(|e| {
+                WorkspaceError::Io(crate::errors::io_error_with_path(e, &toml_path))
+            })?;
             let value: toml::Value = text.parse().map_err(|e| {
                 WorkspaceError::InvalidToml(format!("{}: {}", toml_path.display(), e))
             })?;
