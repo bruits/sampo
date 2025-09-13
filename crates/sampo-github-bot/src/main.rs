@@ -388,7 +388,7 @@ fn create_jwt(
 ) -> Result<String, jsonwebtoken::errors::Error> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("SystemTime before UNIX_EPOCH")
         .as_secs();
 
     let claims = Claims {

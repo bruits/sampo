@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 
 /// Canonical result type for Sampo code
 pub type Result<T> = std::result::Result<T, SampoError>;
@@ -48,4 +49,12 @@ pub enum WorkspaceError {
     InvalidToml(String),
     #[error("Invalid workspace: {0}")]
     InvalidWorkspace(String),
+}
+
+/// Helper to create an IO error with file path context
+pub fn io_error_with_path<P: AsRef<Path>>(error: io::Error, path: P) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("{}: {}", path.as_ref().display(), error),
+    )
 }

@@ -183,10 +183,11 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 /// - The TOML is malformed
 /// - The manifest has no `[package]` section (returns `Ok(false)`)
 pub fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
-    let text = fs::read_to_string(manifest_path)?;
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
     let value: toml::Value = text
         .parse()
-        .map_err(|e| SampoError::InvalidData(format!("{e}")))?;
+        .map_err(|e| SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display())))?;
 
     let pkg = match value.get("package").and_then(|v| v.as_table()) {
         Some(p) => p,

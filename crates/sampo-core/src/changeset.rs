@@ -80,7 +80,8 @@ pub fn load_changesets(dir: &Path) -> io::Result<Vec<ChangesetInfo>> {
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let text = fs::read_to_string(&path)?;
+        let text = fs::read_to_string(&path)
+            .map_err(|e| crate::errors::io_error_with_path(e, &path))?;
         if let Some(cs) = parse_changeset(&text, &path) {
             out.push(cs);
         }
