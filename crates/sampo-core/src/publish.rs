@@ -1,5 +1,5 @@
-use crate::discover_workspace;
 use crate::types::CrateInfo;
+use crate::{Config, discover_workspace, filters::should_ignore_crate};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io;
@@ -31,11 +31,17 @@ use std::time::Duration;
 /// ```
 pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> io::Result<()> {
     let ws = discover_workspace(root).map_err(io::Error::other)?;
+    let config = Config::load(&ws.root).map_err(io::Error::other)?;
 
-    // Determine which crates are publishable to crates.io
+    // Determine which crates are publishable to crates.io and not ignored
     let mut name_to_crate: BTreeMap<String, &CrateInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     for c in &ws.members {
+        // Skip ignored packages
+        if should_ignore_crate(&config, &ws, c)? {
+            continue;
+        }
+
         let manifest = c.path.join("Cargo.toml");
         if is_publishable_to_crates_io(&manifest)? {
             publishable.insert(c.name.clone());
@@ -710,5 +716,87 @@ mod tests {
         let result = is_publishable_to_crates_io(&manifest_path);
         assert!(result.is_err());
         assert!(result.unwrap_err().kind() == io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn skips_ignored_packages_during_publish() {
+        use crate::types::{CrateInfo, Workspace};
+        use std::collections::BTreeSet;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+
+        // Create config that ignores examples/*
+        let config_dir = root.join(".sampo");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            "[packages]\nignore = [\"examples/*\"]\n",
+        )
+        .unwrap();
+
+        // Create a mock workspace with packages
+        let main_pkg = root.join("main-package");
+        let examples_pkg = root.join("examples/demo");
+
+        fs::create_dir_all(&main_pkg).unwrap();
+        fs::create_dir_all(&examples_pkg).unwrap();
+
+        // Create publishable Cargo.toml files
+        let main_toml = r#"
+[package]
+name = "main-package"
+version = "1.0.0"
+edition = "2021"
+"#;
+        let examples_toml = r#"
+[package]
+name = "examples-demo"
+version = "1.0.0"
+edition = "2021"
+"#;
+
+        fs::write(main_pkg.join("Cargo.toml"), main_toml).unwrap();
+        fs::write(examples_pkg.join("Cargo.toml"), examples_toml).unwrap();
+
+        // Create a workspace with both packages
+        let workspace = Workspace {
+            root: root.to_path_buf(),
+            members: vec![
+                CrateInfo {
+                    name: "main-package".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: main_pkg,
+                    internal_deps: BTreeSet::new(),
+                },
+                CrateInfo {
+                    name: "examples-demo".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: examples_pkg,
+                    internal_deps: BTreeSet::new(),
+                },
+            ],
+        };
+
+        let config = crate::Config::load(&workspace.root).unwrap();
+
+        // Simulate what run_publish does for determining publishable packages
+        let mut publishable: BTreeSet<String> = BTreeSet::new();
+        for c in &workspace.members {
+            // Skip ignored packages
+            if should_ignore_crate(&config, &workspace, c).unwrap() {
+                continue;
+            }
+
+            let manifest = c.path.join("Cargo.toml");
+            if is_publishable_to_crates_io(&manifest).unwrap() {
+                publishable.insert(c.name.clone());
+            }
+        }
+
+        // Only main-package should be publishable, examples-demo should be ignored
+        assert_eq!(publishable.len(), 1);
+        assert!(publishable.contains("main-package"));
+        assert!(!publishable.contains("examples-demo"));
     }
 }

@@ -129,10 +129,11 @@ pub fn detect_all_dependency_explanations(
         .map(|(name, (_old, new_ver))| (name.clone(), new_ver.clone()))
         .collect();
 
-    // Build map of crate name -> CrateInfo for quick lookup
+    // Build map of crate name -> CrateInfo for quick lookup (only non-ignored packages)
     let by_name: BTreeMap<String, &CrateInfo> = workspace
         .members
         .iter()
+        .filter(|c| !should_ignore_crate(config, workspace, c).unwrap_or(false))
         .map(|c| (c.name.clone(), c))
         .collect();
 
@@ -181,9 +182,14 @@ pub fn detect_fixed_dependency_policy_packages(
         .flat_map(|cs| cs.packages.iter().cloned())
         .collect();
 
-    // Build dependency graph (dependent -> set of dependencies)
+    // Build dependency graph (dependent -> set of dependencies) - only non-ignored packages
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for crate_info in &workspace.members {
+        // Skip ignored packages when building the dependency graph
+        if should_ignore_crate(config, workspace, crate_info).unwrap_or(false) {
+            continue;
+        }
+
         for dep_name in &crate_info.internal_deps {
             dependents
                 .entry(dep_name.clone())
@@ -310,8 +316,8 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseO
     }
 
     // Build dependency graph and apply cascading logic
-    let dependents = build_dependency_graph(&workspace);
-    apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config);
+    let dependents = build_dependency_graph(&workspace, &config);
+    apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace);
     apply_linked_dependencies(&mut bump_by_pkg, &config);
 
     // Prepare and validate release plan
@@ -439,10 +445,30 @@ fn compute_initial_bumps(
 }
 
 /// Build reverse dependency graph: dep -> set of dependents
-fn build_dependency_graph(ws: &Workspace) -> BTreeMap<String, BTreeSet<String>> {
+/// Only includes non-ignored packages in the graph
+fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTreeSet<String>> {
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    // Build a set of ignored package names for quick lookup
+    let ignored_packages: BTreeSet<String> = ws
+        .members
+        .iter()
+        .filter(|c| should_ignore_crate(cfg, ws, c).unwrap_or(false))
+        .map(|c| c.name.clone())
+        .collect();
+
     for c in &ws.members {
+        // Skip ignored packages when building the dependency graph
+        if ignored_packages.contains(&c.name) {
+            continue;
+        }
+
         for dep in &c.internal_deps {
+            // Also skip dependencies that point to ignored packages
+            if ignored_packages.contains(dep) {
+                continue;
+            }
+
             dependents
                 .entry(dep.clone())
                 .or_default()
@@ -457,6 +483,7 @@ fn apply_dependency_cascade(
     bump_by_pkg: &mut BTreeMap<String, Bump>,
     dependents: &BTreeMap<String, BTreeSet<String>>,
     cfg: &Config,
+    ws: &Workspace,
 ) {
     // Helper function to find which fixed group a package belongs to, if any
     let find_fixed_group = |pkg_name: &str| -> Option<usize> {
@@ -464,6 +491,12 @@ fn apply_dependency_cascade(
             .iter()
             .position(|group| group.contains(&pkg_name.to_string()))
     };
+
+    // Build a quick lookup map for crate info
+    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    for c in &ws.members {
+        by_name.insert(c.name.clone(), c);
+    }
 
     let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
@@ -474,6 +507,18 @@ fn apply_dependency_cascade(
         // 1. Handle normal dependency relationships (unchanged → dependent)
         if let Some(deps) = dependents.get(&changed) {
             for dep_name in deps {
+                // Check if this dependent package should be ignored
+                if let Some(info) = by_name.get(dep_name) {
+                    match should_ignore_crate(cfg, ws, info) {
+                        Ok(true) => continue,
+                        Ok(false) => {} // Continue processing
+                        Err(_) => {
+                            // On I/O error reading manifest, err on the side of not ignoring
+                            // This maintains backwards compatibility and avoids silent failures
+                        }
+                    }
+                }
+
                 // Determine bump level for this dependent
                 let dependent_bump = if find_fixed_group(dep_name).is_some() {
                     // Fixed dependencies: same bump level as the dependency
@@ -502,6 +547,18 @@ fn apply_dependency_cascade(
             // All packages in the same fixed group should bump together
             for group_member in &cfg.fixed_dependencies[group_idx] {
                 if group_member != &changed {
+                    // Check if this group member should be ignored
+                    if let Some(info) = by_name.get(group_member) {
+                        match should_ignore_crate(cfg, ws, info) {
+                            Ok(true) => continue,
+                            Ok(false) => {} // Continue processing
+                            Err(_) => {
+                                // On I/O error reading manifest, err on the side of not ignoring
+                                // This maintains backwards compatibility and avoids silent failures
+                            }
+                        }
+                    }
+
                     let entry = bump_by_pkg
                         .entry(group_member.clone())
                         .or_insert(changed_bump);
@@ -1033,5 +1090,109 @@ mod tests {
         assert!(changed);
         assert!(out.contains("bar = { version = \"0.2.0\" }"));
         assert!(!out.contains("\"bar\""));
+    }
+
+    #[test]
+    fn test_ignore_packages_in_dependency_cascade() {
+        use crate::types::{CrateInfo, Workspace};
+        use std::path::PathBuf;
+
+        // Create a mock workspace with packages
+        let root = PathBuf::from("/tmp/test");
+        let workspace = Workspace {
+            root: root.clone(),
+            members: vec![
+                CrateInfo {
+                    name: "main-package".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: root.join("main-package"),
+                    internal_deps: BTreeSet::new(),
+                },
+                CrateInfo {
+                    name: "examples-package".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: root.join("examples/package"),
+                    internal_deps: BTreeSet::new(),
+                },
+                CrateInfo {
+                    name: "benchmarks-utils".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: root.join("benchmarks/utils"),
+                    internal_deps: BTreeSet::new(),
+                },
+            ],
+        };
+
+        // Create a config that ignores examples/* and benchmarks/*
+        let config = Config {
+            ignore: vec!["examples/*".to_string(), "benchmarks/*".to_string()],
+            ..Default::default()
+        };
+
+        // Create a dependency graph where main-package depends on the ignored packages
+        let mut dependents = BTreeMap::new();
+        dependents.insert(
+            "main-package".to_string(),
+            ["examples-package", "benchmarks-utils"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
+
+        // Start with main-package being bumped
+        let mut bump_by_pkg = BTreeMap::new();
+        bump_by_pkg.insert("main-package".to_string(), Bump::Minor);
+
+        // Apply dependency cascade
+        apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace);
+
+        // The ignored packages should NOT be added to bump_by_pkg
+        assert_eq!(bump_by_pkg.len(), 1);
+        assert!(bump_by_pkg.contains_key("main-package"));
+        assert!(!bump_by_pkg.contains_key("examples-package"));
+        assert!(!bump_by_pkg.contains_key("benchmarks-utils"));
+    }
+
+    #[test]
+    fn test_ignored_packages_excluded_from_dependency_graph() {
+        use crate::types::{CrateInfo, Workspace};
+        use std::collections::BTreeSet;
+        use std::path::PathBuf;
+
+        let root = PathBuf::from("/tmp/test");
+        let workspace = Workspace {
+            root: root.clone(),
+            members: vec![
+                CrateInfo {
+                    name: "main-package".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: root.join("main-package"),
+                    internal_deps: ["examples-package".to_string()].into_iter().collect(),
+                },
+                CrateInfo {
+                    name: "examples-package".to_string(),
+                    version: "1.0.0".to_string(),
+                    path: root.join("examples/package"),
+                    internal_deps: BTreeSet::new(),
+                },
+            ],
+        };
+
+        // Config that ignores examples/*
+        let config = Config {
+            ignore: vec!["examples/*".to_string()],
+            ..Default::default()
+        };
+
+        // Build dependency graph
+        let dependents = build_dependency_graph(&workspace, &config);
+
+        // examples-package should not appear in the dependency graph because it's ignored
+        // So main-package should not appear as a dependent of examples-package
+        assert!(!dependents.contains_key("examples-package"));
+
+        // The dependency graph should be empty since examples-package is ignored
+        // and main-package depends on it
+        assert!(dependents.is_empty());
     }
 }

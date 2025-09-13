@@ -105,11 +105,15 @@ linked = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 
 ### `[packages]` section
 
-`ignore_unpublished`: If `true`, packages that are not publishable to crates.io (`publish = false` or registry restrictions not including `"crates-io"`) are ignored during the release step. Changesets targeting only ignored packages are left unconsumed. (default: `false`)
+You can ignore certain packages, so they do not appear in the CLI commands, changesets, releases, or publishing steps. This is useful for packages that are not meant to be published or versioned, such as internal tools, examples, or documentation packages. Changesets targeting only ignored packages are left unconsumed.
+
+`ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust packages.
 
 `ignore`: A list of glob-like patterns to ignore packages by name or relative path. `*` matches any sequence. Examples:
 - `internal-*`: ignores packages with names like `internal-tool`.
 - `examples/*`: ignores any package whose relative path starts with `examples/`.
+- `package-a`: ignores a package named exactly `package-a`.
+
 Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of package names. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["a", "b"], ["c", "d"]]` and `a` is updated to `2.0.0` (major), then `b` will also be bumped to `2.0.0`, but `c` and `d` remain unchanged.
