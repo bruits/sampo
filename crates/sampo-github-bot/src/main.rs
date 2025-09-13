@@ -1,5 +1,6 @@
 mod error;
 
+use crate::error::{BotError, Result, VerifyError};
 use axum::{
     Router,
     extract::{Request, State},
@@ -16,7 +17,6 @@ use sha2::Sha256;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info, warn};
-use crate::error::{Result, BotError, VerifyError};
 
 #[derive(Clone)]
 struct AppState {
@@ -219,7 +219,11 @@ async fn webhook(
     Ok((StatusCode::OK, "ok"))
 }
 
-fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> std::result::Result<(), VerifyError> {
+fn verify_signature(
+    secret: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> std::result::Result<(), VerifyError> {
     let sig = headers
         .get("X-Hub-Signature-256")
         .ok_or(VerifyError::MissingHeader)?
@@ -267,7 +271,11 @@ async fn pr_has_changeset(
     repo: &str,
     pr: u64,
 ) -> Result<bool> {
-    let files = octo.pulls(owner, repo).list_files(pr).await?;
+    let files = octo
+        .pulls(owner, repo)
+        .list_files(pr)
+        .await
+        .map_err(BotError::from_pr_files)?;
     let mut page = files;
     let mut any = false;
     let dir_prefix = ".sampo/changesets/"; // align with Sampo defaults
@@ -285,7 +293,8 @@ async fn pr_has_changeset(
         }
         if let Some(next) = octo
             .get_page::<octocrab::models::repos::DiffEntry>(&page.next)
-            .await?
+            .await
+            .map_err(BotError::from_pr_files)?
         {
             page = next;
         } else {
@@ -342,7 +351,12 @@ async fn upsert_sticky_comment(
 ) -> Result<()> {
     // Look for existing comment with marker
     let mut existing: Option<octocrab::models::CommentId> = None;
-    let mut page = octo.issues(owner, repo).list_comments(pr).send().await?;
+    let mut page = octo
+        .issues(owner, repo)
+        .list_comments(pr)
+        .send()
+        .await
+        .map_err(BotError::from_comments)?;
     loop {
         for c in &page {
             if comment_has_marker(c, marker) {
@@ -353,7 +367,11 @@ async fn upsert_sticky_comment(
         if existing.is_some() {
             break;
         }
-        if let Some(next) = octo.get_page::<Comment>(&page.next).await? {
+        if let Some(next) = octo
+            .get_page::<Comment>(&page.next)
+            .await
+            .map_err(BotError::from_comments)?
+        {
             page = next;
         } else {
             break;
@@ -361,9 +379,15 @@ async fn upsert_sticky_comment(
     }
 
     if let Some(id) = existing {
-        octo.issues(owner, repo).update_comment(id, body).await?;
+        octo.issues(owner, repo)
+            .update_comment(id, body)
+            .await
+            .map_err(BotError::from_comments)?;
     } else {
-        octo.issues(owner, repo).create_comment(pr, body).await?;
+        octo.issues(owner, repo)
+            .create_comment(pr, body)
+            .await
+            .map_err(BotError::from_comments)?;
     }
     Ok(())
 }
@@ -373,10 +397,7 @@ fn comment_has_marker(c: &Comment, marker: &str) -> bool {
 }
 
 /// Generate a JWT for GitHub App authentication
-fn create_jwt(
-    app_id: u64,
-    private_key: &EncodingKey,
-) -> Result<String> {
+fn create_jwt(app_id: u64, private_key: &EncodingKey) -> Result<String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("SystemTime before UNIX_EPOCH")
@@ -395,11 +416,7 @@ fn create_jwt(
 }
 
 /// Get installation ID for a repository
-async fn get_installation_id(
-    app_jwt: &str,
-    owner: &str,
-    repo: &str,
-) -> Result<u64> {
+async fn get_installation_id(app_jwt: &str, owner: &str, repo: &str) -> Result<u64> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://api.github.com/repos/{}/{}/installation",
@@ -415,7 +432,10 @@ async fn get_installation_id(
         .await?;
 
     if !response.status().is_success() {
-        return Err(BotError::Internal(format!("Failed to get installation: {}", response.status())));
+        return Err(BotError::Internal(format!(
+            "Failed to get installation: {}",
+            response.status()
+        )));
     }
 
     let installation: serde_json::Value = response.json().await?;
@@ -426,10 +446,7 @@ async fn get_installation_id(
 }
 
 /// Get installation access token
-async fn get_installation_token(
-    app_jwt: &str,
-    installation_id: u64,
-) -> Result<String> {
+async fn get_installation_token(app_jwt: &str, installation_id: u64) -> Result<String> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://api.github.com/app/installations/{}/access_tokens",
@@ -445,7 +462,10 @@ async fn get_installation_token(
         .await?;
 
     if !response.status().is_success() {
-        return Err(BotError::Internal(format!("Failed to get installation token: {}", response.status())));
+        return Err(BotError::Internal(format!(
+            "Failed to get installation token: {}",
+            response.status()
+        )));
     }
 
     let token_response: serde_json::Value = response.json().await?;
@@ -474,7 +494,8 @@ async fn get_installation_client(
     // Create authenticated octocrab client
     let client = octocrab::Octocrab::builder()
         .personal_token(installation_token)
-        .build()?;
+        .build()
+        .map_err(BotError::from_github_auth)?;
 
     Ok(client)
 }
