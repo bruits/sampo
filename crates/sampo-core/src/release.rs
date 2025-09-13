@@ -5,9 +5,9 @@ use crate::{
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use rustc_hash::FxHashSet;
+use crate::errors::{Result, SampoError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
 use std::path::Path;
 
 /// Format dependency updates for changelog display
@@ -283,12 +283,12 @@ type InitialBumpsResult = (
 type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_version)
 
 /// Main release function that can be called from CLI or other interfaces
-pub fn run_release(root: &std::path::Path, dry_run: bool) -> io::Result<ReleaseOutput> {
-    let workspace = discover_workspace(root).map_err(io::Error::other)?;
-    let config = Config::load(&workspace.root).map_err(io::Error::other)?;
+pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutput> {
+    let workspace = discover_workspace(root)?;
+    let config = Config::load(&workspace.root)?;
 
     // Validate fixed dependencies configuration
-    validate_fixed_dependencies(&config, &workspace).map_err(io::Error::other)?;
+    validate_fixed_dependencies(&config, &workspace)?;
 
     let changesets_dir = workspace.root.join(".sampo").join("changesets");
     let changesets = load_changesets(&changesets_dir)?;
@@ -377,7 +377,7 @@ fn compute_initial_bumps(
     changesets: &[ChangesetInfo],
     ws: &Workspace,
     cfg: &Config,
-) -> io::Result<InitialBumpsResult> {
+    ) -> Result<InitialBumpsResult> {
     let mut bump_by_pkg: BTreeMap<String, Bump> = BTreeMap::new();
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
     let mut used_paths: BTreeSet<std::path::PathBuf> = BTreeSet::new();
@@ -617,7 +617,7 @@ fn apply_linked_dependencies(bump_by_pkg: &mut BTreeMap<String, Bump>, cfg: &Con
 fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
-) -> io::Result<ReleasePlan> {
+) -> Result<ReleasePlan> {
     // Map crate name -> CrateInfo for quick lookup
     let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
     for c in &ws.members {
@@ -657,7 +657,7 @@ fn apply_releases(
     messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
     changesets: &[ChangesetInfo],
     cfg: &Config,
-) -> io::Result<()> {
+) -> Result<()> {
     // Build lookup maps
     let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
     for c in &ws.members {
@@ -706,7 +706,7 @@ fn apply_releases(
 }
 
 /// Clean up consumed changeset files
-fn cleanup_consumed_changesets(used_paths: BTreeSet<std::path::PathBuf>) -> io::Result<()> {
+fn cleanup_consumed_changesets(used_paths: BTreeSet<std::path::PathBuf>) -> Result<()> {
     for p in used_paths {
         let _ = fs::remove_file(p);
     }
@@ -715,7 +715,7 @@ fn cleanup_consumed_changesets(used_paths: BTreeSet<std::path::PathBuf>) -> io::
 }
 
 /// Bump a semver version string
-pub fn bump_version(old: &str, bump: Bump) -> Result<String, String> {
+pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String> {
     let mut parts = old
         .split('.')
         .map(|s| s.parse::<u64>().unwrap_or(0))
@@ -743,7 +743,7 @@ pub fn update_manifest_versions(
     new_pkg_version: Option<&str>,
     ws: &Workspace,
     new_version_by_name: &BTreeMap<String, String>,
-) -> io::Result<(String, Vec<(String, String)>)> {
+) -> Result<(String, Vec<(String, String)>)> {
     let mut result = input.to_string();
     let mut applied: Vec<(String, String)> = Vec::new();
 
@@ -769,7 +769,7 @@ pub fn update_manifest_versions(
 }
 
 /// Update the package version in the [package] section
-fn update_package_version(input: &str, new_version: &str) -> io::Result<String> {
+fn update_package_version(input: &str, new_version: &str) -> Result<String> {
     let lines: Vec<&str> = input.lines().collect();
     let mut result_lines = Vec::new();
     let mut in_package_section = false;
@@ -810,7 +810,7 @@ fn update_dependency_version(
     input: &str,
     dep_name: &str,
     new_version: &str,
-) -> io::Result<(String, bool)> {
+) -> Result<(String, bool)> {
     let lines: Vec<&str> = input.lines().collect();
     let mut result_lines = Vec::new();
     let mut was_updated = false;
@@ -920,7 +920,7 @@ fn update_changelog(
     old_version: &str,
     new_version: &str,
     entries: &[(String, Bump)],
-) -> io::Result<()> {
+) -> Result<()> {
     let path = crate_dir.join("CHANGELOG.md");
     let existing = if path.exists() {
         fs::read_to_string(&path)?
@@ -1047,11 +1047,12 @@ fn update_changelog(
     } else {
         format!("{}{}", section, body)
     };
-    fs::write(&path, combined)
+    fs::write(&path, combined)?;
+    Ok(())
 }
 
 /// Validate fixed dependencies configuration against the workspace
-fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result<(), String> {
+fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result<()> {
     let workspace_packages: FxHashSet<String> =
         workspace.members.iter().map(|c| c.name.clone()).collect();
 
@@ -1059,12 +1060,12 @@ fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result
         for package in group {
             if !workspace_packages.contains(package) {
                 let available_packages: Vec<String> = workspace_packages.iter().cloned().collect();
-                return Err(format!(
+                return Err(SampoError::Release(format!(
                     "Package '{}' in fixed dependency group {} does not exist in the workspace. Available packages: [{}]",
                     package,
                     group_idx + 1,
                     available_packages.join(", ")
-                ));
+                )));
             }
         }
     }

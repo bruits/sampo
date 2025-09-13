@@ -1,8 +1,8 @@
 use crate::cli::PublishArgs;
 use sampo_core::run_publish;
-use std::io;
+use sampo_core::errors::Result;
 
-pub fn run(args: &PublishArgs) -> io::Result<()> {
+pub fn run(args: &PublishArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     run_publish(&cwd, args.dry_run, &args.cargo_args)
 }

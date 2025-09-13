@@ -16,7 +16,7 @@ pub use enrichment::{
     CommitInfo, GitHubUserInfo, detect_github_repo_slug, detect_github_repo_slug_with_config,
     enrich_changeset_message, get_commit_hash_for_path,
 };
-pub use errors::SampoError;
+pub use errors::{SampoError, Result, WorkspaceError};
 pub use filters::{filter_members, list_visible_packages, should_ignore_crate, wildcard_match};
 pub use markdown::format_markdown_list_item;
 pub use publish::{
@@ -30,7 +30,7 @@ pub use release::{
     infer_bump_from_versions, run_release, update_manifest_versions,
 };
 pub use types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
-pub use workspace::{WorkspaceError, discover_workspace, parse_workspace_members};
+pub use workspace::{discover_workspace, parse_workspace_members};
 
 #[cfg(test)]
 mod release_tests;

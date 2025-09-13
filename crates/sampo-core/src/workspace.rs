@@ -1,21 +1,8 @@
 use crate::types::{CrateInfo, Workspace};
+use crate::errors::WorkspaceError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
 use std::path::{Component, Path, PathBuf};
-
-/// Errors that can occur when working with workspaces
-#[derive(Debug, thiserror::Error)]
-pub enum WorkspaceError {
-    #[error("IO error: {0}")]
-    Io(#[from] io::Error),
-    #[error("No Cargo.toml with [workspace] found")]
-    NotFound,
-    #[error("Invalid Cargo.toml: {0}")]
-    InvalidToml(String),
-    #[error("Invalid workspace: {0}")]
-    InvalidWorkspace(String),
-}
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
 

@@ -319,9 +319,22 @@ fn is_sampo_action_release_pr(payload: &serde_json::Value) -> bool {
     };
 
     let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+    let head_ref = pr
+        .get("head")
+        .and_then(|h| h.get("ref"))
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
 
-    // Heuristic: release PR bodies always contain this phrase
+    // Multiple heuristics to detect release PRs created by sampo-github-action:
+
+    // 1. Check if PR body contains the signature phrase from sampo-github-action
     if body.contains("Sampo GitHub Action") {
+        return true;
+    }
+
+    // 2. Check if branch name follows the release pattern used by sampo-github-action
+    // Default branch is "release/sampo" but can be configured
+    if head_ref.starts_with("release/") {
         return true;
     }
 
@@ -817,5 +830,44 @@ mod tests {
             }
         });
         assert!(!is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn release_pr_detection_by_branch_name() {
+        // Test detection by branch name even if body is modified
+        let payload = serde_json::json!({
+            "action": "opened",
+            "pull_request": {
+                "body": "This body was manually edited and no longer contains the original text.",
+                "head": {"ref": "release/sampo"}
+            }
+        });
+        assert!(is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn release_pr_detection_by_release_prefix() {
+        // Test detection by any release/ prefix
+        let payload = serde_json::json!({
+            "action": "opened",
+            "pull_request": {
+                "body": "Custom release PR",
+                "head": {"ref": "release/custom-name"}
+            }
+        });
+        assert!(is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn release_pr_detection_robust_against_missing_body() {
+        // Test detection when body is null but branch indicates release
+        let payload = serde_json::json!({
+            "action": "opened",
+            "pull_request": {
+                "body": null,
+                "head": {"ref": "release/sampo"}
+            }
+        });
+        assert!(is_sampo_action_release_pr(&payload));
     }
 }

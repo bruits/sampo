@@ -136,7 +136,7 @@ mod tests {
             self
         }
 
-        fn run_release(&self, dry_run: bool) -> Result<ReleaseOutput, std::io::Error> {
+        fn run_release(&self, dry_run: bool) -> crate::errors::Result<ReleaseOutput> {
             run_release(&self.root, dry_run)
         }
 
