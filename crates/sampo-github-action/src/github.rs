@@ -1,4 +1,4 @@
-use crate::{ActionError, Result};
+use crate::error::{ActionError, Result};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::path::Path;

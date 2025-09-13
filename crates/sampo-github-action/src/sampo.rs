@@ -1,4 +1,4 @@
-use crate::{ActionError, Result};
+use crate::error::{ActionError, Result};
 use sampo_core::format_markdown_list_item;
 use sampo_core::{
     Bump, Config, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
@@ -110,8 +110,10 @@ pub fn build_release_pr_body(
     let changesets = load_changesets(&changesets_dir)?;
 
     // Load workspace for dependency explanations
-    let ws = discover_workspace(workspace)
-        .map_err(|e| ActionError::Io(std::io::Error::other(e.to_string())))?;
+    let ws = discover_workspace(workspace).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "workspace-discovery".into(),
+        message: e.to_string(),
+    })?;
 
     // Group messages per crate by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();

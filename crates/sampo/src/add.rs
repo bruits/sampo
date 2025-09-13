@@ -1,14 +1,15 @@
 use crate::cli::AddArgs;
 use crate::names;
 use sampo_core::{
-    Bump, Config, discover_workspace, filters::list_visible_packages, render_changeset_markdown,
+    Bump, Config, discover_workspace, errors::Result, filters::list_visible_packages,
+    render_changeset_markdown,
 };
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub fn run(args: &AddArgs) -> io::Result<()> {
+pub fn run(args: &AddArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     // Discover workspace (optional but helps list packages)
@@ -52,14 +53,14 @@ pub fn run(args: &AddArgs) -> io::Result<()> {
     Ok(())
 }
 
-fn ensure_dir(dir: &PathBuf) -> io::Result<()> {
+fn ensure_dir(dir: &PathBuf) -> Result<()> {
     if !dir.exists() {
         fs::create_dir_all(dir)?;
     }
     Ok(())
 }
 
-fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
+fn prompt_packages(available: &[String]) -> Result<Vec<String>> {
     let mut stdout = io::stdout();
 
     if available.is_empty() {
@@ -135,7 +136,7 @@ fn prompt_packages(available: &[String]) -> io::Result<Vec<String>> {
     }
 }
 
-fn prompt_bump() -> io::Result<Bump> {
+fn prompt_bump() -> Result<Bump> {
     let mut stdout = io::stdout();
     loop {
         write!(stdout, "Release type (patch/minor/major) [patch]: ")?;
@@ -152,7 +153,7 @@ fn prompt_bump() -> io::Result<Bump> {
     }
 }
 
-fn prompt_message() -> io::Result<String> {
+fn prompt_message() -> Result<String> {
     let mut stdout = io::stdout();
     loop {
         write!(stdout, "Changeset message: ")?;

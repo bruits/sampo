@@ -1693,7 +1693,7 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "sampo"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "rand",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "glob",
  "reqwest 0.12.23",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-action"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "reqwest 0.12.23",
  "rustc-hash",

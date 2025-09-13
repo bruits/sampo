@@ -1,4 +1,4 @@
-use crate::{ActionError, Result};
+use crate::error::{ActionError, Result};
 use std::path::Path;
 use std::process::Command;
 

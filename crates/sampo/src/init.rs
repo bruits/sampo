@@ -1,6 +1,6 @@
 use sampo_core::discover_workspace;
+use sampo_core::errors::Result;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 pub struct InitReport {
@@ -10,7 +10,7 @@ pub struct InitReport {
     pub created_config: bool,
 }
 
-pub fn init_from_cwd(cwd: &Path) -> io::Result<InitReport> {
+pub fn init_from_cwd(cwd: &Path) -> Result<InitReport> {
     let root = match discover_workspace(cwd) {
         Ok(ws) => ws.root,
         Err(_) => cwd.to_path_buf(),
@@ -18,7 +18,7 @@ pub fn init_from_cwd(cwd: &Path) -> io::Result<InitReport> {
     init_at_root(&root)
 }
 
-fn init_at_root(root: &Path) -> io::Result<InitReport> {
+fn init_at_root(root: &Path) -> Result<InitReport> {
     let dir = root.join(".sampo");
 
     let mut created_dir = false;

@@ -1,8 +1,11 @@
 use crate::types::CrateInfo;
-use crate::{Config, discover_workspace, filters::should_ignore_crate};
+use crate::{
+    Config, discover_workspace,
+    errors::{Result, SampoError},
+    filters::should_ignore_crate,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::io;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -29,9 +32,9 @@ use std::time::Duration;
 /// // Actual publish with custom cargo args
 /// run_publish(Path::new("."), false, &["--allow-dirty".to_string()]).unwrap();
 /// ```
-pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> io::Result<()> {
-    let ws = discover_workspace(root).map_err(io::Error::other)?;
-    let config = Config::load(&ws.root).map_err(io::Error::other)?;
+pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> Result<()> {
+    let ws = discover_workspace(root)?;
+    let config = Config::load(&ws.root)?;
 
     // Determine which crates are publishable to crates.io and not ignored
     let mut name_to_crate: BTreeMap<String, &CrateInfo> = BTreeMap::new();
@@ -58,7 +61,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     let mut errors: Vec<String> = Vec::new();
     for name in &publishable {
         let c = name_to_crate.get(name).ok_or_else(|| {
-            io::Error::other(format!(
+            SampoError::Publish(format!(
                 "internal error: crate '{}' not found in workspace",
                 name
             ))
@@ -76,13 +79,13 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         for e in errors {
             eprintln!("{e}");
         }
-        return Err(io::Error::other(
-            "cannot publish due to non-publishable internal dependencies",
+        return Err(SampoError::Publish(
+            "cannot publish due to non-publishable internal dependencies".into(),
         ));
     }
 
     // Compute publish order (topological: deps first) for all publishable crates.
-    let order = topo_order(&name_to_crate, &publishable).map_err(io::Error::other)?;
+    let order = topo_order(&name_to_crate, &publishable)?;
 
     println!("Publish plan (crates.io):");
     for name in &order {
@@ -92,7 +95,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     // Execute cargo publish in order
     for name in &order {
         let c = name_to_crate.get(name).ok_or_else(|| {
-            io::Error::other(format!(
+            SampoError::Publish(format!(
                 "internal error: crate '{}' not found in workspace",
                 name
             ))
@@ -132,7 +135,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 
         let status = cmd.status()?;
         if !status.success() {
-            return Err(io::Error::other(format!(
+            return Err(SampoError::Publish(format!(
                 "cargo publish failed for crate '{}' with status {}",
                 name, status
             )));
@@ -183,11 +186,12 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 /// - The manifest file cannot be read
 /// - The TOML is malformed
 /// - The manifest has no `[package]` section (returns `Ok(false)`)
-pub fn is_publishable_to_crates_io(manifest_path: &Path) -> io::Result<bool> {
-    let text = fs::read_to_string(manifest_path)?;
-    let value: toml::Value = text
-        .parse()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e}")))?;
+pub fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+    let value: toml::Value = text.parse().map_err(|e| {
+        SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
+    })?;
 
     let pkg = match value.get("package").and_then(|v| v.as_table()) {
         Some(p) => p,
@@ -235,7 +239,7 @@ pub fn is_publishable_to_crates_io(manifest_path: &Path) -> io::Result<bool> {
 /// tag_published_crate(Path::new("."), "my-crate", "1.2.3").unwrap();
 /// // Creates tag: "my-crate-v1.2.3" with message "Release my-crate 1.2.3"
 /// ```
-pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) -> io::Result<()> {
+pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) -> Result<()> {
     if !repo_root.join(".git").exists() {
         // Not a git repo, skip
         return Ok(());
@@ -269,7 +273,7 @@ pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) ->
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!(
+        Err(SampoError::Publish(format!(
             "git tag failed with status {}",
             status
         )))
@@ -297,7 +301,7 @@ pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) ->
 /// let exists = version_exists_on_crates_io("serde", "999.999.999").unwrap();
 /// assert!(!exists);
 /// ```
-pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Result<bool> {
+pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> {
     // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
     let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
 
@@ -305,12 +309,12 @@ pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Resul
         .timeout(Duration::from_secs(10))
         .user_agent(format!("sampo-core/{}", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| io::Error::other(format!("failed to build HTTP client: {}", e)))?;
+        .map_err(|e| SampoError::Publish(format!("failed to build HTTP client: {}", e)))?;
 
     let res = client
         .get(&url)
         .send()
-        .map_err(|e| io::Error::other(format!("HTTP request failed: {}", e)))?;
+        .map_err(|e| SampoError::Publish(format!("HTTP request failed: {}", e)))?;
 
     let status = res.status();
     if status == reqwest::StatusCode::OK {
@@ -329,8 +333,8 @@ pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Resul
             format!(" body=\"{}\"", snippet)
         };
 
-        Err(io::Error::other(format!(
-            "Crates.io {} response: {}",
+        Err(SampoError::Publish(format!(
+            "Crates.io {} response:{}",
             status, body_part
         )))
     }
@@ -364,7 +368,7 @@ pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> io::Resul
 pub fn topo_order(
     name_to_crate: &BTreeMap<String, &CrateInfo>,
     include: &BTreeSet<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>> {
     // Build graph: edge dep -> crate
     let mut indegree: BTreeMap<&str, usize> = BTreeMap::new();
     let mut forward: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -377,7 +381,7 @@ pub fn topo_order(
     for name in include {
         let c = name_to_crate
             .get(name)
-            .ok_or_else(|| format!("missing crate info for '{}'", name))?;
+            .ok_or_else(|| SampoError::Publish(format!("missing crate info for '{}'", name)))?;
         for dep in &c.internal_deps {
             if include.contains(dep) {
                 // dep -> name
@@ -409,7 +413,9 @@ pub fn topo_order(
     }
 
     if out.len() != include.len() {
-        return Err("dependency cycle detected among publishable crates".into());
+        return Err(SampoError::Publish(
+            "dependency cycle detected among publishable crates".into(),
+        ));
     }
     Ok(out)
 }
@@ -509,7 +515,7 @@ mod tests {
             self
         }
 
-        fn run_publish(&self, dry_run: bool) -> Result<(), std::io::Error> {
+        fn run_publish(&self, dry_run: bool) -> Result<()> {
             run_publish(&self.root, dry_run, &[])
         }
 
@@ -603,7 +609,7 @@ mod tests {
 
         let result = topo_order(&map, &include);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("dependency cycle"));
+        assert!(format!("{}", result.unwrap_err()).contains("dependency cycle"));
     }
 
     #[test]
@@ -715,7 +721,7 @@ mod tests {
 
         let result = is_publishable_to_crates_io(&manifest_path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().kind() == io::ErrorKind::InvalidData);
+        assert!(format!("{}", result.unwrap_err()).contains("Invalid data"));
     }
 
     #[test]

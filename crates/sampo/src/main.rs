@@ -14,7 +14,13 @@ fn main() -> ExitCode {
 
     match cli.command {
         Commands::Init => {
-            let cwd = std::env::current_dir().unwrap();
+            let cwd = match std::env::current_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    eprintln!("Failed to get current directory: {e}");
+                    return ExitCode::from(1);
+                }
+            };
             match init::init_from_cwd(&cwd) {
                 Ok(report) => {
                     println!("Initialized Sampo at {}", report.root.display());
@@ -37,19 +43,19 @@ fn main() -> ExitCode {
         }
         Commands::Add(args) => {
             if let Err(e) = add::run(&args) {
-                eprintln!("add error: {e}");
+                eprintln!("Failed to add changeset: {e}");
                 return ExitCode::from(1);
             }
         }
         Commands::Publish(args) => {
             if let Err(e) = publish::run(&args) {
-                eprintln!("publish error: {e}");
+                eprintln!("Failed to publish packages: {e}");
                 return ExitCode::from(1);
             }
         }
         Commands::Release(args) => {
             if let Err(e) = release::run(&args) {
-                eprintln!("release error: {e}");
+                eprintln!("Failed to release packages: {e}");
                 return ExitCode::from(1);
             }
         }

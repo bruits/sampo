@@ -40,7 +40,8 @@ impl Config {
             return Ok(Self::default());
         }
 
-        let text = std::fs::read_to_string(&path)?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| SampoError::Config(format!("failed to read {}: {e}", path.display())))?;
         let value: toml::Value = text
             .parse()
             .map_err(|e| SampoError::Config(format!("invalid config.toml: {e}")))?;
