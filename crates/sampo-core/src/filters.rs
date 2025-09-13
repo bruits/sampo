@@ -1,17 +1,17 @@
+use crate::errors::Result;
 use crate::{
     Config,
     publish::is_publishable_to_crates_io,
     types::{CrateInfo, Workspace},
 };
 use std::collections::BTreeSet;
-use std::io;
 
 /// Determines whether a crate should be ignored based on configuration.
 ///
 /// Rules:
 /// - When `ignore_unpublished` is true, skip crates that are not publishable to crates.io
 /// - When `ignore` contains patterns, skip crates matching by name or workspace-relative path
-pub fn should_ignore_crate(cfg: &Config, ws: &Workspace, info: &CrateInfo) -> io::Result<bool> {
+pub fn should_ignore_crate(cfg: &Config, ws: &Workspace, info: &CrateInfo) -> Result<bool> {
     // 1) ignore_unpublished
     if cfg.ignore_unpublished {
         let manifest = info.path.join("Cargo.toml");
@@ -39,7 +39,7 @@ pub fn should_ignore_crate(cfg: &Config, ws: &Workspace, info: &CrateInfo) -> io
 }
 
 /// Filters workspace members according to the configuration.
-pub fn filter_members<'a>(ws: &'a Workspace, cfg: &Config) -> io::Result<Vec<&'a CrateInfo>> {
+pub fn filter_members<'a>(ws: &'a Workspace, cfg: &Config) -> Result<Vec<&'a CrateInfo>> {
     let mut out = Vec::new();
     for c in &ws.members {
         if !should_ignore_crate(cfg, ws, c)? {
@@ -50,7 +50,7 @@ pub fn filter_members<'a>(ws: &'a Workspace, cfg: &Config) -> io::Result<Vec<&'a
 }
 
 /// Returns the list of visible package names according to the configuration.
-pub fn list_visible_packages(ws: &Workspace, cfg: &Config) -> io::Result<Vec<String>> {
+pub fn list_visible_packages(ws: &Workspace, cfg: &Config) -> Result<Vec<String>> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for c in filter_members(ws, cfg)? {
         names.insert(c.name.clone());

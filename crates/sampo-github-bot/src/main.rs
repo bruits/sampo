@@ -1,3 +1,6 @@
+mod error;
+
+use crate::error::{BotError, Result, VerifyError};
 use axum::{
     Router,
     extract::{Request, State},
@@ -30,7 +33,7 @@ struct Claims {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -89,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn webhook(
     State(state): State<AppState>,
     req: Request,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
+) -> std::result::Result<impl IntoResponse, (StatusCode, String)> {
     // Take headers before consuming body
     let headers = req.headers().clone();
     let event = headers
@@ -216,7 +219,11 @@ async fn webhook(
     Ok((StatusCode::OK, "ok"))
 }
 
-fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<(), VerifyError> {
+fn verify_signature(
+    secret: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> std::result::Result<(), VerifyError> {
     let sig = headers
         .get("X-Hub-Signature-256")
         .ok_or(VerifyError::MissingHeader)?
@@ -232,18 +239,6 @@ fn verify_signature(secret: &str, headers: &HeaderMap, body: &[u8]) -> Result<()
         .map_err(|_| VerifyError::Internal("bad secret".into()))?;
     mac.update(body);
     mac.verify_slice(&given).map_err(|_| VerifyError::Mismatch)
-}
-
-#[derive(thiserror::Error, Debug)]
-enum VerifyError {
-    #[error("missing signature header")]
-    MissingHeader,
-    #[error("invalid signature header")]
-    InvalidHeader,
-    #[error("signature mismatch")]
-    Mismatch,
-    #[error("internal: {0}")]
-    Internal(String),
 }
 
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
@@ -275,8 +270,12 @@ async fn pr_has_changeset(
     owner: &str,
     repo: &str,
     pr: u64,
-) -> octocrab::Result<bool> {
-    let files = octo.pulls(owner, repo).list_files(pr).await?;
+) -> Result<bool> {
+    let files = octo
+        .pulls(owner, repo)
+        .list_files(pr)
+        .await
+        .map_err(BotError::from_pr_files)?;
     let mut page = files;
     let mut any = false;
     let dir_prefix = ".sampo/changesets/"; // align with Sampo defaults
@@ -294,7 +293,8 @@ async fn pr_has_changeset(
         }
         if let Some(next) = octo
             .get_page::<octocrab::models::repos::DiffEntry>(&page.next)
-            .await?
+            .await
+            .map_err(BotError::from_pr_files)?
         {
             page = next;
         } else {
@@ -319,9 +319,22 @@ fn is_sampo_action_release_pr(payload: &serde_json::Value) -> bool {
     };
 
     let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+    let head_ref = pr
+        .get("head")
+        .and_then(|h| h.get("ref"))
+        .and_then(|r| r.as_str())
+        .unwrap_or("");
 
-    // Heuristic: release PR bodies always contain this phrase
+    // Multiple heuristics to detect release PRs created by sampo-github-action:
+
+    // 1. Check if PR body contains the signature phrase from sampo-github-action
     if body.contains("Sampo GitHub Action") {
+        return true;
+    }
+
+    // 2. Check if branch name follows the release pattern used by sampo-github-action
+    // Default branch is "release/sampo" but can be configured
+    if head_ref.starts_with("release/") {
         return true;
     }
 
@@ -335,10 +348,15 @@ async fn upsert_sticky_comment(
     pr: u64,
     marker: &str,
     body: &str,
-) -> octocrab::Result<()> {
+) -> Result<()> {
     // Look for existing comment with marker
     let mut existing: Option<octocrab::models::CommentId> = None;
-    let mut page = octo.issues(owner, repo).list_comments(pr).send().await?;
+    let mut page = octo
+        .issues(owner, repo)
+        .list_comments(pr)
+        .send()
+        .await
+        .map_err(BotError::from_comments)?;
     loop {
         for c in &page {
             if comment_has_marker(c, marker) {
@@ -349,7 +367,11 @@ async fn upsert_sticky_comment(
         if existing.is_some() {
             break;
         }
-        if let Some(next) = octo.get_page::<Comment>(&page.next).await? {
+        if let Some(next) = octo
+            .get_page::<Comment>(&page.next)
+            .await
+            .map_err(BotError::from_comments)?
+        {
             page = next;
         } else {
             break;
@@ -357,9 +379,15 @@ async fn upsert_sticky_comment(
     }
 
     if let Some(id) = existing {
-        octo.issues(owner, repo).update_comment(id, body).await?;
+        octo.issues(owner, repo)
+            .update_comment(id, body)
+            .await
+            .map_err(BotError::from_comments)?;
     } else {
-        octo.issues(owner, repo).create_comment(pr, body).await?;
+        octo.issues(owner, repo)
+            .create_comment(pr, body)
+            .await
+            .map_err(BotError::from_comments)?;
     }
     Ok(())
 }
@@ -369,13 +397,10 @@ fn comment_has_marker(c: &Comment, marker: &str) -> bool {
 }
 
 /// Generate a JWT for GitHub App authentication
-fn create_jwt(
-    app_id: u64,
-    private_key: &EncodingKey,
-) -> Result<String, jsonwebtoken::errors::Error> {
+fn create_jwt(app_id: u64, private_key: &EncodingKey) -> Result<String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("SystemTime before UNIX_EPOCH")
         .as_secs();
 
     let claims = Claims {
@@ -387,15 +412,11 @@ fn create_jwt(
     let mut header = Header::new(Algorithm::RS256);
     header.typ = Some("JWT".to_string());
 
-    encode(&header, &claims, private_key)
+    Ok(encode(&header, &claims, private_key)?)
 }
 
 /// Get installation ID for a repository
-async fn get_installation_id(
-    app_jwt: &str,
-    owner: &str,
-    repo: &str,
-) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+async fn get_installation_id(app_jwt: &str, owner: &str, repo: &str) -> Result<u64> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://api.github.com/repos/{}/{}/installation",
@@ -411,21 +432,21 @@ async fn get_installation_id(
         .await?;
 
     if !response.status().is_success() {
-        return Err(format!("Failed to get installation: {}", response.status()).into());
+        return Err(BotError::Internal(format!(
+            "Failed to get installation: {}",
+            response.status()
+        )));
     }
 
     let installation: serde_json::Value = response.json().await?;
     installation
         .get("id")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| "Installation ID not found".into())
+        .ok_or_else(|| BotError::Internal("Installation ID not found".into()))
 }
 
 /// Get installation access token
-async fn get_installation_token(
-    app_jwt: &str,
-    installation_id: u64,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+async fn get_installation_token(app_jwt: &str, installation_id: u64) -> Result<String> {
     let client = reqwest::Client::new();
     let url = format!(
         "https://api.github.com/app/installations/{}/access_tokens",
@@ -441,7 +462,10 @@ async fn get_installation_token(
         .await?;
 
     if !response.status().is_success() {
-        return Err(format!("Failed to get installation token: {}", response.status()).into());
+        return Err(BotError::Internal(format!(
+            "Failed to get installation token: {}",
+            response.status()
+        )));
     }
 
     let token_response: serde_json::Value = response.json().await?;
@@ -449,7 +473,7 @@ async fn get_installation_token(
         .get("token")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| "Installation token not found".into())
+        .ok_or_else(|| BotError::Internal("Installation token not found".into()))
 }
 
 /// Create an authenticated octocrab client for a specific repository
@@ -457,7 +481,7 @@ async fn get_installation_client(
     state: &AppState,
     owner: &str,
     repo: &str,
-) -> Result<octocrab::Octocrab, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<octocrab::Octocrab> {
     // Create JWT
     let jwt = create_jwt(state.app_id, &state.private_key)?;
 
@@ -470,7 +494,8 @@ async fn get_installation_client(
     // Create authenticated octocrab client
     let client = octocrab::Octocrab::builder()
         .personal_token(installation_token)
-        .build()?;
+        .build()
+        .map_err(BotError::from_github_auth)?;
 
     Ok(client)
 }
@@ -478,6 +503,7 @@ async fn get_installation_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::VerifyError;
 
     #[test]
     fn hex_decode_works() {
@@ -817,5 +843,44 @@ mod tests {
             }
         });
         assert!(!is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn release_pr_detection_by_branch_name() {
+        // Test detection by branch name even if body is modified
+        let payload = serde_json::json!({
+            "action": "opened",
+            "pull_request": {
+                "body": "This body was manually edited and no longer contains the original text.",
+                "head": {"ref": "release/sampo"}
+            }
+        });
+        assert!(is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn release_pr_detection_by_release_prefix() {
+        // Test detection by any release/ prefix
+        let payload = serde_json::json!({
+            "action": "opened",
+            "pull_request": {
+                "body": "Custom release PR",
+                "head": {"ref": "release/custom-name"}
+            }
+        });
+        assert!(is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn release_pr_detection_robust_against_missing_body() {
+        // Test detection when body is null but branch indicates release
+        let payload = serde_json::json!({
+            "action": "opened",
+            "pull_request": {
+                "body": null,
+                "head": {"ref": "release/sampo"}
+            }
+        });
+        assert!(is_sampo_action_release_pr(&payload));
     }
 }

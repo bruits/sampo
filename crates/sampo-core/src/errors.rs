@@ -1,4 +1,8 @@
 use std::io;
+use std::path::Path;
+
+/// Canonical result type for Sampo code
+pub type Result<T> = std::result::Result<T, SampoError>;
 
 /// Common error type for Sampo operations
 #[derive(Debug, thiserror::Error)]
@@ -7,7 +11,7 @@ pub enum SampoError {
     Io(#[from] io::Error),
 
     #[error("Workspace error: {0}")]
-    Workspace(#[from] crate::workspace::WorkspaceError),
+    Workspace(#[from] WorkspaceError),
 
     #[error("Configuration error: {0}")]
     Config(String),
@@ -21,9 +25,36 @@ pub enum SampoError {
     #[error("GitHub error: {0}")]
     GitHub(String),
 
+    #[error("Publish error: {0}")]
+    Publish(String),
+
+    #[error("Release error: {0}")]
+    Release(String),
+
     #[error("Invalid data: {0}")]
     InvalidData(String),
 
     #[error("Not found: {0}")]
     NotFound(String),
+}
+
+/// Errors that can occur when working with workspaces
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceError {
+    #[error("IO error: {0}")]
+    Io(#[from] io::Error),
+    #[error("No Cargo.toml with [workspace] found")]
+    NotFound,
+    #[error("Invalid Cargo.toml: {0}")]
+    InvalidToml(String),
+    #[error("Invalid workspace: {0}")]
+    InvalidWorkspace(String),
+}
+
+/// Helper to create an IO error with file path context
+pub fn io_error_with_path<P: AsRef<Path>>(error: io::Error, path: P) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("{}: {}", path.as_ref().display(), error),
+    )
 }

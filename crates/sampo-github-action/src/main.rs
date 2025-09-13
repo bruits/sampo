@@ -1,27 +1,16 @@
+mod error;
 mod git;
 mod github;
 mod sampo;
 
+use crate::error::{ActionError, Result};
 use sampo_core::workspace::discover_workspace;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-enum ActionError {
-    #[error("No working directory provided and GITHUB_WORKSPACE is not set")]
-    NoWorkingDirectory,
-    #[error("Failed to execute sampo {operation}: {message}")]
-    SampoCommandFailed { operation: String, message: String },
-    #[error("GitHub credentials not available: GITHUB_REPOSITORY and GITHUB_TOKEN must be set")]
-    GitHubCredentialsNotAvailable,
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-type Result<T> = std::result::Result<T, ActionError>;
+// Error type and Result are provided by sampo-core::errors
 
 #[derive(Debug, Clone)]
 struct GitHubReleaseOptions {
