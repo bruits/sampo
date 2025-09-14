@@ -1,5 +1,12 @@
 # sampo-github-bot
 
+## 0.2.2
+
+### Patch changes
+
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) Refactor error handling to improve context and consistency. — Thanks @goulvenclech!
+
+
 ## 0.2.1
 
 ### Patch changes
