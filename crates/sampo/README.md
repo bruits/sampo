@@ -34,16 +34,14 @@ This command creates a `.sampo` directory at your repository root:
 
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
 
-**Changeset**: A markdown file describing what changed and how to version affected packages. Each changeset specifies which packages to bump and if it should be a patch, minor, or major update.
+**Changeset**: A markdown file describing what changed and how to version affected packages. Each changeset specifies which packages to bump and at what level (patch, minor, major).
 
 ```
 ---
-packages:
-  - example
-release: minor
+"example": minor
 ---
 
-A helpful description of the changes.
+A helpful description of the change.
 ```
 
 **Changelog**: Automatically generated file listing all changes for each package version. Sampo consumes changesets to build comprehensive changelogs with semantic versioning.

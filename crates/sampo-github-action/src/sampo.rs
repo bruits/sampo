@@ -126,7 +126,7 @@ pub fn build_release_pr_body(
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
     for cs in &changesets {
-        for pkg in &cs.packages {
+        for (pkg, bump) in &cs.entries {
             if releases.contains_key(pkg) {
                 let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
                 let enriched = if let Some(hash) = commit_hash {
@@ -145,7 +145,7 @@ pub fn build_release_pr_body(
                 messages_by_pkg
                     .entry(pkg.clone())
                     .or_default()
-                    .push((enriched, cs.bump));
+                    .push((enriched, *bump));
             }
         }
     }
@@ -314,7 +314,7 @@ mod tests {
         fs::create_dir_all(&csdir).unwrap();
         fs::write(
             csdir.join("b-minor.md"),
-            "---\npackages:\n  - b\nrelease: minor\n---\n\nfeat: b adds new feature\n",
+            "---\nb: minor\n---\n\nfeat: b adds new feature\n",
         )
         .unwrap();
 
@@ -376,7 +376,7 @@ mod tests {
         fs::create_dir_all(&csdir).unwrap();
         fs::write(
             csdir.join("b-major.md"),
-            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b breaking change\n",
+            "---\nb: major\n---\n\nbreaking: b breaking change\n",
         )
         .unwrap();
 
@@ -439,7 +439,7 @@ mod tests {
         fs::create_dir_all(&csdir).unwrap();
         fs::write(
             csdir.join("b-major.md"),
-            "---\npackages:\n  - b\nrelease: major\n---\n\nbreaking: b breaking change\n",
+            "---\nb: major\n---\n\nbreaking: b breaking change\n",
         )
         .unwrap();
 
@@ -488,7 +488,7 @@ mod tests {
         fs::create_dir_all(&cs_dir).unwrap();
         fs::write(
             cs_dir.join("example-minor.md"),
-            "---\npackages:\n  - example\nrelease: minor\n---\n\nfeat: add new thing\n",
+            "---\nexample: minor\n---\n\nfeat: add new thing\n",
         )
         .unwrap();
 
