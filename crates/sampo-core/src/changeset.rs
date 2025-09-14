@@ -13,9 +13,16 @@ pub struct ChangesetInfo {
     pub message: String,
 }
 
-/// Parse a changeset from its markdown content
+/// Parse a changeset from its markdown content.
+/// Uses Knope's `changesets` crate to parse the frontmatter.
+///
+/// # Example
+/// ```rust,ignore
+/// let text = "---\nmy-package: minor\n---\n\nfeat: new feature\n";
+/// let info = parse_changeset(text, &Path::new("test.md")).unwrap();
+/// assert_eq!(info.entries, vec![("my-package".into(), Bump::Minor)]);
+/// ```
 pub fn parse_changeset(text: &str, path: &Path) -> Option<ChangesetInfo> {
-    // Use the external crate to parse strict mapping frontmatter.
     let file_name = path.file_name()?.to_string_lossy().to_string();
     let change = Change::from_file_name_and_content(&file_name, text).ok()?;
 

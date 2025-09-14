@@ -912,7 +912,7 @@ tempfile = "3.0"
     }
 
     #[test]
-        fn detect_all_dependency_explanations_comprehensive() {
+    fn detect_all_dependency_explanations_comprehensive() {
         // Create test workspace with dependencies
         let ws = Workspace {
             root: PathBuf::from("/test"),
