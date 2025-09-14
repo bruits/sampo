@@ -1,7 +1,7 @@
+use crate::errors::{Result, SampoError};
 use crate::types::Bump;
 use changesets::Change;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 /// Information about a changeset file
@@ -22,34 +22,44 @@ pub struct ChangesetInfo {
 /// let info = parse_changeset(text, &Path::new("test.md")).unwrap();
 /// assert_eq!(info.entries, vec![("my-package".into(), Bump::Minor)]);
 /// ```
-pub fn parse_changeset(text: &str, path: &Path) -> Option<ChangesetInfo> {
-    let file_name = path.file_name()?.to_string_lossy().to_string();
-    let change = Change::from_file_name_and_content(&file_name, text).ok()?;
+pub fn parse_changeset(text: &str, path: &Path) -> Result<Option<ChangesetInfo>> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| SampoError::Changeset("Invalid file path".to_string()))?
+        .to_string_lossy()
+        .to_string();
+
+    let change = Change::from_file_name_and_content(&file_name, text)
+        .map_err(|err| SampoError::Changeset(format!("Failed to parse changeset: {}", err)))?;
 
     // Convert Change.versioning -> Vec<(String, Bump)>, rejecting non-semver change types.
     let mut entries: Vec<(String, Bump)> = Vec::new();
     for (package_name, change_type) in change.versioning.iter() {
-        let bump = change_type.clone().try_into().ok()?;
+        let bump = change_type.clone().try_into()
+            .map_err(|_| SampoError::Changeset(format!(
+                "Unsupported change type '{:?}' for package '{}'. Only 'patch', 'minor', and 'major' are supported.",
+                change_type, package_name
+            )))?;
         entries.push((package_name.clone(), bump));
     }
     if entries.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let message = change.summary.trim().to_string();
     if message.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    Some(ChangesetInfo {
+    Ok(Some(ChangesetInfo {
         path: path.to_path_buf(),
         entries,
         message,
-    })
+    }))
 }
 
 /// Load all changesets from a directory
-pub fn load_changesets(dir: &Path) -> io::Result<Vec<ChangesetInfo>> {
+pub fn load_changesets(dir: &Path) -> Result<Vec<ChangesetInfo>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -65,8 +75,8 @@ pub fn load_changesets(dir: &Path) -> io::Result<Vec<ChangesetInfo>> {
         }
         let text =
             fs::read_to_string(&path).map_err(|e| crate::errors::io_error_with_path(e, &path))?;
-        if let Some(cs) = parse_changeset(&text, &path) {
-            out.push(cs);
+        if let Some(changeset) = parse_changeset(&text, &path)? {
+            out.push(changeset);
         }
     }
     Ok(out)
@@ -94,7 +104,7 @@ mod tests {
     fn parse_valid_changeset() {
         let text = "---\na: minor\nb: minor\n---\n\nfeat: message\n";
         let path = Path::new("/tmp/x.md");
-        let changeset = parse_changeset(text, path).unwrap();
+        let changeset = parse_changeset(text, path).unwrap().unwrap();
         let mut entries = changeset.entries.clone();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(
@@ -127,16 +137,16 @@ mod tests {
     fn parse_major_changeset() {
         let text = "---\nmypackage: major\n---\n\nBREAKING: API change\n";
         let path = Path::new("/tmp/major.md");
-        let changeset = parse_changeset(text, path).unwrap();
+        let changeset = parse_changeset(text, path).unwrap().unwrap();
         assert_eq!(changeset.entries, vec![("mypackage".into(), Bump::Major)]);
         assert_eq!(changeset.message, "BREAKING: API change");
     }
 
     #[test]
-    fn parse_empty_returns_none() {
+    fn parse_empty_returns_error() {
         let text = "";
         let path = Path::new("/tmp/empty.md");
-        assert!(parse_changeset(text, path).is_none());
+        assert!(parse_changeset(text, path).is_err());
     }
 
     #[test]
@@ -169,14 +179,14 @@ mod tests {
     fn parse_changeset_with_invalid_frontmatter() {
         let text = "packages:\n  - test\nrelease: patch\n---\n\nNo frontmatter delimiter\n";
         let path = Path::new("/tmp/invalid.md");
-        assert!(parse_changeset(text, path).is_none());
+        assert!(parse_changeset(text, path).is_err());
     }
 
     #[test]
     fn parse_changeset_missing_packages() {
         let text = "---\n---\n\nNo packages defined\n";
         let path = Path::new("/tmp/no-packages.md");
-        assert!(parse_changeset(text, path).is_none());
+        assert!(parse_changeset(text, path).is_err());
     }
 
     #[test]
@@ -184,14 +194,14 @@ mod tests {
         // Non-semver change type should be rejected by our wrapper
         let text = "---\n\"test\": none\n---\n\nNo release type\n";
         let path = Path::new("/tmp/no-release.md");
-        assert!(parse_changeset(text, path).is_none());
+        assert!(parse_changeset(text, path).is_err());
     }
 
     #[test]
     fn parse_changeset_empty_message() {
         let text = "---\ntest: patch\n---\n\n";
         let path = Path::new("/tmp/empty-message.md");
-        assert!(parse_changeset(text, path).is_none());
+        assert!(parse_changeset(text, path).unwrap().is_none());
     }
 
     #[test]
