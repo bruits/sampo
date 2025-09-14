@@ -1,5 +1,5 @@
 use crate::types::Bump;
-use changesets::{Change, ChangeType};
+use changesets::Change;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,14 +28,9 @@ pub fn parse_changeset(text: &str, path: &Path) -> Option<ChangesetInfo> {
 
     // Convert Change.versioning -> Vec<(String, Bump)>, rejecting non-semver change types.
     let mut entries: Vec<(String, Bump)> = Vec::new();
-    for (pkg, ct) in change.versioning.iter() {
-        let bump = match ct {
-            ChangeType::Patch => Bump::Patch,
-            ChangeType::Minor => Bump::Minor,
-            ChangeType::Major => Bump::Major,
-            ChangeType::Custom(_) => return None,
-        };
-        entries.push((pkg.clone(), bump));
+    for (package_name, change_type) in change.versioning.iter() {
+        let bump = change_type.clone().try_into().ok()?;
+        entries.push((package_name.clone(), bump));
     }
     if entries.is_empty() {
         return None;
@@ -82,8 +77,8 @@ pub fn render_changeset_markdown(packages: &[String], bump: Bump, message: &str)
     use std::fmt::Write as _;
     let mut out = String::new();
     out.push_str("---\n");
-    for p in packages {
-        let _ = writeln!(out, "{}: {}", p, bump);
+    for package in packages {
+        let _ = writeln!(out, "{}: {}", package, bump);
     }
     out.push_str("---\n\n");
     out.push_str(message);
@@ -98,50 +93,50 @@ mod tests {
     #[test]
     fn parse_valid_changeset() {
         let text = "---\na: minor\nb: minor\n---\n\nfeat: message\n";
-        let p = Path::new("/tmp/x.md");
-        let cs = parse_changeset(text, p).unwrap();
-        let mut entries = cs.entries.clone();
-        entries.sort_by(|l, r| l.0.cmp(&r.0));
+        let path = Path::new("/tmp/x.md");
+        let changeset = parse_changeset(text, path).unwrap();
+        let mut entries = changeset.entries.clone();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(
             entries,
             vec![("a".into(), Bump::Minor), ("b".into(), Bump::Minor)]
         );
-        assert_eq!(cs.message, "feat: message");
+        assert_eq!(changeset.message, "feat: message");
     }
 
     #[test]
     fn render_changeset_markdown_test() {
-        let s = render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: x");
-        assert!(s.starts_with("---\n"));
-        assert!(s.contains("a: minor\n"));
-        assert!(s.contains("b: minor\n"));
-        assert!(s.contains("---\n\nfeat: x\n"));
+        let markdown = render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: x");
+        assert!(markdown.starts_with("---\n"));
+        assert!(markdown.contains("a: minor\n"));
+        assert!(markdown.contains("b: minor\n"));
+        assert!(markdown.contains("---\n\nfeat: x\n"));
     }
 
     // Test from sampo/changeset.rs - ensure compatibility
     #[test]
     fn render_changeset_markdown_compatibility() {
-        let s = render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: x");
-        assert!(s.starts_with("---\n"));
-        assert!(s.contains("a: minor\n"));
-        assert!(s.contains("b: minor\n"));
-        assert!(s.ends_with("feat: x\n"));
+        let markdown = render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: x");
+        assert!(markdown.starts_with("---\n"));
+        assert!(markdown.contains("a: minor\n"));
+        assert!(markdown.contains("b: minor\n"));
+        assert!(markdown.ends_with("feat: x\n"));
     }
 
     #[test]
     fn parse_major_changeset() {
         let text = "---\nmypackage: major\n---\n\nBREAKING: API change\n";
-        let p = Path::new("/tmp/major.md");
-        let cs = parse_changeset(text, p).unwrap();
-        assert_eq!(cs.entries, vec![("mypackage".into(), Bump::Major)]);
-        assert_eq!(cs.message, "BREAKING: API change");
+        let path = Path::new("/tmp/major.md");
+        let changeset = parse_changeset(text, path).unwrap();
+        assert_eq!(changeset.entries, vec![("mypackage".into(), Bump::Major)]);
+        assert_eq!(changeset.message, "BREAKING: API change");
     }
 
     #[test]
     fn parse_empty_returns_none() {
         let text = "";
-        let p = Path::new("/tmp/empty.md");
-        assert!(parse_changeset(text, p).is_none());
+        let path = Path::new("/tmp/empty.md");
+        assert!(parse_changeset(text, path).is_none());
     }
 
     #[test]
@@ -173,29 +168,42 @@ mod tests {
     #[test]
     fn parse_changeset_with_invalid_frontmatter() {
         let text = "packages:\n  - test\nrelease: patch\n---\n\nNo frontmatter delimiter\n";
-        let p = Path::new("/tmp/invalid.md");
-        assert!(parse_changeset(text, p).is_none());
+        let path = Path::new("/tmp/invalid.md");
+        assert!(parse_changeset(text, path).is_none());
     }
 
     #[test]
     fn parse_changeset_missing_packages() {
         let text = "---\n---\n\nNo packages defined\n";
-        let p = Path::new("/tmp/no-packages.md");
-        assert!(parse_changeset(text, p).is_none());
+        let path = Path::new("/tmp/no-packages.md");
+        assert!(parse_changeset(text, path).is_none());
     }
 
     #[test]
     fn parse_changeset_missing_release() {
         // Non-semver change type should be rejected by our wrapper
         let text = "---\n\"test\": none\n---\n\nNo release type\n";
-        let p = Path::new("/tmp/no-release.md");
-        assert!(parse_changeset(text, p).is_none());
+        let path = Path::new("/tmp/no-release.md");
+        assert!(parse_changeset(text, path).is_none());
     }
 
     #[test]
     fn parse_changeset_empty_message() {
         let text = "---\ntest: patch\n---\n\n";
-        let p = Path::new("/tmp/empty-message.md");
-        assert!(parse_changeset(text, p).is_none());
+        let path = Path::new("/tmp/empty-message.md");
+        assert!(parse_changeset(text, path).is_none());
+    }
+
+    #[test]
+    fn try_from_change_type_to_bump() {
+        use changesets::ChangeType;
+
+        // Test successful conversions
+        assert_eq!(Bump::try_from(ChangeType::Patch), Ok(Bump::Patch));
+        assert_eq!(Bump::try_from(ChangeType::Minor), Ok(Bump::Minor));
+        assert_eq!(Bump::try_from(ChangeType::Major), Ok(Bump::Major));
+
+        // Test rejection of custom types
+        assert!(Bump::try_from(ChangeType::Custom("custom".to_string())).is_err());
     }
 }

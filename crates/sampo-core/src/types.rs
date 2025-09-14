@@ -85,3 +85,16 @@ impl std::fmt::Display for Bump {
         f.write_str(self.as_str())
     }
 }
+
+impl TryFrom<changesets::ChangeType> for Bump {
+    type Error = ();
+
+    fn try_from(change_type: changesets::ChangeType) -> Result<Self, Self::Error> {
+        match change_type {
+            changesets::ChangeType::Patch => Ok(Self::Patch),
+            changesets::ChangeType::Minor => Ok(Self::Minor),
+            changesets::ChangeType::Major => Ok(Self::Major),
+            changesets::ChangeType::Custom(_) => Err(()),
+        }
+    }
+}
