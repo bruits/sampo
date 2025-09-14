@@ -9,6 +9,7 @@ use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 /// Format dependency updates for changelog display
 ///
@@ -366,10 +367,42 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     // Clean up
     cleanup_consumed_changesets(used_paths)?;
 
+    // If the workspace has a lockfile, regenerate it so the release branch includes
+    // a consistent, up-to-date Cargo.lock and avoids a dirty working tree later.
+    // This runs only when a lockfile already exists, to keep tests (which create
+    // ephemeral workspaces without lockfiles) fast and deterministic.
+    if workspace.root.join("Cargo.lock").exists()
+        && let Err(e) = regenerate_lockfile(&workspace.root)
+    {
+        // Do not fail the release if regenerating the lockfile fails.
+        // Emit a concise warning and continue to keep behavior resilient.
+        eprintln!("Warning: failed to regenerate Cargo.lock, {}", e);
+    }
+
     Ok(ReleaseOutput {
         released_packages,
         dry_run: false,
     })
+}
+
+/// Regenerate the Cargo.lock at the workspace root using Cargo.
+///
+/// Uses `cargo generate-lockfile`, which will rebuild the lockfile with the latest
+/// compatible versions, ensuring the lockfile reflects the new workspace versions.
+fn regenerate_lockfile(root: &Path) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("generate-lockfile").current_dir(root);
+
+    println!("Regenerating Cargo.lock…");
+    let status = cmd.status().map_err(SampoError::Io)?;
+    if !status.success() {
+        return Err(SampoError::Release(format!(
+            "cargo generate-lockfile failed with status {}",
+            status
+        )));
+    }
+    println!("Cargo.lock updated.");
+    Ok(())
 }
 
 /// Compute initial bumps from changesets and collect messages
