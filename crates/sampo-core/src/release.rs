@@ -180,7 +180,7 @@ pub fn detect_fixed_dependency_policy_packages(
     // Build set of packages with direct changesets
     let packages_with_changesets: BTreeSet<String> = changesets
         .iter()
-        .flat_map(|cs| cs.packages.iter().cloned())
+        .flat_map(|cs| cs.entries.iter().map(|(name, _)| name.clone()))
         .collect();
 
     // Build dependency graph (dependent -> set of dependencies) - only non-ignored packages
@@ -253,8 +253,12 @@ pub fn detect_fixed_dependency_policy_packages(
                                 // Find the highest bump from changesets affecting this member
                                 changesets
                                     .iter()
-                                    .filter(|cs| cs.packages.contains(member))
-                                    .map(|cs| cs.bump)
+                                    .filter_map(|cs| {
+                                        cs.entries
+                                            .iter()
+                                            .find(|(name, _)| name == member)
+                                            .map(|(_, b)| *b)
+                                    })
                                     .max()
                             } else {
                                 None
@@ -429,7 +433,7 @@ fn compute_initial_bumps(
 
     for cs in changesets {
         let mut consumed_changeset = false;
-        for pkg in &cs.packages {
+        for (pkg, bump) in &cs.entries {
             if let Some(info) = by_name.get(pkg)
                 && should_ignore_crate(cfg, ws, info)?
             {
@@ -442,11 +446,11 @@ fn compute_initial_bumps(
             bump_by_pkg
                 .entry(pkg.clone())
                 .and_modify(|b| {
-                    if cs.bump > *b {
-                        *b = cs.bump;
+                    if *bump > *b {
+                        *b = *bump;
                     }
                 })
-                .or_insert(cs.bump);
+                .or_insert(*bump);
 
             // Enrich message with commit info and acknowledgments
             let commit_hash = get_commit_hash_for_path(&ws.root, &cs.path);
@@ -467,7 +471,7 @@ fn compute_initial_bumps(
             messages_by_pkg
                 .entry(pkg.clone())
                 .or_default()
-                .push((enriched, cs.bump));
+                .push((enriched, *bump));
         }
         if consumed_changeset {
             used_paths.insert(cs.path.clone());

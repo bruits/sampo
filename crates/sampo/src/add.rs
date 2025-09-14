@@ -191,23 +191,22 @@ mod tests {
         let md =
             render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: add stuff");
         assert!(md.starts_with("---\n"));
-        assert!(md.contains("packages:\n  - a\n  - b"));
-        assert!(md.contains("release: minor\n"));
+        assert!(md.contains("a: minor\n"));
+        assert!(md.contains("b: minor\n"));
         assert!(md.ends_with("feat: add stuff\n"));
     }
 
     #[test]
     fn render_single_package() {
         let md = render_changeset_markdown(&["single".into()], Bump::Patch, "fix: bug");
-        assert!(md.contains("packages:\n  - single\n"));
-        assert!(md.contains("release: patch\n"));
+        assert!(md.contains("single: patch\n"));
         assert!(md.ends_with("fix: bug\n"));
     }
 
     #[test]
     fn render_major_release() {
         let md = render_changeset_markdown(&["pkg".into()], Bump::Major, "breaking: api change");
-        assert!(md.contains("release: major\n"));
+        assert!(md.contains("pkg: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
     }
 

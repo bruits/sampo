@@ -24,6 +24,8 @@ Sampo is a monorepo that contains the following crates (Rust packages):
 
 Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), but made with Rust and designed for multi-ecosystems monorepos.
 
+Sampo uses Knope's [changesets](https://github.com/knope-dev/changesets) crate to parse changeset files. [Knope](https://github.com/knope-dev/knope) is another Rust project inspired by Changesets, we highly recommend checking it out!
+
 Sampo uses and enforces [Semantic Versioning](https://semver.org/) (SemVer), like their standard `MAJOR.MINOR.PATCH` version format and the "Version Bumps" concepts.
 
 Sampo is an open-source project born from [Bruits](https://github.com/bruits), a Rust-focused collective, and lives thanks to its [contributors](https://github.com/bruits/sampo/graphs/contributors) 💛

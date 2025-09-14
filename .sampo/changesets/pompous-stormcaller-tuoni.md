@@ -1,10 +1,8 @@
 ---
-packages:
-  - sampo
-  - sampo-core
-  - sampo-github-action
-  - sampo-github-bot
-release: patch
+sampo: patch
+sampo-core: patch
+sampo-github-action: patch
+sampo-github-bot: patch
 ---
 
 Refactor error handling to improve context and consistency.

@@ -149,7 +149,8 @@ fn test_working_directory_override() {
     env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    let output = run_action(&[], &env_vars, Path::new("/tmp"));
+    // Use a valid working directory (any existing directory is fine for spawn)
+    let output = run_action(&[], &env_vars, &std::env::temp_dir());
 
     // Should fail because workspace is invalid, but working directory parsing should work
     assert!(

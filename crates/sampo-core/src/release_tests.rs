@@ -71,22 +71,13 @@ mod tests {
             let changesets_dir = self.root.join(".sampo/changesets");
             fs::create_dir_all(&changesets_dir).unwrap();
 
-            let packages_yaml = packages
-                .iter()
-                .map(|p| format!("  - {}", p))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let release_type = match release {
-                Bump::Patch => "patch",
-                Bump::Minor => "minor",
-                Bump::Major => "major",
-            };
-
-            let changeset_content = format!(
-                "---\npackages:\n{}\nrelease: {}\n---\n\n{}\n",
-                packages_yaml, release_type, message
-            );
+            // YAML-like mapping frontmatter: one line per package
+            let mut frontmatter = String::from("---\n");
+            for p in packages {
+                frontmatter.push_str(&format!("{}: {}\n", p, release));
+            }
+            frontmatter.push_str("---\n\n");
+            let changeset_content = format!("{}{}\n", frontmatter, message);
 
             // Use message slug as filename to avoid conflicts
             let filename = message
@@ -961,8 +952,7 @@ tempfile = "3.0"
 
         // Create changeset that affects pkg-b only
         let changesets = vec![ChangesetInfo {
-            packages: vec!["pkg-b".to_string()],
-            bump: Bump::Minor,
+            entries: vec![("pkg-b".to_string(), Bump::Minor)],
             message: "feat: new feature".to_string(),
             path: PathBuf::from("/test/.sampo/changesets/test.md"),
         }];

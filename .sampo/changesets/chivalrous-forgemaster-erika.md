@@ -1,7 +1,5 @@
 ---
-packages:
-  - sampo-github-action
-release: patch
+sampo-github-action: patch
 ---
 
 Clearer errors when Discussions are disabled or the token lacks scope.

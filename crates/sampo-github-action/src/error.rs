@@ -14,4 +14,6 @@ pub enum ActionError {
     GitHubCredentialsNotAvailable,
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Sampo error: {0}")]
+    Sampo(#[from] sampo_core::errors::SampoError),
 }
