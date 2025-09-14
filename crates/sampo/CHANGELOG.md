@@ -1,5 +1,27 @@
 # sampo
 
+## 0.7.0
+
+### Minor changes
+
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) **⚠️ breaking change:** Sampo now uses standardized changeset format, thanks to [knope-dev/changesets](https://github.com/knope-dev/changesets) crate.
+  
+  ```md
+  ---
+  "package-a": minor
+  ---
+  
+  Some description of the change.
+  ```
+   — Thanks @goulvenclech!
+
+### Patch changes
+
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) Regenerate lockfiles at release, so it does not leave the repo dirty. — Thanks @goulvenclech!
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) Refactor error handling to improve context and consistency. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.4.0
+
+
 ## 0.6.1
 
 ### Patch changes

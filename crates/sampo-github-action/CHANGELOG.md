@@ -1,5 +1,15 @@
 # sampo-github-action
 
+## 0.5.2
+
+### Patch changes
+
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) Regenerate lockfiles at release, so it does not leave the repo dirty. — Thanks @goulvenclech!
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) Clearer errors when Discussions are disabled or the token lacks scope. — Thanks @goulvenclech!
+- [0936318](https://github.com/bruits/sampo/commit/0936318b145d1265bf4a2e9128ce333336a0f7ff) Refactor error handling to improve context and consistency. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.4.0
+
+
 ## 0.5.1
 
 ### Patch changes
