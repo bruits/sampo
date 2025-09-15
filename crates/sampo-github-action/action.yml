@@ -41,7 +41,7 @@ inputs:
     description: "Preferred Discussions category slug (default: 'announcements' if it exists)"
     required: false
   upload-binary:
-    description: "If true, upload Linux binary as release asset when creating GitHub releases"
+    description: "If true, upload binary as release asset when creating GitHub releases (only for binary crates)"
     required: false
     default: "false"
   binary-name:
