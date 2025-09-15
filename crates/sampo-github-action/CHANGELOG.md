@@ -1,5 +1,12 @@
 # sampo-github-action
 
+## 0.6.0
+
+### Minor changes
+
+- [786aa6e](https://github.com/bruits/sampo/commit/786aa6e7c4e84e49e7f1aa3013d8a2c844967466) Sampo Github Action's Github Releases now include prebuilt binaries for CLI crates on Linux, macOS, and Windows. Enable with `create-github-release: true` and `upload-binary: true` (library-only crates are skipped automatically). — Thanks @goulvenclech!
+
+
 ## 0.5.2
 
 ### Patch changes
