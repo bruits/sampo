@@ -443,7 +443,7 @@ fn create_github_release_for_tag(
         None => format!("Automated release for tag {}", tag),
     };
 
-    // Create the release and get upload URL
+    // Create the release and get upload URL (or find the existing release)
     let upload_url = match github_client.create_release(tag, &body) {
         Ok(url) => url,
         Err(e) => {
@@ -451,20 +451,54 @@ fn create_github_release_for_tag(
                 "Warning: Failed to create GitHub release for {}: {}",
                 tag, e
             );
-            return Ok(());
+            match github_client.get_release_upload_url(tag) {
+                Ok(url) if !url.is_empty() => {
+                    println!("Found existing release for {}, reusing it", tag);
+                    url
+                }
+                _ => return Ok(()),
+            }
         }
     };
 
-    // If binary upload is requested, compile and upload the binary
-    if github_options.upload_binary && !upload_url.is_empty() {
-        if let Err(e) = github_client.upload_binary_asset(
-            &upload_url,
-            workspace,
-            github_options.binary_name.as_deref(),
-        ) {
-            eprintln!("Warning: Failed to upload binary: {}", e);
+    // If binary upload is requested, compile and upload a binary only for binary crates
+    if github_options.upload_binary
+        && !upload_url.is_empty()
+        && let Some((crate_name, _version)) = parse_tag(tag)
+    {
+        // Locate crate dir
+        let ws = discover_workspace(workspace).ok();
+        let crate_dir = ws
+            .as_ref()
+            .and_then(|w| {
+                w.members
+                    .iter()
+                    .find(|c| c.name == crate_name)
+                    .map(|c| c.path.clone())
+            })
+            .unwrap_or_else(|| workspace.join("crates").join(&crate_name));
+
+        if is_binary_crate(&crate_dir) {
+            let bin_name = github_options
+                .binary_name
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| resolve_primary_bin_name(&crate_dir, &crate_name));
+            if let Err(e) = github_client.upload_binary_asset(
+                &upload_url,
+                workspace,
+                bin_name.as_deref(),
+                Some(&crate_name),
+            ) {
+                eprintln!("Warning: Failed to upload binary: {}", e);
+            } else {
+                println!("Successfully uploaded binary for {}", tag);
+            }
         } else {
-            println!("Successfully uploaded binary for {}", tag);
+            println!(
+                "Skipping binary upload for {} (crate '{}' is a library)",
+                tag, crate_name
+            );
         }
     }
 
@@ -528,6 +562,84 @@ fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     let slice = &text[head..next];
     let body = slice.trim().to_string();
     if body.is_empty() { None } else { Some(body) }
+}
+
+/// Determine if a crate directory contains a binary target
+fn is_binary_crate(crate_dir: &Path) -> bool {
+    // 1) src/main.rs exists
+    if crate_dir.join("src").join("main.rs").exists() {
+        return true;
+    }
+    // 2) src/bin contains at least one .rs file
+    let bin_dir = crate_dir.join("src").join("bin");
+    if bin_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&bin_dir)
+    {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                return true;
+            }
+        }
+    }
+    // 3) [[bin]] entries in Cargo.toml
+    let manifest = crate_dir.join("Cargo.toml");
+    if let Ok(text) = std::fs::read_to_string(&manifest)
+        && let Ok(val) = text.parse::<toml::Value>()
+        && val.get("bin").is_some()
+    {
+        return true;
+    }
+    false
+}
+
+/// Try to resolve the primary binary name for a crate
+/// - If exactly one [[bin]] with a name is defined, return it
+/// - Else if src/main.rs exists, default to crate name
+/// - Else if exactly one file in src/bin exists, use its stem
+fn resolve_primary_bin_name(crate_dir: &Path, crate_name: &str) -> Option<String> {
+    let manifest = crate_dir.join("Cargo.toml");
+    if let Ok(text) = std::fs::read_to_string(&manifest)
+        && let Ok(val) = text.parse::<toml::Value>()
+        && let Some(arr) = val.get("bin").and_then(|v| v.as_array())
+    {
+        // Collect names
+        let mut names: Vec<String> = arr
+            .iter()
+            .filter_map(|item| item.as_table())
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+            .map(|s| s.to_string())
+            .collect();
+        names.sort();
+        names.dedup();
+        if names.len() == 1 {
+            return names.into_iter().next();
+        }
+    }
+
+    // src/main.rs => default to crate name
+    if crate_dir.join("src").join("main.rs").exists() {
+        return Some(crate_name.to_string());
+    }
+
+    // Single file under src/bin => use stem
+    let bin_dir = crate_dir.join("src").join("bin");
+    if bin_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&bin_dir)
+    {
+        let files: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rs"))
+            .collect();
+        if files.len() == 1
+            && let Some(stem) = files[0].file_stem().and_then(|s| s.to_str())
+        {
+            return Some(stem.to_string());
+        }
+    }
+
+    Some(crate_name.to_string())
 }
 
 #[cfg(test)]

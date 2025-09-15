@@ -101,7 +101,10 @@ jobs:
         startsWith(github.event.pull_request.head.ref, 'release/') ||
         contains(github.event.pull_request.title, 'Release')
       )
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,9 +121,9 @@ jobs:
           open-discussion: true
           # optional: preferred discussions category slug (falls back gracefully)
           discussion-category: announcements
-          # optional: upload Linux binary to GitHub releases
+          # optional: upload a compiled binary to GitHub releases (only for binary crates)
           upload-binary: true
-          # optional: specify binary name (defaults to main package name)
+          # optional: specify binary name (defaults to crate name)
           binary-name: sampo
           # optional: pass flags to cargo publish
           args: --allow-dirty --no-verify
@@ -132,6 +135,8 @@ Notes:
 - post-merge-publish runs only when the Release PR is merged into `main`. It creates any missing tags for the current crate versions on the main branch, pushes them, and runs `sampo publish`. It can also create GitHub Releases for the new tags.
 - Adjust the branch/title condition in the workflow if you customize the release PR branch name.
 - Ensure the workflow has `contents: write` (and `pull-requests: write` for prepare-pr) permissions. To open Discussions, also grant `discussions: write` and enable Discussions in the repository settings.
+- When `upload-binary` is enabled, the action uploads binaries only for crates that define a binary target (e.g., `src/main.rs`, `src/bin/*`, or `[[bin]]` in `Cargo.toml`). Pure library crates are skipped automatically.
+ - For multi-platform binaries (Linux, macOS, Windows), run the `post-merge-publish` job on an OS matrix. Each job will reuse the same GitHub Release and upload its own asset named with the target triple.
 
 ### Inputs
 
@@ -146,8 +151,8 @@ Notes:
 - `create-github-release`: if `true`, create GitHub Releases for new tags (post-merge-publish)
 - `open-discussion`: if `true`, create a GitHub Discussion for each created release (post-merge-publish)
 - `discussion-category`: preferred Discussions category slug (default preference: `announcements` when available)
-- `upload-binary`: if `true`, upload Linux binary as release asset when creating GitHub releases (post-merge-publish)
-- `binary-name`: binary name to upload (defaults to the main package name)
+- `upload-binary`: if `true`, upload a binary asset when creating GitHub releases (only for crates with a binary target). The binary is built for the host runner target and the asset name includes the target triple.
+- `binary-name`: override binary name (defaults to the crate name or the single `[[bin]]` name when unambiguous)
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env)
 
 ### Outputs

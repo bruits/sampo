@@ -136,12 +136,6 @@ runs:
           cargo binstall --no-confirm sampo-github-action
         fi
 
-        # Install Linux cross-compilation target if upload-binary is enabled
-        if [[ "${INPUT_UPLOAD_BINARY:-}" == "true" || "${INPUT_UPLOAD_BINARY:-}" == "1" ]]; then
-          echo "Installing Linux cross-compilation target..."
-          rustup target add x86_64-unknown-linux-gnu
-        fi
-
         # Ensure git available (needed for tags and pushing)
         if ! command -v git >/dev/null 2>&1; then
           echo "Installing git..."
