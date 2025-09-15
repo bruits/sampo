@@ -24,6 +24,8 @@ struct GitHubReleaseOptions {
     upload_binary: bool,
     /// Binary name to upload (defaults to the main package name)
     binary_name: Option<String>,
+    /// Optional list of target triples to build and upload assets for
+    targets: Vec<String>,
 }
 
 impl GitHubReleaseOptions {
@@ -34,6 +36,7 @@ impl GitHubReleaseOptions {
             discussion_category: config.discussion_category.clone(),
             upload_binary: config.upload_binary,
             binary_name: config.binary_name.clone(),
+            targets: parse_targets(config.targets.as_deref()),
         }
     }
 }
@@ -107,6 +110,9 @@ struct Config {
 
     /// Binary name to upload (defaults to the main package name)
     binary_name: Option<String>,
+
+    /// Optional list of target triples to build and upload assets for (space or comma-separated)
+    targets: Option<String>,
 }
 
 impl Config {
@@ -163,6 +169,10 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let targets = std::env::var("INPUT_TARGETS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         Self {
             mode,
             dry_run,
@@ -177,6 +187,7 @@ impl Config {
             discussion_category,
             upload_binary,
             binary_name,
+            targets,
         }
     }
 }
@@ -443,7 +454,7 @@ fn create_github_release_for_tag(
         None => format!("Automated release for tag {}", tag),
     };
 
-    // Create the release and get upload URL
+    // Create the release and get upload URL (or find the existing release)
     let upload_url = match github_client.create_release(tag, &body) {
         Ok(url) => url,
         Err(e) => {
@@ -455,16 +466,81 @@ fn create_github_release_for_tag(
         }
     };
 
-    // If binary upload is requested, compile and upload the binary
-    if github_options.upload_binary && !upload_url.is_empty() {
-        if let Err(e) = github_client.upload_binary_asset(
-            &upload_url,
-            workspace,
-            github_options.binary_name.as_deref(),
-        ) {
-            eprintln!("Warning: Failed to upload binary: {}", e);
+    // If binary upload is requested, compile and upload binaries for requested targets (or host)
+    if github_options.upload_binary
+        && !upload_url.is_empty()
+        && let Some((crate_name, _version)) = parse_tag(tag)
+    {
+        // Locate crate dir
+        let ws = discover_workspace(workspace).ok();
+        let crate_dir = ws
+            .as_ref()
+            .and_then(|w| {
+                w.members
+                    .iter()
+                    .find(|c| c.name == crate_name)
+                    .map(|c| c.path.clone())
+            })
+            .unwrap_or_else(|| workspace.join("crates").join(&crate_name));
+
+        if is_binary_crate(&crate_dir) {
+            let bin_name = github_options
+                .binary_name
+                .as_deref()
+                .map(|s| s.to_string())
+                .or_else(|| resolve_primary_bin_name(&crate_dir, &crate_name));
+
+            // Determine target list: use configured list if provided; otherwise use host only
+            let targets = if !github_options.targets.is_empty() {
+                github_options.targets.clone()
+            } else {
+                crate::github::detect_host_triple()
+                    .map(|t| vec![t])
+                    .unwrap_or_else(|| vec!["unknown-target".to_string()])
+            };
+
+            // Strict verification for requested targets: all must be installed
+            if !github_options.targets.is_empty() {
+                let installed = rustup_installed_targets();
+                let missing: Vec<String> = github_options
+                    .targets
+                    .iter()
+                    .filter(|t| !installed.iter().any(|it| it == *t))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(ActionError::SampoCommandFailed {
+                        operation: "binary-build".to_string(),
+                        message: format!(
+                            "Missing Rust targets: {}. Install with: rustup target add {}",
+                            missing.join(", "),
+                            missing.join(" ")
+                        ),
+                    });
+                }
+            }
+
+            for triple in targets {
+                if let Err(e) = github_client.upload_binary_asset(
+                    &upload_url,
+                    workspace,
+                    bin_name.as_deref(),
+                    Some(&crate_name),
+                    Some(&triple),
+                ) {
+                    eprintln!(
+                        "Warning: Failed to upload binary for target {}: {}",
+                        triple, e
+                    );
+                } else {
+                    println!("Successfully uploaded binary for {} ({})", tag, triple);
+                }
+            }
         } else {
-            println!("Successfully uploaded binary for {}", tag);
+            println!(
+                "Skipping binary upload for {} (crate '{}' is a library)",
+                tag, crate_name
+            );
         }
     }
 
@@ -530,6 +606,109 @@ fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     if body.is_empty() { None } else { Some(body) }
 }
 
+fn parse_targets(input: Option<&str>) -> Vec<String> {
+    input
+        .map(|s| {
+            s.split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn rustup_installed_targets() -> Vec<String> {
+    let out = std::process::Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Determine if a crate directory contains a binary target
+fn is_binary_crate(crate_dir: &Path) -> bool {
+    // 1) src/main.rs exists
+    if crate_dir.join("src").join("main.rs").exists() {
+        return true;
+    }
+    // 2) src/bin contains at least one .rs file
+    let bin_dir = crate_dir.join("src").join("bin");
+    if bin_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&bin_dir)
+    {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                return true;
+            }
+        }
+    }
+    // 3) [[bin]] entries in Cargo.toml
+    let manifest = crate_dir.join("Cargo.toml");
+    if let Ok(text) = std::fs::read_to_string(&manifest)
+        && let Ok(val) = text.parse::<toml::Value>()
+        && val.get("bin").is_some()
+    {
+        return true;
+    }
+    false
+}
+
+/// Try to resolve the primary binary name for a crate
+/// - If exactly one [[bin]] with a name is defined, return it
+/// - Else if src/main.rs exists, default to crate name
+/// - Else if exactly one file in src/bin exists, use its stem
+fn resolve_primary_bin_name(crate_dir: &Path, crate_name: &str) -> Option<String> {
+    let manifest = crate_dir.join("Cargo.toml");
+    if let Ok(text) = std::fs::read_to_string(&manifest)
+        && let Ok(val) = text.parse::<toml::Value>()
+        && let Some(arr) = val.get("bin").and_then(|v| v.as_array())
+    {
+        // Collect names
+        let mut names: Vec<String> = arr
+            .iter()
+            .filter_map(|item| item.as_table())
+            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+            .map(|s| s.to_string())
+            .collect();
+        names.sort();
+        names.dedup();
+        if names.len() == 1 {
+            return names.into_iter().next();
+        }
+    }
+
+    // src/main.rs => default to crate name
+    if crate_dir.join("src").join("main.rs").exists() {
+        return Some(crate_name.to_string());
+    }
+
+    // Single file under src/bin => use stem
+    let bin_dir = crate_dir.join("src").join("bin");
+    if bin_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&bin_dir)
+    {
+        let files: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rs"))
+            .collect();
+        if files.len() == 1
+            && let Some(stem) = files[0].file_stem().and_then(|s| s.to_str())
+        {
+            return Some(stem.to_string());
+        }
+    }
+
+    Some(crate_name.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +743,7 @@ mod tests {
             discussion_category: None,
             upload_binary: false,
             binary_name: None,
+            targets: None,
         };
         let result = determine_workspace(&config).unwrap();
         assert_eq!(result, PathBuf::from("/test/path"));

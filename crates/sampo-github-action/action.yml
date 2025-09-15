@@ -41,11 +41,14 @@ inputs:
     description: "Preferred Discussions category slug (default: 'announcements' if it exists)"
     required: false
   upload-binary:
-    description: "If true, upload Linux binary as release asset when creating GitHub releases"
+    description: "If true, upload binary as release asset when creating GitHub releases (only for binary crates)"
     required: false
     default: "false"
   binary-name:
     description: "Binary name to upload (defaults to the main package name)"
+    required: false
+  targets:
+    description: "Space- or comma-separated Rust target triples to build and upload (must be installed). If empty, builds host only."
     required: false
   github-token:
     description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"
@@ -83,6 +86,7 @@ runs:
         INPUT_DISCUSSION_CATEGORY: ${{ inputs['discussion-category'] }}
         INPUT_UPLOAD_BINARY: ${{ inputs['upload-binary'] }}
         INPUT_BINARY_NAME: ${{ inputs['binary-name'] }}
+        INPUT_TARGETS: ${{ inputs.targets }}
         INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}
         INPUT_USE_LOCAL_BUILD: ${{ inputs['use-local-build'] }}
       run: |
@@ -134,12 +138,6 @@ runs:
         else
           echo "Installing sampo-github-action..."
           cargo binstall --no-confirm sampo-github-action
-        fi
-
-        # Install Linux cross-compilation target if upload-binary is enabled
-        if [[ "${INPUT_UPLOAD_BINARY:-}" == "true" || "${INPUT_UPLOAD_BINARY:-}" == "1" ]]; then
-          echo "Installing Linux cross-compilation target..."
-          rustup target add x86_64-unknown-linux-gnu
         fi
 
         # Ensure git available (needed for tags and pushing)

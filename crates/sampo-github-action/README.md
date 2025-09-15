@@ -118,10 +118,12 @@ jobs:
           open-discussion: true
           # optional: preferred discussions category slug (falls back gracefully)
           discussion-category: announcements
-          # optional: upload Linux binary to GitHub releases
+          # optional: upload a compiled binary to GitHub releases (only for binary crates)
           upload-binary: true
-          # optional: specify binary name (defaults to main package name)
+          # optional: specify binary name (defaults to crate name)
           binary-name: sampo
+          # optional: build and upload binaries for multiple targets in one run
+          # targets: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
           # optional: pass flags to cargo publish
           args: --allow-dirty --no-verify
 ```
@@ -132,6 +134,10 @@ Notes:
 - post-merge-publish runs only when the Release PR is merged into `main`. It creates any missing tags for the current crate versions on the main branch, pushes them, and runs `sampo publish`. It can also create GitHub Releases for the new tags.
 - Adjust the branch/title condition in the workflow if you customize the release PR branch name.
 - Ensure the workflow has `contents: write` (and `pull-requests: write` for prepare-pr) permissions. To open Discussions, also grant `discussions: write` and enable Discussions in the repository settings.
+- When `upload-binary` is enabled, the action uploads binaries only for crates that define a binary target (e.g., `src/main.rs`, `src/bin/*`, or `[[bin]]` in `Cargo.toml`). Pure library crates are skipped automatically.
+ - For multi-platform binaries (Linux, macOS, Windows), you have two options:
+   - Run the `post-merge-publish` job on an OS matrix so each runner builds its native binary.
+   - Or set `targets` to a list of Rust target triples to cross-compile in one job (requires those targets and linkers to be installed).
 
 ### Inputs
 
@@ -146,8 +152,9 @@ Notes:
 - `create-github-release`: if `true`, create GitHub Releases for new tags (post-merge-publish)
 - `open-discussion`: if `true`, create a GitHub Discussion for each created release (post-merge-publish)
 - `discussion-category`: preferred Discussions category slug (default preference: `announcements` when available)
-- `upload-binary`: if `true`, upload Linux binary as release asset when creating GitHub releases (post-merge-publish)
-- `binary-name`: binary name to upload (defaults to the main package name)
+- `upload-binary`: if `true`, upload a binary asset when creating GitHub releases (only for crates with a binary target). The binary is built for the host runner target and the asset name includes the target triple.
+- `binary-name`: override binary name (defaults to the crate name or the single `[[bin]]` name when unambiguous)
+- `targets`: space- or comma-separated Rust target triples to build and upload (must already be installed via `rustup target add ...`). If omitted, only the host target is built.
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env)
 
 ### Outputs
