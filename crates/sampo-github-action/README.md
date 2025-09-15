@@ -101,10 +101,7 @@ jobs:
         startsWith(github.event.pull_request.head.ref, 'release/') ||
         contains(github.event.pull_request.title, 'Release')
       )
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
