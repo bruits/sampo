@@ -77,49 +77,6 @@ impl GitHubClient {
         })
     }
 
-    /// Fetch an existing release by tag and return its upload URL (without template params)
-    pub fn get_release_upload_url(&self, tag: &str) -> Result<String> {
-        let api_url = format!(
-            "https://api.github.com/repos/{}/releases/tags/{}",
-            self.repo, tag
-        );
-
-        let response = self
-            .client
-            .get(&api_url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .map_err(|e| ActionError::SampoCommandFailed {
-                operation: "github-get-release".to_string(),
-                message: format!("HTTP request failed: {}", e),
-            })?;
-
-        if response.status().is_success() {
-            let release: Release = response
-                .json()
-                .map_err(|e| ActionError::SampoCommandFailed {
-                    operation: "github-get-release".to_string(),
-                    message: format!("Failed to parse release response: {}", e),
-                })?;
-            let upload_url = release
-                .upload_url
-                .split('{')
-                .next()
-                .unwrap_or("")
-                .to_string();
-            Ok(upload_url)
-        } else {
-            let status = response.status();
-            let error_text = response.text().unwrap_or_default();
-            Err(ActionError::SampoCommandFailed {
-                operation: "github-get-release".to_string(),
-                message: format!("Failed to get release for {} ({}): {}", tag, status, error_text),
-            })
-        }
-    }
-
     fn auth_header(&self) -> String {
         format!("Bearer {}", self.token)
     }
@@ -486,6 +443,7 @@ impl GitHubClient {
         workspace: &Path,
         binary_name: Option<&str>,
         crate_name: Option<&str>,
+        target_triple: Option<&str>,
     ) -> Result<()> {
         // Determine binary name - prefer provided name, otherwise default to crate/workspace name
         let bin_name = binary_name.unwrap_or_else(|| {
@@ -495,19 +453,24 @@ impl GitHubClient {
                 .unwrap_or("binary")
         });
 
-        // Build for the host target to avoid fragile cross-compilation
-        // If a specific crate is provided, scope the build to it.
+        // Build for the requested target (or host if none provided)
         let mut cmd = std::process::Command::new("cargo");
         cmd.arg("build").arg("--release").current_dir(workspace);
+        if let Some(triple) = target_triple {
+            cmd.arg("--target").arg(triple);
+        }
         if let Some(pkg) = crate_name {
             cmd.arg("-p").arg(pkg);
         }
         println!(
-            "Building binary for host target{}: {}",
+            "Building binary{}: {}{}",
+            target_triple
+                .map(|t| format!(" for target {}", t))
+                .unwrap_or_else(|| " for host target".to_string()),
+            bin_name,
             crate_name
                 .map(|p| format!(" (package: {})", p))
                 .unwrap_or_default(),
-            bin_name
         );
 
         let output = cmd.output().map_err(ActionError::Io)?;
@@ -521,19 +484,30 @@ impl GitHubClient {
             });
         }
 
-        // Determine host triple for naming and extension for Windows
-        let host_triple = detect_host_triple().unwrap_or_else(|| "unknown-target".to_string());
-        let exe_suffix = if host_triple.contains("windows") {
+        // Determine target triple for naming and extension for Windows
+        let triple = target_triple
+            .map(|s| s.to_string())
+            .or_else(detect_host_triple)
+            .unwrap_or_else(|| "unknown-target".to_string());
+        let exe_suffix = if triple.contains("windows") {
             ".exe"
         } else {
             ""
         };
 
-        // Path to the compiled binary (host target default)
-        let binary_path = workspace
-            .join("target")
-            .join("release")
-            .join(format!("{}{}", bin_name, exe_suffix));
+        // Path to the compiled binary
+        let binary_path = if let Some(triple) = target_triple {
+            workspace
+                .join("target")
+                .join(triple)
+                .join("release")
+                .join(format!("{}{}", bin_name, exe_suffix))
+        } else {
+            workspace
+                .join("target")
+                .join("release")
+                .join(format!("{}{}", bin_name, exe_suffix))
+        };
         if !binary_path.exists() {
             return Err(ActionError::SampoCommandFailed {
                 operation: "binary-locate".to_string(),
@@ -545,7 +519,7 @@ impl GitHubClient {
         let binary_data = std::fs::read(&binary_path).map_err(ActionError::Io)?;
 
         // Upload the binary as a release asset
-        let asset_name = format!("{}-{}{}", bin_name, host_triple, exe_suffix);
+        let asset_name = format!("{}-{}{}", bin_name, triple, exe_suffix);
         println!("Uploading binary as {}", asset_name);
 
         let response = self
@@ -576,7 +550,7 @@ impl GitHubClient {
     }
 }
 
-fn detect_host_triple() -> Option<String> {
+pub fn detect_host_triple() -> Option<String> {
     let out = std::process::Command::new("rustc")
         .arg("-vV")
         .output()

@@ -125,6 +125,8 @@ jobs:
           upload-binary: true
           # optional: specify binary name (defaults to crate name)
           binary-name: sampo
+          # optional: build and upload binaries for multiple targets in one run
+          # targets: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
           # optional: pass flags to cargo publish
           args: --allow-dirty --no-verify
 ```
@@ -136,7 +138,9 @@ Notes:
 - Adjust the branch/title condition in the workflow if you customize the release PR branch name.
 - Ensure the workflow has `contents: write` (and `pull-requests: write` for prepare-pr) permissions. To open Discussions, also grant `discussions: write` and enable Discussions in the repository settings.
 - When `upload-binary` is enabled, the action uploads binaries only for crates that define a binary target (e.g., `src/main.rs`, `src/bin/*`, or `[[bin]]` in `Cargo.toml`). Pure library crates are skipped automatically.
- - For multi-platform binaries (Linux, macOS, Windows), run the `post-merge-publish` job on an OS matrix. Each job will reuse the same GitHub Release and upload its own asset named with the target triple.
+ - For multi-platform binaries (Linux, macOS, Windows), you have two options:
+   - Run the `post-merge-publish` job on an OS matrix so each runner builds its native binary.
+   - Or set `targets` to a list of Rust target triples to cross-compile in one job (requires those targets and linkers to be installed).
 
 ### Inputs
 
@@ -153,6 +157,7 @@ Notes:
 - `discussion-category`: preferred Discussions category slug (default preference: `announcements` when available)
 - `upload-binary`: if `true`, upload a binary asset when creating GitHub releases (only for crates with a binary target). The binary is built for the host runner target and the asset name includes the target triple.
 - `binary-name`: override binary name (defaults to the crate name or the single `[[bin]]` name when unambiguous)
+- `targets`: space- or comma-separated Rust target triples to build and upload (must already be installed via `rustup target add ...`). If omitted, only the host target is built.
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env)
 
 ### Outputs

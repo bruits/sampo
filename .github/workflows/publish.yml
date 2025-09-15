@@ -20,7 +20,10 @@ jobs:
         startsWith(github.event.pull_request.head.ref, 'release/') ||
         contains(github.event.pull_request.title, 'Release')
       )
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     environment: sampo
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +40,7 @@ jobs:
           command: post-merge-publish
           cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           create-github-release: true
+          upload-binary: true
           open-discussion: true
           discussion-category: announcements
           use-local-build: true

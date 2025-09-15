@@ -24,6 +24,8 @@ struct GitHubReleaseOptions {
     upload_binary: bool,
     /// Binary name to upload (defaults to the main package name)
     binary_name: Option<String>,
+    /// Optional list of target triples to build and upload assets for
+    targets: Vec<String>,
 }
 
 impl GitHubReleaseOptions {
@@ -34,6 +36,7 @@ impl GitHubReleaseOptions {
             discussion_category: config.discussion_category.clone(),
             upload_binary: config.upload_binary,
             binary_name: config.binary_name.clone(),
+            targets: parse_targets(config.targets.as_deref()),
         }
     }
 }
@@ -107,6 +110,9 @@ struct Config {
 
     /// Binary name to upload (defaults to the main package name)
     binary_name: Option<String>,
+
+    /// Optional list of target triples to build and upload assets for (space or comma-separated)
+    targets: Option<String>,
 }
 
 impl Config {
@@ -163,6 +169,10 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let targets = std::env::var("INPUT_TARGETS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         Self {
             mode,
             dry_run,
@@ -177,6 +187,7 @@ impl Config {
             discussion_category,
             upload_binary,
             binary_name,
+            targets,
         }
     }
 }
@@ -451,17 +462,11 @@ fn create_github_release_for_tag(
                 "Warning: Failed to create GitHub release for {}: {}",
                 tag, e
             );
-            match github_client.get_release_upload_url(tag) {
-                Ok(url) if !url.is_empty() => {
-                    println!("Found existing release for {}, reusing it", tag);
-                    url
-                }
-                _ => return Ok(()),
-            }
+            return Ok(());
         }
     };
 
-    // If binary upload is requested, compile and upload a binary only for binary crates
+    // If binary upload is requested, compile and upload binaries for requested targets (or host)
     if github_options.upload_binary
         && !upload_url.is_empty()
         && let Some((crate_name, _version)) = parse_tag(tag)
@@ -484,15 +489,52 @@ fn create_github_release_for_tag(
                 .as_deref()
                 .map(|s| s.to_string())
                 .or_else(|| resolve_primary_bin_name(&crate_dir, &crate_name));
-            if let Err(e) = github_client.upload_binary_asset(
-                &upload_url,
-                workspace,
-                bin_name.as_deref(),
-                Some(&crate_name),
-            ) {
-                eprintln!("Warning: Failed to upload binary: {}", e);
+
+            // Determine target list: use configured list if provided; otherwise use host only
+            let targets = if !github_options.targets.is_empty() {
+                github_options.targets.clone()
             } else {
-                println!("Successfully uploaded binary for {}", tag);
+                crate::github::detect_host_triple()
+                    .map(|t| vec![t])
+                    .unwrap_or_else(|| vec!["unknown-target".to_string()])
+            };
+
+            // Strict verification for requested targets: all must be installed
+            if !github_options.targets.is_empty() {
+                let installed = rustup_installed_targets();
+                let missing: Vec<String> = github_options
+                    .targets
+                    .iter()
+                    .filter(|t| !installed.iter().any(|it| it == *t))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(ActionError::SampoCommandFailed {
+                        operation: "binary-build".to_string(),
+                        message: format!(
+                            "Missing Rust targets: {}. Install with: rustup target add {}",
+                            missing.join(", "),
+                            missing.join(" ")
+                        ),
+                    });
+                }
+            }
+
+            for triple in targets {
+                if let Err(e) = github_client.upload_binary_asset(
+                    &upload_url,
+                    workspace,
+                    bin_name.as_deref(),
+                    Some(&crate_name),
+                    Some(&triple),
+                ) {
+                    eprintln!(
+                        "Warning: Failed to upload binary for target {}: {}",
+                        triple, e
+                    );
+                } else {
+                    println!("Successfully uploaded binary for {} ({})", tag, triple);
+                }
             }
         } else {
             println!(
@@ -562,6 +604,31 @@ fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     let slice = &text[head..next];
     let body = slice.trim().to_string();
     if body.is_empty() { None } else { Some(body) }
+}
+
+fn parse_targets(input: Option<&str>) -> Vec<String> {
+    input
+        .map(|s| {
+            s.split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|t| !t.is_empty())
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn rustup_installed_targets() -> Vec<String> {
+    let out = std::process::Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Determine if a crate directory contains a binary target
@@ -676,6 +743,7 @@ mod tests {
             discussion_category: None,
             upload_binary: false,
             binary_name: None,
+            targets: None,
         };
         let result = determine_workspace(&config).unwrap();
         assert_eq!(result, PathBuf::from("/test/path"));

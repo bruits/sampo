@@ -47,6 +47,9 @@ inputs:
   binary-name:
     description: "Binary name to upload (defaults to the main package name)"
     required: false
+  targets:
+    description: "Space- or comma-separated Rust target triples to build and upload (must be installed). If empty, builds host only."
+    required: false
   github-token:
     description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"
     required: false
@@ -83,6 +86,7 @@ runs:
         INPUT_DISCUSSION_CATEGORY: ${{ inputs['discussion-category'] }}
         INPUT_UPLOAD_BINARY: ${{ inputs['upload-binary'] }}
         INPUT_BINARY_NAME: ${{ inputs['binary-name'] }}
+        INPUT_TARGETS: ${{ inputs.targets }}
         INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}
         INPUT_USE_LOCAL_BUILD: ${{ inputs['use-local-build'] }}
       run: |
