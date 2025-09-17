@@ -20,6 +20,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Rust targets for binary releases
+        run: rustup target add x86_64-apple-darwin x86_64-pc-windows-msvc
+
       - name: Run Sampo to release & publish
         id: sampo
         uses: bruits/sampo/crates/sampo-github-action@main
