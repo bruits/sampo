@@ -1,12 +1,13 @@
 use crate::cli::AddArgs;
 use crate::names;
+use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
     Bump, Config, discover_workspace, errors::Result, filters::list_visible_packages,
     render_changeset_markdown,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn run(args: &AddArgs) -> Result<()> {
@@ -37,7 +38,7 @@ pub fn run(args: &AddArgs) -> Result<()> {
         args.package.clone()
     };
 
-    let bump = prompt_bump()?;
+    let package_bumps = prompt_package_bumps(&selected_packages)?;
 
     let message = match &args.message {
         Some(m) if !m.trim().is_empty() => m.trim().to_string(),
@@ -45,7 +46,7 @@ pub fn run(args: &AddArgs) -> Result<()> {
     };
 
     // Compose file contents
-    let contents = render_changeset_markdown(&selected_packages, bump, &message);
+    let contents = render_changeset_markdown(&package_bumps, &message);
     let path = unique_changeset_path(&changesets_dir);
     fs::write(&path, contents)?;
 
@@ -61,109 +62,161 @@ fn ensure_dir(dir: &PathBuf) -> Result<()> {
 }
 
 fn prompt_packages(available: &[String]) -> Result<Vec<String>> {
-    let mut stdout = io::stdout();
-
     if available.is_empty() {
-        loop {
-            write!(
-                stdout,
-                "No packages detected. Enter package names (comma-separated): "
-            )?;
-            stdout.flush()?;
-            let mut line = String::new();
-            io::stdin().read_line(&mut line)?;
-            let items: Vec<String> = line
-                .split([',', ' ', '\t', '\n', '\r'])
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.trim().to_string())
-                .collect();
-            if !items.is_empty() {
-                // de-duplicate
-                let mut seen = BTreeSet::new();
-                let mut out = Vec::new();
-                for it in items {
-                    if seen.insert(it.clone()) {
-                        out.push(it);
-                    }
-                }
-                return Ok(out);
-            }
+        return prompt_packages_from_input();
+    }
+
+    let theme = ColorfulTheme {
+        prompt_prefix: dialoguer::console::style("🧭".to_string()),
+        ..ColorfulTheme::default()
+    };
+    loop {
+        let selections = MultiSelect::with_theme(&theme)
+            .with_prompt(
+                "Select packages impacted by this changeset (space to toggle, enter to confirm)",
+            )
+            .items(available)
+            .report(false)
+            .interact()
+            .map_err(prompt_io_error)?;
+
+        if selections.is_empty() {
+            eprintln!("Select at least one package to continue.");
+            continue;
         }
-    } else {
-        writeln!(stdout, "Detected workspace packages:")?;
-        for (i, name) in available.iter().enumerate() {
-            writeln!(stdout, "  {}. {}", i + 1, name)?;
-        }
-        loop {
-            write!(
-                stdout,
-                "Which packages are affected by the changeset? (numbers/names, comma-separated, or '*' for all): "
-            )?;
-            stdout.flush()?;
-            let mut line = String::new();
-            io::stdin().read_line(&mut line)?;
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if line == "*" || line.eq_ignore_ascii_case("all") {
-                return Ok(available.to_vec());
-            }
-            let mut out: Vec<String> = Vec::new();
-            'outer: for raw in line.split([',', ' ', '\t']).filter(|s| !s.is_empty()) {
-                if let Ok(idx) = raw.parse::<usize>()
-                    && idx >= 1
-                    && idx <= available.len()
-                {
-                    out.push(available[idx - 1].clone());
-                    continue 'outer;
-                }
-                // match by name
-                if let Some(name) = available.iter().find(|n| n.as_str() == raw) {
-                    out.push(name.clone());
-                    continue 'outer;
-                }
-                writeln!(stdout, "Unknown: '{raw}' - try again.")?;
-                out.clear();
-            }
-            if !out.is_empty() {
-                // de-duplicate preserving order
-                let mut seen = BTreeSet::new();
-                out.retain(|p| seen.insert(p.clone()));
-                return Ok(out);
-            }
-        }
+
+        let chosen = selections
+            .into_iter()
+            .map(|index| available[index].clone())
+            .collect();
+        return Ok(chosen);
     }
 }
 
-fn prompt_bump() -> Result<Bump> {
-    let mut stdout = io::stdout();
+fn prompt_packages_from_input() -> Result<Vec<String>> {
+    let theme = ColorfulTheme::default();
     loop {
-        write!(stdout, "Release type (patch/minor/major) [patch]: ")?;
-        stdout.flush()?;
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)?;
-        let l = line.trim();
-        if l.is_empty() {
-            return Ok(Bump::Patch);
+        let raw: String = Input::with_theme(&theme)
+            .with_prompt("No packages detected. Enter package names (comma or space separated)")
+            .allow_empty(false)
+            .interact_text()
+            .map_err(prompt_io_error)?;
+        let selections = parse_package_tokens(&raw);
+        if selections.is_empty() {
+            eprintln!("Enter at least one package name.");
+            continue;
         }
-        if let Some(b) = Bump::parse(l) {
-            return Ok(b);
+        return Ok(selections);
+    }
+}
+
+fn prompt_package_bumps(packages: &[String]) -> Result<Vec<(String, Bump)>> {
+    if packages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut remaining: Vec<String> = packages.to_vec();
+    let mut assignments: HashMap<String, Bump> = HashMap::new();
+    let theme = ColorfulTheme::default();
+
+    let patch = prompt_bump_level(&theme, "Which packages receive a PATCH bump?", &remaining)?;
+    for name in patch {
+        assignments.insert(name.clone(), Bump::Patch);
+    }
+    remaining.retain(|name| !assignments.contains_key(name));
+
+    if !remaining.is_empty() {
+        let minor = prompt_bump_level(&theme, "Which packages receive a MINOR bump?", &remaining)?;
+        for name in minor {
+            assignments.insert(name.clone(), Bump::Minor);
+        }
+        remaining.retain(|name| !assignments.contains_key(name));
+    }
+
+    if !remaining.is_empty() {
+        let major = prompt_bump_level(&theme, "Which packages receive a MAJOR bump?", &remaining)?;
+        for name in major {
+            assignments.insert(name.clone(), Bump::Major);
+        }
+        remaining.retain(|name| !assignments.contains_key(name));
+    }
+
+    if !remaining.is_empty() {
+        eprintln!(
+            "No bump level selected for: {} — defaulting to PATCH.",
+            remaining.join(", "),
+        );
+        for name in &remaining {
+            assignments.insert(name.clone(), Bump::Patch);
         }
     }
+
+    let mut ordered = Vec::with_capacity(packages.len());
+    for name in packages {
+        let bump = assignments.get(name).copied().unwrap_or(Bump::Patch);
+        ordered.push((name.clone(), bump));
+    }
+    Ok(ordered)
+}
+
+fn prompt_bump_level(
+    theme: &ColorfulTheme,
+    prompt: &str,
+    choices: &[String],
+) -> Result<Vec<String>> {
+    if choices.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let selections = MultiSelect::with_theme(theme)
+        .with_prompt(prompt)
+        .items(choices)
+        .report(false)
+        .interact()
+        .map_err(prompt_io_error)?;
+
+    Ok(selections
+        .into_iter()
+        .map(|index| choices[index].clone())
+        .collect())
 }
 
 fn prompt_message() -> Result<String> {
-    let mut stdout = io::stdout();
+    let theme = ColorfulTheme::default();
     loop {
-        write!(stdout, "Changeset message: ")?;
-        stdout.flush()?;
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)?;
-        let msg = line.trim();
-        if !msg.is_empty() {
-            return Ok(msg.to_string());
+        let message: String = Input::with_theme(&theme)
+            .with_prompt("Changeset message")
+            .allow_empty(false)
+            .interact_text()
+            .map_err(prompt_io_error)?;
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            eprintln!("Enter a non-empty message.");
+            continue;
         }
+        return Ok(trimmed.to_string());
+    }
+}
+
+fn parse_package_tokens(input: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for raw in input.split([',', ' ', '\t', '\n', '\r']) {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let owned = token.to_string();
+        if seen.insert(owned.clone()) {
+            out.push(owned);
+        }
+    }
+    out
+}
+
+fn prompt_io_error(error: dialoguer::Error) -> io::Error {
+    match error {
+        dialoguer::Error::IO(err) => err,
     }
 }
 
@@ -188,8 +241,10 @@ mod tests {
 
     #[test]
     fn render_has_frontmatter() {
-        let md =
-            render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: add stuff");
+        let md = render_changeset_markdown(
+            &[("a".into(), Bump::Minor), ("b".into(), Bump::Minor)],
+            "feat: add stuff",
+        );
         assert!(md.starts_with("---\n"));
         assert!(md.contains("a: minor\n"));
         assert!(md.contains("b: minor\n"));
@@ -198,14 +253,14 @@ mod tests {
 
     #[test]
     fn render_single_package() {
-        let md = render_changeset_markdown(&["single".into()], Bump::Patch, "fix: bug");
+        let md = render_changeset_markdown(&[("single".into(), Bump::Patch)], "fix: bug");
         assert!(md.contains("single: patch\n"));
         assert!(md.ends_with("fix: bug\n"));
     }
 
     #[test]
     fn render_major_release() {
-        let md = render_changeset_markdown(&["pkg".into()], Bump::Major, "breaking: api change");
+        let md = render_changeset_markdown(&[("pkg".into(), Bump::Major)], "breaking: api change");
         assert!(md.contains("pkg: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
     }
