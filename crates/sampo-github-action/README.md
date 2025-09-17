@@ -18,7 +18,9 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  # TODO: precise permissions needed
+  contents: write        # Create tags and releases
+  pull-requests: write   # Create and update release PRs
+  discussions: write     # Open GitHub Discussions (optional)
 
 jobs:
   release:
@@ -38,8 +40,6 @@ jobs:
 ```
 
 ### Inputs
-
-TODO: add permissions needed when known.
 
 - `command`: `auto`, `release`, or `publish` (default: `auto`).
 - `dry-run`: if `true`, simulates changes without writing or publishing (default: `false`).
