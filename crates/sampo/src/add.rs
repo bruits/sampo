@@ -2,10 +2,12 @@ use crate::cli::AddArgs;
 use crate::names;
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
-    Bump, Config, discover_workspace, errors::Result, filters::list_visible_packages,
+    Bump, Config, discover_workspace,
+    errors::{Result, SampoError},
+    filters::list_visible_packages,
     render_changeset_markdown,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,7 +65,9 @@ fn ensure_dir(dir: &PathBuf) -> Result<()> {
 
 fn prompt_packages(available: &[String]) -> Result<Vec<String>> {
     if available.is_empty() {
-        return prompt_packages_from_input();
+        return Err(SampoError::InvalidData(
+            "No workspace packages detected. Run this command inside a Cargo workspace.".into(),
+        ));
     }
 
     let theme = ColorfulTheme {
@@ -90,23 +94,6 @@ fn prompt_packages(available: &[String]) -> Result<Vec<String>> {
             .map(|index| available[index].clone())
             .collect();
         return Ok(chosen);
-    }
-}
-
-fn prompt_packages_from_input() -> Result<Vec<String>> {
-    let theme = ColorfulTheme::default();
-    loop {
-        let raw: String = Input::with_theme(&theme)
-            .with_prompt("No packages detected. Enter package names (comma or space separated)")
-            .allow_empty(false)
-            .interact_text()
-            .map_err(prompt_io_error)?;
-        let selections = parse_package_tokens(&raw);
-        if selections.is_empty() {
-            eprintln!("Enter at least one package name.");
-            continue;
-        }
-        return Ok(selections);
     }
 }
 
@@ -198,22 +185,6 @@ fn prompt_message() -> Result<String> {
     }
 }
 
-fn parse_package_tokens(input: &str) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for raw in input.split([',', ' ', '\t', '\n', '\r']) {
-        let token = raw.trim();
-        if token.is_empty() {
-            continue;
-        }
-        let owned = token.to_string();
-        if seen.insert(owned.clone()) {
-            out.push(owned);
-        }
-    }
-    out
-}
-
 fn prompt_io_error(error: dialoguer::Error) -> io::Error {
     match error {
         dialoguer::Error::IO(err) => err,
@@ -263,6 +234,17 @@ mod tests {
         let md = render_changeset_markdown(&[("pkg".into(), Bump::Major)], "breaking: api change");
         assert!(md.contains("pkg: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
+    }
+
+    #[test]
+    fn prompt_packages_without_workspace_errors() {
+        let err = prompt_packages(&[]).unwrap_err();
+        match err {
+            SampoError::InvalidData(msg) => {
+                assert!(msg.contains("No workspace packages detected"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
