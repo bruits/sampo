@@ -224,6 +224,14 @@ fn determine_workspace(config: &Config) -> Result<PathBuf> {
 }
 
 /// Execute the requested operations and return (released, published) status
+///
+/// In `auto` mode we always run a dry `sampo release` first (`capture_release_plan`).
+/// If there are pending changesets we prepare/update the release PR (which runs a
+/// real `sampo release`). Otherwise we fall back to `post_merge_publish`, which
+/// reuses the same publish pipeline as the explicit `publish` mode. That pipeline
+/// only publishes crates that still need it (via `sampo_core::run_publish`) and
+/// reports `published = true` exclusively when fresh git tags were produced, so a
+/// plain commit without changesets will exit cleanly without pushing anything.
 fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)> {
     let mut released = false;
     let mut published = false;
@@ -402,6 +410,11 @@ fn prepare_release_pr(
     Ok(true)
 }
 
+/// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
+/// Returns true only when new tags were created/pushed, so the workflow can tell if a
+/// real publish happened. Combined with `sampo_core::run_publish` (which skips crates
+/// already published or marked `publish = false`), this prevents accidental publishes
+/// on commits sans changesets: the action simply logs "No new tags" and exits.
 fn post_merge_publish(
     workspace: &Path,
     dry_run: bool,

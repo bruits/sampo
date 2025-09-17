@@ -8,7 +8,7 @@ Not sure what Sampo is? Don't know where to start? Check out Sampo's [Getting St
 
 By default, the action runs in `auto` mode:
 - When changesets exist on the default branch, it prepares or refreshes the release PR.
-- After that PR is merged, the next push publishes your crates, creates tags, and can open GitHub Releases/Discussions.
+- When that PR is merged, it publishes your crates, creates tags, and can open GitHub Releases/Discussions.
 
 ```yaml
 name: Release & Publish
