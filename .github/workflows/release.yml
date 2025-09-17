@@ -1,40 +1,30 @@
-name: Publish After Merge
+name: Release & Publish
 
 on:
-  pull_request_target:
-    types: [closed]
+  push:
     branches:
       - main
+  workflow_dispatch: {}
 
 permissions:
   contents: write
+  pull-requests: write
   discussions: write
 
 jobs:
-  publish:
-    # Run only when a Release PR was merged into main
-    if: >
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'main' &&
-      (
-        startsWith(github.event.pull_request.head.ref, 'release/') ||
-        contains(github.event.pull_request.title, 'Release')
-      )
+  release:
     runs-on: ubuntu-latest
     environment: sampo
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.base.ref }}
 
-      - name: Publish crates (tag + publish)
+      - name: Run Sampo to release & publish
+        id: sampo
         uses: bruits/sampo/crates/sampo-github-action@main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         with:
-          command: post-merge-publish
+          command: auto
           cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           create-github-release: true
           upload-binary: true
@@ -42,18 +32,33 @@ jobs:
           open-discussion: true
           discussion-category: announcements
           use-local-build: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Check if sampo-github-bot was updated
         id: check-bot-update
+        if: steps.sampo.outputs.published == 'true'
+        env:
+          GIT_PREVIOUS: ${{ github.event.before }}
         run: |
-          # Check if sampo-github-bot was updated in this release
-          if git log --oneline --since="1 day ago" --grep="sampo-github-bot" | grep -q "sampo-github-bot" || \
-             git diff HEAD~5..HEAD --name-only | grep -q "crates/sampo-github-bot/" || \
-             echo "${{ github.event.pull_request.body }}" | grep -q "sampo-github-bot"; then
-            echo "should-deploy=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          PREV="${GIT_PREVIOUS}"
+          if [ -z "$PREV" ] || [ "$PREV" = "0000000000000000000000000000000000000000" ]; then
+            PREV=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+          fi
+
+          if [ -n "$PREV" ]; then
+            CHANGED=$(git diff --name-only "$PREV" HEAD)
+          else
+            CHANGED=$(git show --pretty="" --name-only HEAD)
+          fi
+
+          if printf '%s\n' "$CHANGED" | grep -q "^crates/sampo-github-bot/"; then
+            echo "should-deploy=true" >> "$GITHUB_OUTPUT"
             echo "sampo-github-bot will be deployed"
           else
-            echo "should-deploy=false" >> $GITHUB_OUTPUT
+            echo "should-deploy=false" >> "$GITHUB_OUTPUT"
             echo "No sampo-github-bot changes detected"
           fi
 
@@ -63,14 +68,16 @@ jobs:
 
       - name: Deploy sampo-github-bot to fly.io
         if: steps.check-bot-update.outputs.should-deploy == 'true'
+        working-directory: ./crates/sampo-github-bot
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
-          if [ -z "$FLY_API_TOKEN" ]; then
+          set -euo pipefail
+          if [ -z "${FLY_API_TOKEN}" ]; then
             echo "Warning: FLY_API_TOKEN secret not configured. Skipping deployment."
             echo "To enable automatic deployment, add FLY_API_TOKEN to repository secrets."
             exit 0
           fi
+
           echo "Deploying sampo-github-bot to fly.io..."
           flyctl deploy --remote-only
-        working-directory: ./crates/sampo-github-bot
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

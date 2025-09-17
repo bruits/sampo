@@ -4,9 +4,9 @@ author: "bruits"
 
 inputs:
   command:
-    description: "Operation: release | publish | release-and-publish | prepare-pr | post-merge-publish"
+    description: "Operation: auto | release | publish"
     required: false
-    default: "release-and-publish"
+    default: "auto"
   dry-run:
     description: "Simulate actions without modifying files or publishing"
     required: false
@@ -21,20 +21,20 @@ inputs:
     description: "Extra flags forwarded to cargo publish via `sampo publish -- …`"
     required: false
   base-branch:
-    description: "Base branch for the Release PR (prepare-pr mode)"
+    description: "Base branch for the Release PR when auto prepares it"
     required: false
   pr-branch:
-    description: "Branch name for the Release PR (prepare-pr mode)"
+    description: "Branch name for the Release PR when auto prepares it"
     required: false
   pr-title:
-    description: "Title for the Release PR (prepare-pr mode)"
+    description: "Title for the Release PR when auto prepares it"
     required: false
   create-github-release:
-    description: "If true, create GitHub releases for new tags (post-merge-publish mode)"
+    description: "If true, create GitHub releases for new tags when publishing"
     required: false
     default: "false"
   open-discussion:
-    description: "If true, also open a GitHub Discussion for each created release (post-merge-publish mode)"
+    description: "If true, also open a GitHub Discussion for each created release (requires GitHub releases)"
     required: false
     default: "false"
   discussion-category:

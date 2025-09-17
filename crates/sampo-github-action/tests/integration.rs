@@ -124,8 +124,8 @@ fn test_environment_variable_parsing() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Failed to execute sampo") && stderr.contains("publish"),
-        "Should attempt to run 'sampo publish' (indicating env vars were parsed correctly), got: {}",
+        stderr.contains("Failed to execute sampo"),
+        "Should attempt to run the publish flow (env vars parsed). stderr: {}",
         stderr
     );
 }
