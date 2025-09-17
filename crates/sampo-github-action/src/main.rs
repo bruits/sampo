@@ -4,6 +4,7 @@ mod github;
 mod sampo;
 
 use crate::error::{ActionError, Result};
+use crate::sampo::ReleasePlan;
 use sampo_core::workspace::discover_workspace;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -43,24 +44,18 @@ impl GitHubReleaseOptions {
 
 #[derive(Debug, Clone, Copy)]
 enum Mode {
+    Auto,
     Release,
     Publish,
-    All,
-    /// Detect changesets and open/update a Release PR (no tags)
-    PreparePr,
-    /// After merge to main: create tags for current versions, push, and publish
-    PostMergePublish,
 }
 
 impl Mode {
     fn parse(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
+            "auto" | "automatic" => Mode::Auto,
             "release" => Mode::Release,
             "publish" => Mode::Publish,
-            "release-and-publish" | "all" => Mode::All,
-            "prepare-pr" | "release-pr" | "open-pr" => Mode::PreparePr,
-            "post-merge-publish" | "finalize" => Mode::PostMergePublish,
-            _ => Mode::All, // default fallback
+            _ => Mode::Auto,
         }
     }
 }
@@ -119,8 +114,10 @@ impl Config {
     /// Load configuration from GitHub Actions environment variables
     fn from_environment() -> Self {
         let mode = std::env::var("INPUT_COMMAND")
+            .ok()
+            .filter(|v| !v.is_empty())
             .map(|v| Mode::parse(&v))
-            .unwrap_or(Mode::All);
+            .unwrap_or(Mode::Auto);
 
         let dry_run = std::env::var("INPUT_DRY_RUN")
             .map(|v| v.eq_ignore_ascii_case("true"))
@@ -227,63 +224,67 @@ fn determine_workspace(config: &Config) -> Result<PathBuf> {
 }
 
 /// Execute the requested operations and return (released, published) status
+///
+/// In `auto` mode we always run a dry `sampo release` first (`capture_release_plan`).
+/// If there are pending changesets we prepare/update the release PR (which runs a
+/// real `sampo release`). Otherwise we fall back to `post_merge_publish`, which
+/// reuses the same publish pipeline as the explicit `publish` mode. That pipeline
+/// only publishes crates that still need it (via `sampo_core::run_publish`) and
+/// reports `published = true` exclusively when fresh git tags were produced, so a
+/// plain commit without changesets will exit cleanly without pushing anything.
 fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)> {
     let mut released = false;
     let mut published = false;
 
     match config.mode {
+        Mode::Auto => {
+            let plan = sampo::capture_release_plan(workspace)?;
+            if plan.has_changes {
+                println!(
+                    "Detected {} pending release package(s); preparing release PR.",
+                    plan.releases.len()
+                );
+                let github_client = create_github_client()?;
+                released = prepare_release_pr(workspace, config, &github_client, Some(plan))?;
+            } else {
+                println!(
+                    "No pending changesets found on the default branch. Checking for merged releases to publish."
+                );
+                let github_options = GitHubReleaseOptions::from_config(config);
+                let github_client = if github_options.create_github_release {
+                    Some(create_github_client()?)
+                } else {
+                    None
+                };
+                published = post_merge_publish(
+                    workspace,
+                    config.dry_run,
+                    config.args.as_deref(),
+                    config.cargo_token.as_deref(),
+                    &github_options,
+                    github_client.as_ref(),
+                )?;
+            }
+        }
         Mode::Release => {
             sampo::run_release(workspace, config.dry_run, config.cargo_token.as_deref())?;
             released = true;
         }
         Mode::Publish => {
-            sampo::run_publish(
-                workspace,
-                config.dry_run,
-                config.args.as_deref(),
-                config.cargo_token.as_deref(),
-            )?;
-            published = true;
-        }
-        Mode::All => {
-            sampo::run_release(workspace, config.dry_run, config.cargo_token.as_deref())?;
-            released = true;
-
-            sampo::run_publish(
-                workspace,
-                config.dry_run,
-                config.args.as_deref(),
-                config.cargo_token.as_deref(),
-            )?;
-            published = true;
-        }
-        Mode::PreparePr => {
-            let github_client = create_github_client()?;
-            prepare_release_pr(workspace, config, &github_client)?;
-        }
-        Mode::PostMergePublish => {
             let github_options = GitHubReleaseOptions::from_config(config);
-            if github_options.create_github_release {
-                let github_client = create_github_client()?;
-                post_merge_publish(
-                    workspace,
-                    config.dry_run,
-                    config.args.as_deref(),
-                    config.cargo_token.as_deref(),
-                    &github_options,
-                    Some(&github_client),
-                )?;
+            let github_client = if github_options.create_github_release {
+                Some(create_github_client()?)
             } else {
-                post_merge_publish(
-                    workspace,
-                    config.dry_run,
-                    config.args.as_deref(),
-                    config.cargo_token.as_deref(),
-                    &github_options,
-                    None,
-                )?;
-            }
-            published = true;
+                None
+            };
+            published = post_merge_publish(
+                workspace,
+                config.dry_run,
+                config.args.as_deref(),
+                config.cargo_token.as_deref(),
+                &github_options,
+                github_client.as_ref(),
+            )?;
         }
     }
 
@@ -320,13 +321,19 @@ fn prepare_release_pr(
     workspace: &Path,
     config: &Config,
     github_client: &github::GitHubClient,
-) -> Result<()> {
-    // Check if there are changes to release
-    let plan = sampo::capture_release_plan(workspace)?;
+    provided_plan: Option<ReleasePlan>,
+) -> Result<bool> {
+    let plan = match provided_plan {
+        Some(plan) => plan,
+        None => sampo::capture_release_plan(workspace)?,
+    };
+
     if !plan.has_changes {
         println!("No changesets detected. Skipping PR preparation.");
-        return Ok(());
+        return Ok(false);
     }
+
+    let releases = &plan.releases;
 
     // Configuration
     let base_branch = config
@@ -344,10 +351,10 @@ fn prepare_release_pr(
     let pr_body = {
         // Load configuration for dependency explanations
         let sampo_config = sampo_core::Config::load(workspace).unwrap_or_default();
-        let body = sampo::build_release_pr_body(workspace, &plan.releases, &sampo_config)?;
+        let body = sampo::build_release_pr_body(workspace, releases, &sampo_config)?;
         if body.trim().is_empty() {
             println!("No applicable package changes for PR body. Skipping PR creation.");
-            return Ok(());
+            return Ok(false);
         }
         body
     };
@@ -373,7 +380,7 @@ fn prepare_release_pr(
     // Check for changes and commit
     if !git::has_changes(workspace)? {
         println!("No file changes after release. Skipping commit/PR.");
-        return Ok(());
+        return Ok(false);
     }
 
     git::git(&["add", "-A"], Some(workspace))?;
@@ -395,9 +402,19 @@ fn prepare_release_pr(
     // Create PR
     github_client.ensure_pull_request(&pr_branch, &base_branch, &pr_title, &pr_body)?;
 
-    Ok(())
+    println!(
+        "Prepared release PR with {} pending package(s).",
+        releases.len()
+    );
+
+    Ok(true)
 }
 
+/// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
+/// Returns true only when new tags were created/pushed, so the workflow can tell if a
+/// real publish happened. Combined with `sampo_core::run_publish` (which skips crates
+/// already published or marked `publish = false`), this prevents accidental publishes
+/// on commits sans changesets: the action simply logs "No new tags" and exits.
 fn post_merge_publish(
     workspace: &Path,
     dry_run: bool,
@@ -405,7 +422,7 @@ fn post_merge_publish(
     cargo_token: Option<&str>,
     github_options: &GitHubReleaseOptions,
     github_client: Option<&github::GitHubClient>,
-) -> Result<()> {
+) -> Result<bool> {
     // Setup git identity for tag creation
     git::setup_bot_user(workspace)?;
 
@@ -440,7 +457,12 @@ fn post_merge_publish(
             create_github_release_for_tag(client, tag, workspace, github_options)?;
         }
     }
-    Ok(())
+    let published = !new_tags.is_empty();
+    if !published {
+        println!("No new tags were created during publish.");
+    }
+
+    Ok(published)
 }
 
 fn create_github_release_for_tag(
@@ -715,23 +737,17 @@ mod tests {
 
     #[test]
     fn test_mode_parsing() {
+        assert!(matches!(Mode::parse("auto"), Mode::Auto));
         assert!(matches!(Mode::parse("release"), Mode::Release));
         assert!(matches!(Mode::parse("publish"), Mode::Publish));
-        assert!(matches!(Mode::parse("all"), Mode::All));
-        assert!(matches!(Mode::parse("release-and-publish"), Mode::All));
-        assert!(matches!(Mode::parse("prepare-pr"), Mode::PreparePr));
-        assert!(matches!(
-            Mode::parse("post-merge-publish"),
-            Mode::PostMergePublish
-        ));
-        assert!(matches!(Mode::parse("unknown"), Mode::All)); // default fallback
+        assert!(matches!(Mode::parse("unknown"), Mode::Auto));
     }
 
     #[test]
     fn test_determine_workspace_with_config_override() {
         let config = Config {
             working_directory: Some(PathBuf::from("/test/path")),
-            mode: Mode::All,
+            mode: Mode::Auto,
             dry_run: false,
             cargo_token: None,
             args: None,

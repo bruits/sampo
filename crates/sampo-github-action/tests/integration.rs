@@ -1,52 +1,51 @@
 use rustc_hash::FxHashMap;
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::OnceLock;
 use tempfile::TempDir;
 
 /// Build the sampo-github-action binary and return its path
-fn get_action_binary() -> std::path::PathBuf {
-    // Use CARGO_MANIFEST_DIR to find our crate directory, then navigate to workspace root
-    let crate_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set during tests");
-    let workspace_root = std::path::Path::new(&crate_dir)
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("Expected to find workspace root")
-        .to_path_buf();
+fn get_action_binary() -> &'static Path {
+    static BINARY: OnceLock<PathBuf> = OnceLock::new();
 
-    // Build from workspace root
-    let output = Command::new("cargo")
-        .args(["build", "--bin", "sampo-github-action"])
-        .current_dir(&workspace_root)
-        .output()
-        .expect("Failed to build sampo-github-action");
+    BINARY
+        .get_or_init(|| {
+            let crate_dir = std::env::var("CARGO_MANIFEST_DIR")
+                .expect("CARGO_MANIFEST_DIR should be set during tests");
+            let workspace_root = std::path::Path::new(&crate_dir)
+                .parent()
+                .and_then(|p| p.parent())
+                .expect("Expected to find workspace root")
+                .to_path_buf();
 
-    if !output.status.success() {
-        panic!(
-            "Failed to build binary: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+            let output = Command::new("cargo")
+                .args(["build", "--bin", "sampo-github-action"])
+                .current_dir(&workspace_root)
+                .output()
+                .expect("Failed to build sampo-github-action");
 
-    let full_path = workspace_root.join("target/debug/sampo-github-action");
+            if !output.status.success() {
+                panic!(
+                    "Failed to build binary: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
 
-    // Verify the binary exists
-    if !full_path.exists() {
-        panic!("Binary not found at expected path: {}", full_path.display());
-    }
+            let full_path = workspace_root.join("target/debug/sampo-github-action");
+            if !full_path.exists() {
+                panic!("Binary not found at expected path: {}", full_path.display());
+            }
 
-    full_path
+            full_path
+        })
+        .as_path()
 }
 
 /// Run the action binary with environment variables
-fn run_action(
-    args: &[&str],
-    env_vars: &FxHashMap<String, String>,
-    working_dir: &Path,
-) -> std::process::Output {
+fn run_action(args: &[&str], env_vars: &FxHashMap<String, String>, working_dir: &Path) -> Output {
     let binary = get_action_binary();
-    let mut cmd = Command::new(&binary);
+    let mut cmd = Command::new(binary);
     cmd.args(args).current_dir(working_dir);
 
     // Clear the environment and only set our specified variables
@@ -72,6 +71,224 @@ fn run_action(
     cmd.output().expect("Failed to execute action binary")
 }
 
+struct TestWorkspace {
+    temp: TempDir,
+}
+
+impl TestWorkspace {
+    fn new() -> Self {
+        Self {
+            temp: TempDir::new().expect("Failed to create temp dir"),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        self.temp.path()
+    }
+
+    fn file_path(&self, relative: impl AsRef<Path>) -> PathBuf {
+        self.path().join(relative)
+    }
+
+    fn write_file(&self, relative: impl AsRef<Path>, contents: &str) {
+        let path = self.file_path(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("failed to create parent directories");
+        }
+        fs::write(path, contents).expect("failed to write file");
+    }
+
+    fn read_file(&self, relative: impl AsRef<Path>) -> String {
+        fs::read_to_string(self.file_path(relative)).expect("failed to read file")
+    }
+
+    fn exists(&self, relative: impl AsRef<Path>) -> bool {
+        self.file_path(relative).exists()
+    }
+}
+
+/// Builder for creating test workspaces with various configurations
+struct WorkspaceBuilder {
+    crate_name: String,
+    crate_version: String,
+    with_changesets: bool,
+    publish_enabled: bool,
+    with_git: bool,
+}
+
+impl WorkspaceBuilder {
+    fn new() -> Self {
+        Self {
+            crate_name: "foo".to_string(),
+            crate_version: "0.1.0".to_string(),
+            with_changesets: false,
+            publish_enabled: true,
+            with_git: false,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn crate_name(mut self, name: &str) -> Self {
+        self.crate_name = name.to_string();
+        self
+    }
+
+    #[allow(dead_code)]
+    fn crate_version(mut self, version: &str) -> Self {
+        self.crate_version = version.to_string();
+        self
+    }
+
+    fn with_changesets(mut self) -> Self {
+        self.with_changesets = true;
+        self
+    }
+
+    fn publish_disabled(mut self) -> Self {
+        self.publish_enabled = false;
+        self
+    }
+
+    fn with_git(mut self) -> Self {
+        self.with_git = true;
+        self
+    }
+
+    fn build(self, ws: &TestWorkspace) {
+        // Create workspace Cargo.toml
+        ws.write_file(
+            "Cargo.toml",
+            &format!(
+                r#"[workspace]
+resolver = "2"
+members = ["crates/{}"]
+"#,
+                self.crate_name
+            ),
+        );
+
+        // Create crate Cargo.toml
+        let publish_line = if self.publish_enabled {
+            ""
+        } else {
+            "publish = false\n"
+        };
+
+        ws.write_file(
+            format!("crates/{}/Cargo.toml", self.crate_name),
+            &format!(
+                r#"[package]
+name = "{}"
+version = "{}"
+edition = "2021"
+{}
+[lib]
+path = "src/lib.rs"
+"#,
+                self.crate_name, self.crate_version, publish_line
+            ),
+        );
+
+        // Create source files
+        ws.write_file(
+            format!("crates/{}/src/lib.rs", self.crate_name),
+            &format!("pub fn {}() {{}}\n", self.crate_name.replace('-', "_")),
+        );
+
+        ws.write_file(
+            format!("crates/{}/CHANGELOG.md", self.crate_name),
+            "# Changelog\n\n## Unreleased\n\n",
+        );
+
+        // Add changesets if requested
+        if self.with_changesets {
+            ws.write_file(
+                ".sampo/changesets/add-feature.md",
+                &format!("---\n{}: minor\n---\n\n- add feature\n", self.crate_name),
+            );
+        }
+
+        // Initialize git if requested
+        if self.with_git {
+            init_git_repo(ws.path());
+
+            let add_status = Command::new("git")
+                .args(["add", "."])
+                .current_dir(ws.path())
+                .status()
+                .expect("failed to run git add");
+            assert!(add_status.success(), "git add failed: {:?}", add_status);
+
+            let commit_status = Command::new("git")
+                .args(["commit", "-m", "Initial commit"])
+                .current_dir(ws.path())
+                .status()
+                .expect("failed to run git commit");
+            assert!(
+                commit_status.success(),
+                "git commit failed: {:?}",
+                commit_status
+            );
+        }
+    }
+}
+
+fn init_git_repo(path: &Path) {
+    let status = Command::new("git")
+        .arg("init")
+        .current_dir(path)
+        .status()
+        .expect("failed to run git init");
+    assert!(status.success(), "git init failed: {:?}", status);
+
+    let email_status = Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(path)
+        .status()
+        .expect("failed to configure git user email");
+    assert!(
+        email_status.success(),
+        "git config user.email failed: {:?}",
+        email_status
+    );
+
+    let name_status = Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(path)
+        .status()
+        .expect("failed to configure git user name");
+    assert!(
+        name_status.success(),
+        "git config user.name failed: {:?}",
+        name_status
+    );
+}
+
+fn parse_outputs(path: &Path) -> FxHashMap<String, String> {
+    let mut outputs = FxHashMap::default();
+    if !path.exists() {
+        return outputs;
+    }
+    let content = fs::read_to_string(path).expect("failed to read outputs file");
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            outputs.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    outputs
+}
+
+fn setup_release_workspace(ws: &TestWorkspace) {
+    WorkspaceBuilder::new().with_changesets().build(ws);
+}
+
+fn setup_publish_workspace(ws: &TestWorkspace) {
+    WorkspaceBuilder::new()
+        .publish_disabled()
+        .with_git()
+        .build(ws);
+}
+
 #[test]
 fn test_missing_workspace_fails() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -82,29 +299,102 @@ fn test_missing_workspace_fails() {
 
     let output = run_action(&[], &env_vars, temp_dir.path());
 
-    // Should fail with clear error message
-    assert!(
-        !output.status.success(),
-        "Action should fail without workspace"
+    // Should fail with specific exit code
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "Action should fail with exit code 1"
     );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("No working directory provided"),
-        "Should indicate missing workspace error"
+        stderr.contains("Error: NoWorkingDirectory")
+            || stderr.contains("No working directory provided"),
+        "Should indicate missing workspace error, got: {}",
+        stderr
     );
 }
 
 #[test]
-fn test_environment_variable_parsing() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let workspace = temp_dir.path();
-    let output_file = workspace.join("github_output");
+fn test_default_command_is_auto() {
+    let ws = TestWorkspace::new();
+    WorkspaceBuilder::new().with_git().build(&ws);
 
-    // Test GitHub Actions style input variables
+    let output_file = ws.file_path("github_output");
     let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
-        workspace.to_string_lossy().to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    // Don't set INPUT_COMMAND - should default to "auto"
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "Default mode should succeed in dry-run"
+    );
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+
+    assert!(
+        stdout.contains("Publish plan (crates.io):"),
+        "Expected auto mode to trigger publish path, got stdout: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_release_updates_versions_and_outputs() {
+    let ws = TestWorkspace::new();
+    setup_release_workspace(&ws);
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(output.status.success(), "release command should succeed");
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("true"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+
+    let manifest = ws.read_file("crates/foo/Cargo.toml");
+    assert!(manifest.contains("version = \"0.2.0\""));
+    assert!(manifest.contains("name = \"foo\""));
+
+    let changelog = ws.read_file("crates/foo/CHANGELOG.md");
+    assert!(changelog.contains("## 0.2.0"));
+    assert!(!ws.exists(".sampo/changesets/add-feature.md"));
+}
+
+#[test]
+fn test_publish_dry_run_reports_no_publishable_crates() {
+    let ws = TestWorkspace::new();
+    setup_publish_workspace(&ws);
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
     );
     env_vars.insert(
         "GITHUB_OUTPUT".to_string(),
@@ -113,280 +403,93 @@ fn test_environment_variable_parsing() {
     env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    // Run without CLI args - should read from environment
-    let output = run_action(&[], &env_vars, workspace);
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(output.status.success(), "publish command should succeed");
 
-    // Should fail because workspace is invalid, but should parse env vars correctly
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No publishable crates"),
+        "Expected dry-run publish to report missing crates"
+    );
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+}
+
+#[test]
+fn test_auto_mode_detects_changesets() {
+    let ws = TestWorkspace::new();
+    WorkspaceBuilder::new().with_changesets().build(&ws);
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "auto".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // In dry-run mode, auto should detect changesets and show planned releases
+    assert!(
+        stdout.contains("Detected") && stdout.contains("pending release package"),
+        "Expected auto mode to announce pending releases, got stdout: {}",
+        stdout
+    );
+
     assert!(
         !output.status.success(),
-        "Should fail with invalid workspace"
-    );
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Failed to execute sampo") && stderr.contains("publish"),
-        "Should attempt to run 'sampo publish' (indicating env vars were parsed correctly), got: {}",
-        stderr
+        "Auto mode with changesets should fail without GitHub setup to avoid false positives"
     );
 }
 
 #[test]
-fn test_working_directory_override() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let workspace = temp_dir.path();
-    let output_file = workspace.join("github_output");
+fn test_auto_mode_without_changesets_attempts_publish() {
+    let ws = TestWorkspace::new();
+    WorkspaceBuilder::new().with_git().build(&ws);
 
-    // Don't set GITHUB_WORKSPACE, but provide INPUT_WORKING_DIRECTORY
-    let mut env_vars = FxHashMap::default();
-    env_vars.insert(
-        "GITHUB_OUTPUT".to_string(),
-        output_file.to_string_lossy().to_string(),
-    );
-    env_vars.insert(
-        "INPUT_WORKING_DIRECTORY".to_string(),
-        workspace.to_string_lossy().to_string(),
-    );
-    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
-    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
-
-    // Use a valid working directory (any existing directory is fine for spawn)
-    let output = run_action(&[], &env_vars, &std::env::temp_dir());
-
-    // Should fail because workspace is invalid, but working directory parsing should work
-    assert!(
-        !output.status.success(),
-        "Should fail with invalid workspace"
-    );
-
-    // Error should be about sampo execution, not about missing working directory
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("No working directory provided"),
-        "Should not complain about missing working directory when INPUT_WORKING_DIRECTORY is provided"
-    );
-}
-
-#[test]
-fn test_github_output_generation() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let workspace = temp_dir.path();
-    let output_file = workspace.join("github_output");
-
-    // Create minimal structure to avoid immediate failure
-    fs::write(
-        workspace.join("Cargo.toml"),
-        "[package]\nname=\"test\"\nversion=\"0.1.0\"\n",
-    )
-    .expect("Failed to create Cargo.toml");
-
+    let output_file = ws.file_path("github_output");
     let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
-        workspace.to_string_lossy().to_string(),
+        ws.path().to_string_lossy().to_string(),
     );
     env_vars.insert(
         "GITHUB_OUTPUT".to_string(),
         output_file.to_string_lossy().to_string(),
     );
-    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("INPUT_COMMAND".to_string(), "auto".to_string());
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    let _output = run_action(&[], &env_vars, workspace);
+    let output = run_action(&[], &env_vars, ws.path());
 
-    if output_file.exists() {
-        let content = fs::read_to_string(&output_file).expect("Failed to read output file");
-        assert!(
-            content.contains("released="),
-            "Should contain released status"
-        );
-        assert!(
-            content.contains("published="),
-            "Should contain published status"
-        );
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // Verify the format is exactly what GitHub Actions expects
-        for line in content.lines() {
-            if !line.is_empty() {
-                assert!(
-                    line.contains('=') && (line.ends_with("true") || line.ends_with("false")),
-                    "Each output line should be 'key=boolean', got: '{}'",
-                    line
-                );
-            }
-        }
-    }
-    // If file doesn't exist, that's also valid behavior (early failure)
-    // The test validates that IF output is generated, it has the correct format
-}
-
-#[test]
-fn test_with_minimal_valid_workspace() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let workspace = temp_dir.path();
-    let output_file = workspace.join("github_output");
-
-    // Create minimal sampo workspace structure
-    fs::create_dir_all(workspace.join(".sampo")).expect("Failed to create .sampo dir");
-    fs::write(
-        workspace.join(".sampo/config.toml"),
-        "[packages]\n# Minimal valid config\n",
-    )
-    .expect("Failed to write config");
-
-    // Create a basic Cargo.toml
-    fs::write(
-        workspace.join("Cargo.toml"),
-        "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )
-    .expect("Failed to write Cargo.toml");
-
-    // Initialize git (required by sampo)
-    Command::new("git")
-        .args(["init"])
-        .current_dir(workspace)
-        .output()
-        .ok();
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(workspace)
-        .output()
-        .ok();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(workspace)
-        .output()
-        .ok();
-
-    let mut env_vars = FxHashMap::default();
-    env_vars.insert(
-        "GITHUB_WORKSPACE".to_string(),
-        workspace.to_string_lossy().to_string(),
+    // Should succeed in dry-run mode and show expected behavior
+    assert!(
+        output.status.success(),
+        "Auto mode should succeed in dry-run without changesets"
     );
-    env_vars.insert(
-        "GITHUB_OUTPUT".to_string(),
-        output_file.to_string_lossy().to_string(),
+
+    /*
+    Should follow the "no changesets -> try publish" logic path
+    */
+    assert!(
+        stdout.contains("Publish plan (crates.io):"),
+        "Expected auto mode to attempt publish path, got stdout: {}",
+        stdout
     );
-    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
-    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
 
-    let output = run_action(&[], &env_vars, workspace);
-
-    // This might succeed or fail for legitimate sampo reasons
-    if output.status.success() {
-        // If it succeeds, verify the output format
-        assert!(
-            output_file.exists(),
-            "Output file should be created on success"
-        );
-        let content = fs::read_to_string(&output_file).expect("Failed to read output");
-        assert!(
-            content.contains("released=true"),
-            "Should indicate successful release"
-        );
-    } else {
-        // If it fails, it should be for sampo-related reasons, not our wrapper logic
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("sampo") || stderr.contains("Failed to execute sampo"),
-            "Failure should be related to sampo execution, not our wrapper: {}",
-            stderr
-        );
-
-        // Even on failure, output file should still be created with failure status
-        if output_file.exists() {
-            let content = fs::read_to_string(&output_file).unwrap_or_default();
-            if !content.is_empty() {
-                assert!(
-                    content.contains("released="),
-                    "Should contain status even on failure"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn test_config_with_github_repository() {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let workspace = temp_dir.path();
-    let output_file = workspace.join("github_output");
-
-    // Create minimal sampo workspace structure with GitHub config
-    fs::create_dir_all(workspace.join(".sampo")).expect("Failed to create .sampo dir");
-
-    let config_content = r#"
-[packages]
-# Minimal valid config
-
-[github]
-repository = "test-owner/test-repo"
-"#;
-    fs::write(workspace.join(".sampo/config.toml"), config_content)
-        .expect("Failed to write config");
-
-    // Create a workspace Cargo.toml instead of a package Cargo.toml
-    fs::write(
-        workspace.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"test-package\"]\nresolver = \"2\"\n",
-    )
-    .expect("Failed to write workspace Cargo.toml");
-
-    // Create the test package directory and its Cargo.toml
-    let package_dir = workspace.join("test-package");
-    fs::create_dir_all(&package_dir).expect("Failed to create package dir");
-    fs::write(
-        package_dir.join("Cargo.toml"),
-        "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )
-    .expect("Failed to write package Cargo.toml");
-
-    // Create minimal source file in the package
-    fs::create_dir_all(package_dir.join("src")).expect("Failed to create src dir");
-    fs::write(package_dir.join("src/main.rs"), "fn main() {}").expect("Failed to write main.rs");
-
-    // Initialize git (required by sampo)
-    Command::new("git")
-        .args(["init"])
-        .current_dir(workspace)
-        .output()
-        .ok();
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(workspace)
-        .output()
-        .ok();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(workspace)
-        .output()
-        .ok();
-
-    let mut env_vars = FxHashMap::default();
-    env_vars.insert(
-        "GITHUB_WORKSPACE".to_string(),
-        workspace.to_string_lossy().to_string(),
-    );
-    env_vars.insert(
-        "GITHUB_OUTPUT".to_string(),
-        output_file.to_string_lossy().to_string(),
-    );
-    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
-    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
-
-    // Test that the action can read the GitHub repository configuration successfully
-    let output = run_action(&[], &env_vars, workspace);
-
-    // The important thing is that configuration parsing doesn't cause errors
-    // The actual sampo execution might fail for other reasons, but not config-related
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Should not fail due to configuration parsing issues
-        assert!(
-            !stderr.contains("configuration")
-                && !stderr.contains("config")
-                && !stderr.contains("toml"),
-            "Should not fail due to configuration parsing when GitHub repository is specified: {}",
-            stderr
-        );
-    }
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
 }
