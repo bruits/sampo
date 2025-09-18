@@ -1,5 +1,12 @@
 # sampo
 
+## 0.8.0
+
+### Minor changes
+
+- [c7a6bfe](https://github.com/bruits/sampo/commit/c7a6bfe56d8ad47f3f2926004f374f500d03e134) Improve `sampo add` UX with interactive prompts for picking packages and assigning bump levels, plus an arrow-key-friendly message editor. — Thanks @goulvenclech!
+
+
 ## 0.7.0
 
 ### Minor changes
