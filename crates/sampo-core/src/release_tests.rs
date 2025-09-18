@@ -821,6 +821,29 @@ tempfile = "3.0"
     }
 
     #[test]
+    fn release_consumes_changesets_with_quoted_package_names() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("sampo-core", "0.1.0");
+
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        fs::create_dir_all(&changesets_dir).unwrap();
+        fs::write(
+            changesets_dir.join("quoted.md"),
+            "---\n\"sampo-core\": minor\n---\n\nfeat: quoted release\n",
+        )
+        .unwrap();
+
+        let result = workspace.run_release(false).unwrap();
+
+        assert_eq!(result.released_packages.len(), 1);
+        let released = &result.released_packages[0];
+        assert_eq!(released.name, "sampo-core");
+        assert_eq!(released.bump, Bump::Minor);
+
+        workspace.assert_crate_version("sampo-core", "0.2.0");
+    }
+
+    #[test]
     fn ignores_unpublished_packages_when_configured() {
         let mut workspace = TestWorkspace::new();
         workspace

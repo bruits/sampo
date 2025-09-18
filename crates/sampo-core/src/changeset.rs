@@ -1,6 +1,7 @@
 use crate::errors::{Result, SampoError};
 use crate::types::Bump;
 use changesets::Change;
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,7 +41,8 @@ pub fn parse_changeset(text: &str, path: &Path) -> Result<Option<ChangesetInfo>>
                 "Unsupported change type '{:?}' for package '{}'. Only 'patch', 'minor', and 'major' are supported.",
                 change_type, package_name
             )))?;
-        entries.push((package_name.clone(), bump));
+        let normalized = normalize_package_name(package_name);
+        entries.push((normalized.into_owned(), bump));
     }
     if entries.is_empty() {
         return Ok(None);
@@ -88,12 +90,26 @@ pub fn render_changeset_markdown(entries: &[(String, Bump)], message: &str) -> S
     let mut out = String::new();
     out.push_str("---\n");
     for (package, bump) in entries {
+        let package = normalize_package_name(package);
         let _ = writeln!(out, "{}: {}", package, bump);
     }
     out.push_str("---\n\n");
     out.push_str(message);
     out.push('\n');
     out
+}
+
+fn normalize_package_name(raw: &str) -> Cow<'_, str> {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        let first = bytes[0];
+        let last = bytes[trimmed.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return Cow::Owned(trimmed[1..trimmed.len() - 1].to_string());
+        }
+    }
+    Cow::Borrowed(trimmed)
 }
 
 #[cfg(test)]
@@ -112,6 +128,22 @@ mod tests {
             vec![("a".into(), Bump::Minor), ("b".into(), Bump::Minor)]
         );
         assert_eq!(changeset.message, "feat: message");
+    }
+
+    #[test]
+    fn parse_changeset_strips_wrapping_quotes() {
+        let text = "---\n\"sampo-core\": minor\n'sampo-cli': patch\n---\n\nfeat: message\n";
+        let path = Path::new("/tmp/quotes.md");
+        let changeset = parse_changeset(text, path).unwrap().unwrap();
+        let mut entries = changeset.entries;
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            entries,
+            vec![
+                ("sampo-cli".into(), Bump::Patch),
+                ("sampo-core".into(), Bump::Minor)
+            ]
+        );
     }
 
     #[test]
@@ -137,6 +169,14 @@ mod tests {
         assert!(markdown.contains("a: minor\n"));
         assert!(markdown.contains("b: minor\n"));
         assert!(markdown.ends_with("feat: x\n"));
+    }
+
+    #[test]
+    fn render_changeset_markdown_strips_quoted_names() {
+        let markdown =
+            render_changeset_markdown(&[("\"sampo-core\"".into(), Bump::Minor)], "feat: sanitized");
+        assert!(markdown.contains("sampo-core: minor\n"));
+        assert!(!markdown.contains("\"sampo-core\""));
     }
 
     #[test]
