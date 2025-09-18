@@ -83,11 +83,11 @@ pub fn load_changesets(dir: &Path) -> Result<Vec<ChangesetInfo>> {
 }
 
 /// Render a changeset as markdown with YAML mapping frontmatter
-pub fn render_changeset_markdown(packages: &[String], bump: Bump, message: &str) -> String {
+pub fn render_changeset_markdown(entries: &[(String, Bump)], message: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     out.push_str("---\n");
-    for package in packages {
+    for (package, bump) in entries {
         let _ = writeln!(out, "{}: {}", package, bump);
     }
     out.push_str("---\n\n");
@@ -116,7 +116,10 @@ mod tests {
 
     #[test]
     fn render_changeset_markdown_test() {
-        let markdown = render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: x");
+        let markdown = render_changeset_markdown(
+            &[("a".into(), Bump::Minor), ("b".into(), Bump::Minor)],
+            "feat: x",
+        );
         assert!(markdown.starts_with("---\n"));
         assert!(markdown.contains("a: minor\n"));
         assert!(markdown.contains("b: minor\n"));
@@ -126,7 +129,10 @@ mod tests {
     // Test from sampo/changeset.rs - ensure compatibility
     #[test]
     fn render_changeset_markdown_compatibility() {
-        let markdown = render_changeset_markdown(&["a".into(), "b".into()], Bump::Minor, "feat: x");
+        let markdown = render_changeset_markdown(
+            &[("a".into(), Bump::Minor), ("b".into(), Bump::Minor)],
+            "feat: x",
+        );
         assert!(markdown.starts_with("---\n"));
         assert!(markdown.contains("a: minor\n"));
         assert!(markdown.contains("b: minor\n"));

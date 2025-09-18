@@ -9,6 +9,8 @@ use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
 
+const USER_AGENT: &str = concat!("sampo/", env!("CARGO_PKG_VERSION"));
+
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
     pub sha: String,
@@ -348,7 +350,7 @@ async fn github_api_get(url: &str, token: &str) -> Option<String> {
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "sampo/0.4.0")
+        .header("User-Agent", USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
@@ -377,7 +379,7 @@ async fn github_api_get_public(url: &str) -> Option<String> {
         .get(url)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
-        .header("User-Agent", "sampo/0.4.0")
+        .header("User-Agent", USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
