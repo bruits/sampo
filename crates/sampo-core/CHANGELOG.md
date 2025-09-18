@@ -1,5 +1,17 @@
 # sampo-core
 
+## 0.5.0
+
+### Minor changes
+
+- [46d5af6](https://github.com/bruits/sampo/commit/46d5af6fb22a312cf7175cc25e05675e64038343) Allow `render_changeset_markdown` to accept per-package bump entries so callers can record different levels in a single changeset. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [6c431c4](https://github.com/bruits/sampo/commit/6c431c4a93c9195e7a9f0eee4e82b88d945a1a47) Releases now bump the right crate even if the package name is quoted. — Thanks @goulvenclech!
+- [6c431c4](https://github.com/bruits/sampo/commit/6c431c4a93c9195e7a9f0eee4e82b88d945a1a47) Sampo's CLI should not add quotes around package names in changesets. — Thanks @goulvenclech!
+
+
 ## 0.4.0
 
 ### Minor changes

@@ -1,5 +1,13 @@
 # sampo-github-action
 
+## 0.7.1
+
+### Patch changes
+
+- [6c431c4](https://github.com/bruits/sampo/commit/6c431c4a93c9195e7a9f0eee4e82b88d945a1a47) Releases now bump the right crate even if the package name is quoted. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.5.0
+
+
 ## 0.7.0
 
 ### Minor changes

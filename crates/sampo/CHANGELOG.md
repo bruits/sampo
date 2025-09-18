@@ -1,5 +1,18 @@
 # sampo
 
+## 0.8.0
+
+### Minor changes
+
+- [46d5af6](https://github.com/bruits/sampo/commit/46d5af6fb22a312cf7175cc25e05675e64038343) Improve `sampo add` UX with interactive prompts for picking packages and assigning bump levels, plus an arrow-key-friendly message editor. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [6c431c4](https://github.com/bruits/sampo/commit/6c431c4a93c9195e7a9f0eee4e82b88d945a1a47) Releases now bump the right crate even if the package name is quoted. — Thanks @goulvenclech!
+- [6c431c4](https://github.com/bruits/sampo/commit/6c431c4a93c9195e7a9f0eee4e82b88d945a1a47) Sampo's CLI should not add quotes around package names in changesets. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.5.0
+
+
 ## 0.7.0
 
 ### Minor changes
