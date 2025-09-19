@@ -221,7 +221,9 @@ fn run() -> Result<()> {
         .into());
     }
 
-    std::env::set_var("SAMPO_RELEASE_BRANCH", &branch);
+    unsafe {
+        std::env::set_var("SAMPO_RELEASE_BRANCH", &branch);
+    }
 
     // Execute the requested operations
     let (released, published) = execute_operations(&config, &workspace, &repo_config, &branch)?;
