@@ -376,11 +376,14 @@ fn prepare_release_pr(
         .base_branch
         .clone()
         .unwrap_or_else(|| branch.to_string());
-    let branch_slug = branch.replace('/', "-");
-    let default_pr_branch = format!("release/{}", branch_slug);
-    let pr_branch = config.pr_branch.clone().unwrap_or(default_pr_branch);
-    let default_title = format!("Release ({})", branch);
-    let pr_title = config.pr_title.clone().unwrap_or(default_title);
+    let pr_branch = config
+        .pr_branch
+        .clone()
+        .unwrap_or_else(|| default_pr_branch(branch));
+    let pr_title = config
+        .pr_title
+        .clone()
+        .unwrap_or_else(|| default_pr_title(branch));
 
     // Build PR body BEFORE running release (release will consume changesets)
     let pr_body = {
@@ -442,6 +445,14 @@ fn prepare_release_pr(
     );
 
     Ok(true)
+}
+
+fn default_pr_branch(branch: &str) -> String {
+    format!("release/{}", branch.replace('/', "-"))
+}
+
+fn default_pr_title(branch: &str) -> String {
+    format!("Release ({})", branch)
 }
 
 /// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
@@ -768,6 +779,19 @@ fn resolve_primary_bin_name(crate_dir: &Path, crate_name: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_branch_slugifies_path_segments() {
+        assert_eq!(default_pr_branch("main"), "release/main");
+        assert_eq!(default_pr_branch("3.x"), "release/3.x");
+        assert_eq!(default_pr_branch("feature/foo"), "release/feature-foo");
+    }
+
+    #[test]
+    fn default_title_includes_branch_name() {
+        assert_eq!(default_pr_title("main"), "Release (main)");
+        assert_eq!(default_pr_title("3.x"), "Release (3.x)");
+    }
 
     #[test]
     fn test_mode_parsing() {

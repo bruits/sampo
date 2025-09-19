@@ -453,6 +453,33 @@ mod tests {
         crates: FxHashMap<String, PathBuf>,
     }
 
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(ref value) = self.original {
+                    std::env::set_var(self.key, value);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
     impl TestWorkspace {
         fn new() -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
@@ -527,6 +554,12 @@ mod tests {
             self
         }
 
+        fn set_config(&self, content: &str) -> &Self {
+            fs::create_dir_all(self.root.join(".sampo")).unwrap();
+            fs::write(self.root.join(".sampo/config.toml"), content).unwrap();
+            self
+        }
+
         fn run_publish(&self, dry_run: bool) -> Result<()> {
             run_publish(&self.root, dry_run, &[])
         }
@@ -548,6 +581,39 @@ mod tests {
 
             assert_eq!(actual_publishable, expected_sorted);
         }
+    }
+
+    #[test]
+    fn run_publish_rejects_unconfigured_branch() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0");
+        workspace.set_publishable("foo", false);
+        workspace.set_config("[git]\nrelease_branches = [\"main\"]\n");
+
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "feature");
+        let err = workspace.run_publish(true).unwrap_err();
+        match err {
+            SampoError::Release(message) => {
+                assert!(
+                    message.contains("not configured for publishing"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_publish_allows_configured_branch() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0");
+        workspace.set_publishable("foo", false);
+        workspace.set_config("[git]\nrelease_branches = [\"3.x\"]\n");
+
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "3.x");
+        workspace
+            .run_publish(true)
+            .expect("publish should succeed on configured branch");
     }
 
     #[test]

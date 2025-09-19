@@ -222,6 +222,34 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
 mod tests {
     use super::*;
 
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set_branch(value: &str) -> Self {
+            let key = "SAMPO_RELEASE_BRANCH";
+            let original = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(ref value) = self.original {
+                    std::env::set_var(self.key, value);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_append_changes_section() {
         let mut output = String::new();
@@ -280,6 +308,7 @@ mod tests {
 
     #[test]
     fn test_dependency_updates_in_pr_body() {
+        let _branch = EnvVarGuard::set_branch("main");
         use std::fs;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -333,6 +362,7 @@ mod tests {
 
     #[test]
     fn test_fixed_dependencies_in_pr_body() {
+        let _branch = EnvVarGuard::set_branch("main");
         use std::fs;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -396,6 +426,7 @@ mod tests {
 
     #[test]
     fn test_fixed_dependencies_without_actual_dependency() {
+        let _branch = EnvVarGuard::set_branch("main");
         use std::fs;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -462,6 +493,7 @@ mod tests {
 
     #[test]
     fn test_capture_plan_and_pr_body_end_to_end() {
+        let _branch = EnvVarGuard::set_branch("main");
         use std::fs;
         // Setup a minimal workspace with one crate and a minor changeset
         let temp = tempfile::tempdir().unwrap();
