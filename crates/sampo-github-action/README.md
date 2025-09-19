@@ -7,7 +7,7 @@ Not sure what Sampo is? Don't know where to start? Check out Sampo's [Getting St
 ### Usage
 
 By default, the action runs in `auto` mode:
-- When changesets exist on the default branch, it prepares or refreshes the release PR.
+- When changesets exist on the current release branch (see the `[git]` configuration), it prepares or refreshes that branch's release PR.
 - When that PR is merged, it publishes your crates, creates tags, and can open GitHub Releases/Discussions.
 
 ```yaml
@@ -46,9 +46,9 @@ jobs:
 - `working-directory`: path to workspace root (defaults to `GITHUB_WORKSPACE`).
 - `cargo-token`: crates.io API token; when set, exported as `CARGO_REGISTRY_TOKEN`.
 - `args`: extra flags forwarded to `cargo publish` via `sampo publish -- …`.
-- `base-branch`: base branch used by the release PR that `auto` prepares.
-- `pr-branch`: working branch used for the release PR that `auto` prepares.
-- `pr-title`: title of the release PR that `auto` prepares.
+- `base-branch`: base branch used by the release PR that `auto` prepares (defaults to the detected git branch).
+- `pr-branch`: working branch used for the release PR that `auto` prepares (defaults to `release/<current-branch>` with `/` replaced by `-`).
+- `pr-title`: title of the release PR that `auto` prepares (defaults to `Release (<current-branch>)`).
 - `create-github-release`: if `true`, create GitHub Releases for new tags.
 - `open-discussion`: if `true`, create a GitHub Discussion for each created release (requires GitHub Releases).
 - `discussion-category`: preferred Discussions category slug when creating releases.

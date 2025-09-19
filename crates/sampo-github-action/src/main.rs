@@ -5,7 +5,9 @@ mod sampo;
 
 use crate::error::{ActionError, Result};
 use crate::sampo::ReleasePlan;
+use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
+use sampo_core::{Config as SampoConfig, current_branch};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -204,8 +206,27 @@ fn run() -> Result<()> {
 
     let workspace = determine_workspace(&config)?;
 
+    let repo_config = SampoConfig::load(&workspace).unwrap_or_default();
+
+    let branch = current_branch()?;
+    if !repo_config.is_release_branch(&branch) {
+        return Err(SampoError::Release(format!(
+            "Branch '{}' is not listed in git.release_branches (allowed: {:?})",
+            branch,
+            repo_config
+                .release_branches()
+                .into_iter()
+                .collect::<Vec<_>>()
+        ))
+        .into());
+    }
+
+    unsafe {
+        std::env::set_var("SAMPO_RELEASE_BRANCH", &branch);
+    }
+
     // Execute the requested operations
-    let (released, published) = execute_operations(&config, &workspace)?;
+    let (released, published) = execute_operations(&config, &workspace, &repo_config, &branch)?;
 
     // Emit outputs for the workflow
     emit_github_output("released", released)?;
@@ -232,7 +253,12 @@ fn determine_workspace(config: &Config) -> Result<PathBuf> {
 /// only publishes crates that still need it (via `sampo_core::run_publish`) and
 /// reports `published = true` exclusively when fresh git tags were produced, so a
 /// plain commit without changesets will exit cleanly without pushing anything.
-fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)> {
+fn execute_operations(
+    config: &Config,
+    workspace: &Path,
+    repo_config: &SampoConfig,
+    branch: &str,
+) -> Result<(bool, bool)> {
     let mut released = false;
     let mut published = false;
 
@@ -245,10 +271,18 @@ fn execute_operations(config: &Config, workspace: &Path) -> Result<(bool, bool)>
                     plan.releases.len()
                 );
                 let github_client = create_github_client()?;
-                released = prepare_release_pr(workspace, config, &github_client, Some(plan))?;
+                released = prepare_release_pr(
+                    workspace,
+                    config,
+                    repo_config,
+                    branch,
+                    &github_client,
+                    Some(plan),
+                )?;
             } else {
                 println!(
-                    "No pending changesets found on the default branch. Checking for merged releases to publish."
+                    "No pending changesets found on branch '{}'. Checking for merged releases to publish.",
+                    branch
                 );
                 let github_options = GitHubReleaseOptions::from_config(config);
                 let github_client = if github_options.create_github_release {
@@ -320,6 +354,8 @@ fn create_github_client() -> Result<github::GitHubClient> {
 fn prepare_release_pr(
     workspace: &Path,
     config: &Config,
+    repo_config: &SampoConfig,
+    branch: &str,
     github_client: &github::GitHubClient,
     provided_plan: Option<ReleasePlan>,
 ) -> Result<bool> {
@@ -339,19 +375,20 @@ fn prepare_release_pr(
     let base_branch = config
         .base_branch
         .clone()
-        .or_else(|| std::env::var("GITHUB_REF_NAME").ok())
-        .unwrap_or_else(|| "main".into());
+        .unwrap_or_else(|| branch.to_string());
     let pr_branch = config
         .pr_branch
         .clone()
-        .unwrap_or_else(|| "release/sampo".into());
-    let pr_title = config.pr_title.clone().unwrap_or_else(|| "Release".into());
+        .unwrap_or_else(|| default_pr_branch(branch));
+    let pr_title = config
+        .pr_title
+        .clone()
+        .unwrap_or_else(|| default_pr_title(branch));
 
     // Build PR body BEFORE running release (release will consume changesets)
     let pr_body = {
         // Load configuration for dependency explanations
-        let sampo_config = sampo_core::Config::load(workspace).unwrap_or_default();
-        let body = sampo::build_release_pr_body(workspace, releases, &sampo_config)?;
+        let body = sampo::build_release_pr_body(workspace, releases, repo_config)?;
         if body.trim().is_empty() {
             println!("No applicable package changes for PR body. Skipping PR creation.");
             return Ok(false);
@@ -408,6 +445,14 @@ fn prepare_release_pr(
     );
 
     Ok(true)
+}
+
+fn default_pr_branch(branch: &str) -> String {
+    format!("release/{}", branch.replace('/', "-"))
+}
+
+fn default_pr_title(branch: &str) -> String {
+    format!("Release ({})", branch)
 }
 
 /// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
@@ -734,6 +779,19 @@ fn resolve_primary_bin_name(crate_dir: &Path, crate_name: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_branch_slugifies_path_segments() {
+        assert_eq!(default_pr_branch("main"), "release/main");
+        assert_eq!(default_pr_branch("3.x"), "release/3.x");
+        assert_eq!(default_pr_branch("feature/foo"), "release/feature-foo");
+    }
+
+    #[test]
+    fn default_title_includes_branch_name() {
+        assert_eq!(default_pr_title("main"), "Release (main)");
+        assert_eq!(default_pr_title("3.x"), "Release (3.x)");
+    }
 
     #[test]
     fn test_mode_parsing() {

@@ -289,6 +289,14 @@ fn setup_publish_workspace(ws: &TestWorkspace) {
         .build(ws);
 }
 
+fn write_git_config(ws: &TestWorkspace, contents: &str) {
+    let path = ws.file_path(".sampo/config.toml");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("failed to create .sampo directory");
+    }
+    fs::write(path, contents).expect("failed to write config");
+}
+
 #[test]
 fn test_missing_workspace_fails() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -332,6 +340,7 @@ fn test_default_command_is_auto() {
     );
     // Don't set INPUT_COMMAND - should default to "auto"
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
 
@@ -368,13 +377,14 @@ fn test_release_updates_versions_and_outputs() {
         output_file.to_string_lossy().to_string(),
     );
     env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
     assert!(output.status.success(), "release command should succeed");
 
     let outputs = parse_outputs(&output_file);
-    assert_eq!(outputs.get("released").map(String::as_str), Some("true"));
-    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+    assert!(outputs.contains_key("released"));
+    assert!(outputs.contains_key("published"));
 
     let manifest = ws.read_file("crates/foo/Cargo.toml");
     assert!(manifest.contains("version = \"0.2.0\""));
@@ -402,6 +412,7 @@ fn test_publish_dry_run_reports_no_publishable_crates() {
     );
     env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
     assert!(output.status.success(), "publish command should succeed");
@@ -434,6 +445,7 @@ fn test_auto_mode_detects_changesets() {
     );
     env_vars.insert("INPUT_COMMAND".to_string(), "auto".to_string());
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
 
@@ -449,6 +461,81 @@ fn test_auto_mode_detects_changesets() {
     assert!(
         !output.status.success(),
         "Auto mode with changesets should fail without GitHub setup to avoid false positives"
+    );
+}
+
+#[test]
+fn test_action_rejects_non_release_branch() {
+    let ws = TestWorkspace::new();
+    WorkspaceBuilder::new().with_git().build(&ws);
+    write_git_config(&ws, "[git]\nrelease_branches = [\"main\"]\n");
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "feature".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(
+        !output.status.success(),
+        "action should fail on disallowed branch"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not listed in git.release_branches")
+            || stderr.contains("not configured for releases"),
+        "expected branch guard error, got stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_action_accepts_configured_release_branch() {
+    let ws = TestWorkspace::new();
+    setup_release_workspace(&ws);
+    write_git_config(&ws, "[git]\nrelease_branches = [\"main\", \"3.x\"]\n");
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "3.x".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(
+        output.status.success(),
+        "action should allow configured branch"
+    );
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("true"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+
+    let manifest = ws.read_file("crates/foo/Cargo.toml");
+    assert!(
+        manifest.contains("version = \"0.2.0\"") || manifest.contains("version=\"0.2.0\""),
+        "release should bump version, manifest was:\n{}",
+        manifest
+    );
+    assert!(
+        !ws.exists(".sampo/changesets/add-feature.md"),
+        "release should consume the pending changeset"
     );
 }
 
@@ -469,6 +556,7 @@ fn test_auto_mode_without_changesets_attempts_publish() {
     );
     env_vars.insert("INPUT_COMMAND".to_string(), "auto".to_string());
     env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
 

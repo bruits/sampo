@@ -1,6 +1,6 @@
 use crate::types::CrateInfo;
 use crate::{
-    Config, discover_workspace,
+    Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
     filters::should_ignore_crate,
 };
@@ -35,6 +35,15 @@ use std::time::Duration;
 pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> Result<()> {
     let ws = discover_workspace(root)?;
     let config = Config::load(&ws.root)?;
+
+    let branch = current_branch()?;
+    if !config.is_release_branch(&branch) {
+        return Err(SampoError::Release(format!(
+            "Branch '{}' is not configured for publishing (allowed: {:?})",
+            branch,
+            config.release_branches().into_iter().collect::<Vec<_>>()
+        )));
+    }
 
     // Determine which crates are publishable to crates.io and not ignored
     let mut name_to_crate: BTreeMap<String, &CrateInfo> = BTreeMap::new();
@@ -435,8 +444,11 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 mod tests {
     use super::*;
     use rustc_hash::FxHashMap;
-    use std::fs;
-    use std::path::PathBuf;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Mutex, MutexGuard, OnceLock},
+    };
 
     /// Test workspace builder for publish testing
     struct TestWorkspace {
@@ -445,10 +457,56 @@ mod tests {
         crates: FxHashMap<String, PathBuf>,
     }
 
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = env_lock().lock().unwrap();
+            let original = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self {
+                key,
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(ref value) = self.original {
+                    std::env::set_var(self.key, value);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
     impl TestWorkspace {
         fn new() -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
+
+            {
+                let _lock = env_lock().lock().unwrap();
+                unsafe {
+                    std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+                }
+            }
 
             // Create basic workspace structure
             fs::write(
@@ -515,6 +573,12 @@ mod tests {
             self
         }
 
+        fn set_config(&self, content: &str) -> &Self {
+            fs::create_dir_all(self.root.join(".sampo")).unwrap();
+            fs::write(self.root.join(".sampo/config.toml"), content).unwrap();
+            self
+        }
+
         fn run_publish(&self, dry_run: bool) -> Result<()> {
             run_publish(&self.root, dry_run, &[])
         }
@@ -536,6 +600,41 @@ mod tests {
 
             assert_eq!(actual_publishable, expected_sorted);
         }
+    }
+
+    #[test]
+    fn run_publish_rejects_unconfigured_branch() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0");
+        workspace.set_publishable("foo", false);
+        workspace.set_config("[git]\nrelease_branches = [\"main\"]\n");
+
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "feature");
+        let branch = current_branch().expect("branch should be readable");
+        assert_eq!(branch, "feature");
+        let err = workspace.run_publish(true).unwrap_err();
+        match err {
+            SampoError::Release(message) => {
+                assert!(
+                    message.contains("not configured for publishing"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_publish_allows_configured_branch() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0");
+        workspace.set_publishable("foo", false);
+        workspace.set_config("[git]\nrelease_branches = [\"3.x\"]\n");
+
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "3.x");
+        workspace
+            .run_publish(true)
+            .expect("publish should succeed on configured branch");
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
+        sync::{Mutex, MutexGuard, OnceLock},
     };
 
     use crate::*;
@@ -16,10 +17,56 @@ mod tests {
         crates: FxHashMap<String, PathBuf>,
     }
 
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = env_lock().lock().unwrap();
+            let original = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self {
+                key,
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(ref value) = self.original {
+                    std::env::set_var(self.key, value);
+                } else {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
     impl TestWorkspace {
         fn new() -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
+
+            {
+                let _lock = env_lock().lock().unwrap();
+                unsafe {
+                    std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+                }
+            }
 
             // Create basic workspace structure
             fs::write(
@@ -204,6 +251,39 @@ mod tests {
                 String::new()
             }
         }
+    }
+
+    #[test]
+    fn run_release_rejects_unconfigured_branch() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0");
+        workspace.set_config("[git]\nrelease_branches = [\"main\"]\n");
+
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "feature");
+        let err = workspace.run_release(true).unwrap_err();
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("not configured for releases"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_release_allows_configured_branch() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0");
+        workspace.set_config("[git]\nrelease_branches = [\"3.x\"]\n");
+
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "3.x");
+        let output = workspace
+            .run_release(true)
+            .expect("release should succeed on configured branch");
+        assert!(output.released_packages.is_empty());
+        assert!(output.dry_run);
     }
 
     #[test]
@@ -971,6 +1051,8 @@ tempfile = "3.0"
             linked_dependencies: vec![],
             ignore_unpublished: false,
             ignore: vec![],
+            git_default_branch: None,
+            git_release_branches: Vec::new(),
         };
 
         // Create changeset that affects pkg-b only

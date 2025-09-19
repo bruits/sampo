@@ -1,5 +1,6 @@
 use crate::errors::SampoError;
 use rustc_hash::FxHashSet;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Configuration for Sampo
@@ -14,6 +15,8 @@ pub struct Config {
     pub linked_dependencies: Vec<Vec<String>>,
     pub ignore_unpublished: bool,
     pub ignore: Vec<String>,
+    pub git_default_branch: Option<String>,
+    pub git_release_branches: Vec<String>,
 }
 
 impl Default for Config {
@@ -27,6 +30,8 @@ impl Default for Config {
             linked_dependencies: Vec::new(),
             ignore_unpublished: false,
             ignore: Vec::new(),
+            git_default_branch: None,
+            git_release_branches: Vec::new(),
         }
     }
 }
@@ -225,6 +230,34 @@ impl Config {
             }
         }
 
+        let (git_default_branch, git_release_branches) = value
+            .get("git")
+            .and_then(|v| v.as_table())
+            .map(|git_table| {
+                let default_branch = git_table
+                    .get("default_branch")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
+                let release_branches = git_table
+                    .get("release_branches")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str())
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .collect::<Vec<String>>()
+                    })
+                    .unwrap_or_default();
+
+                (default_branch, release_branches)
+            })
+            .unwrap_or((None, Vec::new()));
+
         Ok(Self {
             version,
             github_repository,
@@ -234,7 +267,28 @@ impl Config {
             linked_dependencies,
             ignore_unpublished,
             ignore,
+            git_default_branch,
+            git_release_branches,
         })
+    }
+
+    pub fn default_branch(&self) -> &str {
+        self.git_default_branch.as_deref().unwrap_or("main")
+    }
+
+    pub fn release_branches(&self) -> BTreeSet<String> {
+        let mut branches: BTreeSet<String> = BTreeSet::new();
+        branches.insert(self.default_branch().to_string());
+        for name in &self.git_release_branches {
+            if !name.is_empty() {
+                branches.insert(name.clone());
+            }
+        }
+        branches
+    }
+
+    pub fn is_release_branch(&self, branch: &str) -> bool {
+        self.release_branches().contains(branch)
     }
 }
 
@@ -251,6 +305,9 @@ mod tests {
         assert!(config.github_repository.is_none());
         assert!(config.changelog_show_commit_hash);
         assert!(config.changelog_show_acknowledgments);
+        assert_eq!(config.default_branch(), "main");
+        assert!(config.is_release_branch("main"));
+        assert_eq!(config.git_release_branches, Vec::<String>::new());
     }
 
     #[test]
@@ -295,6 +352,23 @@ mod tests {
         let config = Config::load(temp.path()).unwrap();
         assert!(!config.changelog_show_commit_hash);
         assert_eq!(config.github_repository.as_deref(), Some("owner/repo"));
+    }
+
+    #[test]
+    fn reads_git_section() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\ndefault_branch = \"release\"\nrelease_branches = [\"release\", \"3.x\"]\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+        assert_eq!(config.default_branch(), "release");
+        assert!(config.is_release_branch("release"));
+        assert!(config.is_release_branch("3.x"));
+        assert!(!config.is_release_branch("main"));
     }
 
     #[test]
