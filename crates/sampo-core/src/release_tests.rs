@@ -21,6 +21,11 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
 
+            // Ensure core logic sees a release branch when tests run outside git.
+            unsafe {
+                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+            }
+
             // Create basic workspace structure
             fs::write(
                 root.join("Cargo.toml"),
@@ -971,6 +976,8 @@ tempfile = "3.0"
             linked_dependencies: vec![],
             ignore_unpublished: false,
             ignore: vec![],
+            git_default_branch: None,
+            git_release_branches: Vec::new(),
         };
 
         // Create changeset that affects pkg-b only

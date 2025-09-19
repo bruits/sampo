@@ -2,7 +2,7 @@ use crate::errors::{Result, SampoError};
 use crate::filters::should_ignore_crate;
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
-    changeset::ChangesetInfo, config::Config, detect_github_repo_slug_with_config,
+    changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use rustc_hash::FxHashSet;
@@ -291,6 +291,15 @@ type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_ver
 pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutput> {
     let workspace = discover_workspace(root)?;
     let config = Config::load(&workspace.root)?;
+
+    let branch = current_branch()?;
+    if !config.is_release_branch(&branch) {
+        return Err(SampoError::Release(format!(
+            "Branch '{}' is not configured for releases (allowed: {:?})",
+            branch,
+            config.release_branches().into_iter().collect::<Vec<_>>()
+        )));
+    }
 
     // Validate fixed dependencies configuration
     validate_fixed_dependencies(&config, &workspace)?;

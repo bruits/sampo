@@ -1,6 +1,6 @@
 use crate::types::CrateInfo;
 use crate::{
-    Config, discover_workspace,
+    Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
     filters::should_ignore_crate,
 };
@@ -35,6 +35,15 @@ use std::time::Duration;
 pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> Result<()> {
     let ws = discover_workspace(root)?;
     let config = Config::load(&ws.root)?;
+
+    let branch = current_branch()?;
+    if !config.is_release_branch(&branch) {
+        return Err(SampoError::Release(format!(
+            "Branch '{}' is not configured for publishing (allowed: {:?})",
+            branch,
+            config.release_branches().into_iter().collect::<Vec<_>>()
+        )));
+    }
 
     // Determine which crates are publishable to crates.io and not ignored
     let mut name_to_crate: BTreeMap<String, &CrateInfo> = BTreeMap::new();
@@ -435,8 +444,7 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 mod tests {
     use super::*;
     use rustc_hash::FxHashMap;
-    use std::fs;
-    use std::path::PathBuf;
+    use std::{fs, path::PathBuf};
 
     /// Test workspace builder for publish testing
     struct TestWorkspace {
@@ -449,6 +457,10 @@ mod tests {
         fn new() -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
+
+            unsafe {
+                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+            }
 
             // Create basic workspace structure
             fs::write(
