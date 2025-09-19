@@ -351,8 +351,8 @@ fn test_default_command_is_auto() {
     );
 
     let outputs = parse_outputs(&output_file);
-    assert!(outputs.contains_key("released"));
-    assert!(outputs.contains_key("published"));
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
 
     assert!(
         stdout.contains("Publish plan (crates.io):"),
@@ -424,8 +424,8 @@ fn test_publish_dry_run_reports_no_publishable_crates() {
     );
 
     let outputs = parse_outputs(&output_file);
-    assert!(outputs.contains_key("released"));
-    assert!(outputs.contains_key("published"));
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn test_action_rejects_non_release_branch() {
 #[test]
 fn test_action_accepts_configured_release_branch() {
     let ws = TestWorkspace::new();
-    WorkspaceBuilder::new().with_git().build(&ws);
+    setup_release_workspace(&ws);
     write_git_config(&ws, "[git]\nrelease_branches = [\"main\", \"3.x\"]\n");
 
     let output_file = ws.file_path("github_output");
@@ -515,7 +515,6 @@ fn test_action_accepts_configured_release_branch() {
         output_file.to_string_lossy().to_string(),
     );
     env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
-    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
     env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "3.x".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
@@ -525,8 +524,19 @@ fn test_action_accepts_configured_release_branch() {
     );
 
     let outputs = parse_outputs(&output_file);
-    assert!(outputs.contains_key("released"));
-    assert!(outputs.contains_key("published"));
+    assert_eq!(outputs.get("released").map(String::as_str), Some("true"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+
+    let manifest = ws.read_file("crates/foo/Cargo.toml");
+    assert!(
+        manifest.contains("version = \"0.2.0\"") || manifest.contains("version=\"0.2.0\""),
+        "release should bump version, manifest was:\n{}",
+        manifest
+    );
+    assert!(
+        !ws.exists(".sampo/changesets/add-feature.md"),
+        "release should consume the pending changeset"
+    );
 }
 
 #[test]
@@ -568,6 +578,6 @@ fn test_auto_mode_without_changesets_attempts_publish() {
     );
 
     let outputs = parse_outputs(&output_file);
-    assert!(outputs.contains_key("released"));
-    assert!(outputs.contains_key("published"));
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
 }

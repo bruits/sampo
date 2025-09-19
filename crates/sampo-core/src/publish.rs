@@ -444,7 +444,11 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 mod tests {
     use super::*;
     use rustc_hash::FxHashMap;
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Mutex, MutexGuard, OnceLock},
+    };
 
     /// Test workspace builder for publish testing
     struct TestWorkspace {
@@ -453,18 +457,30 @@ mod tests {
         crates: FxHashMap<String, PathBuf>,
     }
 
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
     struct EnvVarGuard {
         key: &'static str,
         original: Option<String>,
+        _lock: MutexGuard<'static, ()>,
     }
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
+            let lock = env_lock().lock().unwrap();
             let original = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);
             }
-            Self { key, original }
+            Self {
+                key,
+                original,
+                _lock: lock,
+            }
         }
     }
 
@@ -485,8 +501,11 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
 
-            unsafe {
-                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+            {
+                let _lock = env_lock().lock().unwrap();
+                unsafe {
+                    std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+                }
             }
 
             // Create basic workspace structure
@@ -591,6 +610,8 @@ mod tests {
         workspace.set_config("[git]\nrelease_branches = [\"main\"]\n");
 
         let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "feature");
+        let branch = current_branch().expect("branch should be readable");
+        assert_eq!(branch, "feature");
         let err = workspace.run_publish(true).unwrap_err();
         match err {
             SampoError::Release(message) => {

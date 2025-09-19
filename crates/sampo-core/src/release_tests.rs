@@ -5,6 +5,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
+        sync::{Mutex, MutexGuard, OnceLock},
     };
 
     use crate::*;
@@ -16,18 +17,30 @@ mod tests {
         crates: FxHashMap<String, PathBuf>,
     }
 
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
     struct EnvVarGuard {
         key: &'static str,
         original: Option<String>,
+        _lock: MutexGuard<'static, ()>,
     }
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
+            let lock = env_lock().lock().unwrap();
             let original = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);
             }
-            Self { key, original }
+            Self {
+                key,
+                original,
+                _lock: lock,
+            }
         }
     }
 
@@ -48,9 +61,11 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
 
-            // Ensure core logic sees a release branch when tests run outside git.
-            unsafe {
-                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+            {
+                let _lock = env_lock().lock().unwrap();
+                unsafe {
+                    std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+                }
             }
 
             // Create basic workspace structure

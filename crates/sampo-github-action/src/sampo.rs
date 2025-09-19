@@ -221,20 +221,33 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
 
     struct EnvVarGuard {
         key: &'static str,
         original: Option<String>,
+        _lock: MutexGuard<'static, ()>,
     }
 
     impl EnvVarGuard {
         fn set_branch(value: &str) -> Self {
             let key = "SAMPO_RELEASE_BRANCH";
+            let lock = env_lock().lock().unwrap();
             let original = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);
             }
-            Self { key, original }
+            Self {
+                key,
+                original,
+                _lock: lock,
+            }
         }
     }
 
