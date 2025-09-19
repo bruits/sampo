@@ -119,8 +119,6 @@ linked = [["pkg-e", "pkg-f"], ["pkg-g", "pkg-h"]]
 
 ### `[git]` section
 
-The git configuration controls which branches are allowed to run release and publish flows.
-
 `default_branch`: Name of the primary release branch (default: `"main"`).
 
 `release_branches`: Additional branch names that should behave like long-lived release lines. The default branch is always included automatically, so this list only needs the extra branches (e.g. `"3.x"`, `"4.0"`).
