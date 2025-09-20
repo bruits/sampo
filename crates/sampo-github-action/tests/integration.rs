@@ -559,7 +559,10 @@ fn test_action_accepts_configured_pre_release_branch() {
     env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "next".to_string());
 
     let output = run_action(&[], &env_vars, ws.path());
-    assert!(output.status.success(), "action should allow pre-release branch");
+    assert!(
+        output.status.success(),
+        "action should allow pre-release branch"
+    );
 
     let outputs = parse_outputs(&output_file);
     assert_eq!(outputs.get("released").map(String::as_str), Some("true"));

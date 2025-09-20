@@ -768,7 +768,7 @@ fn normalize_version_input(input: &str) -> std::result::Result<String, String> {
     }
 
     let boundary = trimmed
-        .find(|ch: char| ch == '-' || ch == '+')
+        .find(|ch: char| ['-', '+'].contains(&ch))
         .unwrap_or(trimmed.len());
     let (core, rest) = trimmed.split_at(boundary);
 
@@ -845,8 +845,7 @@ fn increment_prerelease(pre: &Prerelease) -> std::result::Result<Prerelease, Str
     }
 
     let candidate = parts.join(".");
-    Prerelease::new(&candidate)
-        .map_err(|err| format!("Invalid pre-release '{candidate}': {err}"))
+    Prerelease::new(&candidate).map_err(|err| format!("Invalid pre-release '{candidate}': {err}"))
 }
 
 fn strip_trailing_numeric_identifiers(pre: &Prerelease) -> Option<Prerelease> {

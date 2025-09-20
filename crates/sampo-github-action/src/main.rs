@@ -377,9 +377,11 @@ fn prepare_release_pr(
         .base_branch
         .clone()
         .unwrap_or_else(|| branch.to_string());
-    let is_prerelease = releases
-        .values()
-        .any(|(_, new_version)| Version::parse(new_version).map(|v| !v.pre.is_empty()).unwrap_or(false));
+    let is_prerelease = releases.values().any(|(_, new_version)| {
+        Version::parse(new_version)
+            .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+    });
     let pr_branch = config
         .pr_branch
         .clone()
@@ -808,7 +810,10 @@ mod tests {
     fn default_branch_slugifies_path_segments() {
         assert_eq!(default_pr_branch("main", false), "release/main");
         assert_eq!(default_pr_branch("3.x", false), "release/3.x");
-        assert_eq!(default_pr_branch("feature/foo", false), "release/feature-foo");
+        assert_eq!(
+            default_pr_branch("feature/foo", false),
+            "release/feature-foo"
+        );
     }
 
     #[test]
