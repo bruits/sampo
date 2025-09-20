@@ -250,7 +250,7 @@ impl GitHubClient {
     }
 
     /// Create a GitHub Release
-    pub fn create_release(&self, tag: &str, body: &str) -> Result<String> {
+    pub fn create_release(&self, tag: &str, body: &str, prerelease: bool) -> Result<String> {
         let api_url = format!("https://api.github.com/repos/{}/releases", self.repo);
 
         let payload = CreateReleasePayload {
@@ -258,7 +258,7 @@ impl GitHubClient {
             name: tag.to_string(),
             body: body.to_string(),
             draft: false,
-            prerelease: false,
+            prerelease,
         };
 
         let response = self
@@ -591,13 +591,14 @@ mod tests {
             name: "v1.0.0".to_string(),
             body: "Release notes with\nmultiple lines".to_string(),
             draft: false,
-            prerelease: false,
+            prerelease: true,
         };
 
         let json = serde_json::to_string(&release_payload)
             .expect("Release payload should serialize to valid JSON");
         assert!(json.contains("v1.0.0"));
         assert!(json.contains("Release notes with\\nmultiple lines"));
+        assert!(json.contains("\"prerelease\":true"));
     }
 
     #[test]
