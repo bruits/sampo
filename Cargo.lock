@@ -1762,6 +1762,7 @@ dependencies = [
  "reqwest 0.12.23",
  "rustc-hash",
  "sampo-core",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

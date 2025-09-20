@@ -540,6 +540,33 @@ fn test_action_accepts_configured_release_branch() {
 }
 
 #[test]
+fn test_action_accepts_configured_pre_release_branch() {
+    let ws = TestWorkspace::new();
+    setup_release_workspace(&ws);
+    write_git_config(&ws, "[git]\nrelease_branches = [\"main\", \"next\"]\n");
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "release".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "next".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(output.status.success(), "action should allow pre-release branch");
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("true"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+}
+
+#[test]
 fn test_auto_mode_without_changesets_attempts_publish() {
     let ws = TestWorkspace::new();
     WorkspaceBuilder::new().with_git().build(&ws);
