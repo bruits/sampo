@@ -18,6 +18,7 @@ serde_json = "1.0"
 thiserror = "1.0"
 toml = "0.8"
 changesets = "0.4"
+semver = "1.0"
 tempfile = { version = "3.13", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["rt", "macros"] }

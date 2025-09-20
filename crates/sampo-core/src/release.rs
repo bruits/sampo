@@ -6,6 +6,7 @@ use crate::{
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use rustc_hash::FxHashSet;
+use semver::{BuildMetadata, Prerelease, Version};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -760,22 +761,174 @@ fn cleanup_consumed_changesets(used_paths: BTreeSet<std::path::PathBuf>) -> Resu
     Ok(())
 }
 
-/// Bump a semver version string
-pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String> {
-    let mut parts = old
-        .split('.')
-        .map(|s| s.parse::<u64>().unwrap_or(0))
-        .collect::<Vec<_>>();
-    while parts.len() < 3 {
-        parts.push(0);
+fn normalize_version_input(input: &str) -> std::result::Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Version string cannot be empty".to_string());
     }
-    let (maj, min, pat) = (parts[0], parts[1], parts[2]);
-    let (maj, min, pat) = match bump {
-        Bump::Patch => (maj, min, pat + 1),
-        Bump::Minor => (maj, min + 1, 0),
-        Bump::Major => (maj + 1, 0, 0),
+
+    let boundary = trimmed
+        .find(|ch: char| ch == '-' || ch == '+')
+        .unwrap_or(trimmed.len());
+    let (core, rest) = trimmed.split_at(boundary);
+
+    let parts: Vec<&str> = if core.is_empty() {
+        Vec::new()
+    } else {
+        core.split('.').collect()
     };
-    Ok(format!("{maj}.{min}.{pat}"))
+
+    if parts.is_empty() || parts.len() > 3 {
+        return Err(format!(
+            "Invalid semantic version '{input}': expected one to three numeric components"
+        ));
+    }
+
+    let mut normalized_parts = Vec::with_capacity(3);
+    for part in &parts {
+        if part.is_empty() {
+            return Err(format!(
+                "Invalid semantic version '{input}': found empty numeric component"
+            ));
+        }
+        normalized_parts.push(*part);
+    }
+    while normalized_parts.len() < 3 {
+        normalized_parts.push("0");
+    }
+
+    let normalized_core = normalized_parts.join(".");
+    Ok(format!("{normalized_core}{rest}"))
+}
+
+fn implied_prerelease_bump(version: &Version) -> std::result::Result<Bump, String> {
+    if version.pre.is_empty() {
+        return Err("Version does not contain a pre-release identifier".to_string());
+    }
+
+    if version.minor == 0 && version.patch == 0 {
+        Ok(Bump::Major)
+    } else if version.patch == 0 {
+        Ok(Bump::Minor)
+    } else {
+        Ok(Bump::Patch)
+    }
+}
+
+fn increment_prerelease(pre: &Prerelease) -> std::result::Result<Prerelease, String> {
+    if pre.is_empty() {
+        return Err("Pre-release identifier missing".to_string());
+    }
+
+    let mut parts: Vec<String> = pre.as_str().split('.').map(|s| s.to_string()).collect();
+    if parts.is_empty() {
+        return Err("Pre-release identifier missing".to_string());
+    }
+
+    let last_is_numeric = parts
+        .last()
+        .map(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or(false);
+
+    if last_is_numeric {
+        let value = parts
+            .last()
+            .unwrap()
+            .parse::<u64>()
+            .map_err(|_| "Pre-release component is not a valid number".to_string())?;
+        let incremented = value
+            .checked_add(1)
+            .ok_or_else(|| "Pre-release counter overflow".to_string())?;
+        *parts.last_mut().unwrap() = incremented.to_string();
+    } else {
+        parts.push("1".to_string());
+    }
+
+    let candidate = parts.join(".");
+    Prerelease::new(&candidate)
+        .map_err(|err| format!("Invalid pre-release '{candidate}': {err}"))
+}
+
+fn strip_trailing_numeric_identifiers(pre: &Prerelease) -> Option<Prerelease> {
+    if pre.is_empty() {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = pre.as_str().split('.').collect();
+    while let Some(last) = parts.last() {
+        if last.chars().all(|ch| ch.is_ascii_digit()) {
+            parts.pop();
+        } else {
+            break;
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        let candidate = parts.join(".");
+        Prerelease::new(&candidate).ok()
+    }
+}
+
+fn apply_base_bump(version: &mut Version, bump: Bump) -> std::result::Result<(), String> {
+    match bump {
+        Bump::Patch => {
+            version.patch = version
+                .patch
+                .checked_add(1)
+                .ok_or_else(|| "Patch component overflow".to_string())?;
+        }
+        Bump::Minor => {
+            version.minor = version
+                .minor
+                .checked_add(1)
+                .ok_or_else(|| "Minor component overflow".to_string())?;
+            version.patch = 0;
+        }
+        Bump::Major => {
+            version.major = version
+                .major
+                .checked_add(1)
+                .ok_or_else(|| "Major component overflow".to_string())?;
+            version.minor = 0;
+            version.patch = 0;
+        }
+    }
+    version.pre = Prerelease::EMPTY;
+    version.build = BuildMetadata::EMPTY;
+    Ok(())
+}
+
+/// Bump a semver version string, including pre-release handling
+pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String> {
+    let normalized = normalize_version_input(old)?;
+    let mut version = Version::parse(&normalized)
+        .map_err(|err| format!("Invalid semantic version '{old}': {err}"))?;
+    let original_pre = version.pre.clone();
+
+    if original_pre.is_empty() {
+        apply_base_bump(&mut version, bump)?;
+        return Ok(version.to_string());
+    }
+
+    let implied = implied_prerelease_bump(&version)?;
+
+    if bump <= implied {
+        version.pre = increment_prerelease(&original_pre)?;
+        version.build = BuildMetadata::EMPTY;
+        Ok(version.to_string())
+    } else {
+        let base_pre = strip_trailing_numeric_identifiers(&original_pre).ok_or_else(|| {
+            format!(
+                "Pre-release version '{old}' must include a non-numeric identifier before the counter"
+            )
+        })?;
+
+        apply_base_bump(&mut version, bump)?;
+        version.pre = base_pre;
+        Ok(version.to_string())
+    }
 }
 
 /// Update a crate manifest, setting the crate version (if provided) and retargeting

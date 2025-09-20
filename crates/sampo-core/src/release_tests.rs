@@ -291,6 +291,40 @@ mod tests {
         assert_eq!(bump_version("0.0.0", Bump::Patch).unwrap(), "0.0.1");
         assert_eq!(bump_version("0.1.2", Bump::Minor).unwrap(), "0.2.0");
         assert_eq!(bump_version("1.2.3", Bump::Major).unwrap(), "2.0.0");
+        assert_eq!(bump_version("1.2", Bump::Patch).unwrap(), "1.2.1");
+    }
+
+    #[test]
+    fn bumps_prerelease_versions() {
+        assert_eq!(
+            bump_version("1.8.0-alpha", Bump::Patch).unwrap(),
+            "1.8.0-alpha.1"
+        );
+        assert_eq!(
+            bump_version("1.8.0-alpha.1", Bump::Minor).unwrap(),
+            "1.8.0-alpha.2"
+        );
+        assert_eq!(
+            bump_version("1.8.0-alpha.2", Bump::Major).unwrap(),
+            "2.0.0-alpha"
+        );
+        assert_eq!(
+            bump_version("2.0.0-beta.3", Bump::Major).unwrap(),
+            "2.0.0-beta.4"
+        );
+        assert_eq!(
+            bump_version("1.2.3-alpha", Bump::Minor).unwrap(),
+            "1.3.0-alpha"
+        );
+    }
+
+    #[test]
+    fn rejects_numeric_only_prerelease_when_escalating() {
+        let err = bump_version("1.2.3-1", Bump::Minor).unwrap_err();
+        assert!(
+            err.contains("must include a non-numeric identifier"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

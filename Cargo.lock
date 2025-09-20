@@ -1746,6 +1746,7 @@ dependencies = [
  "glob",
  "reqwest 0.12.23",
  "rustc-hash",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
