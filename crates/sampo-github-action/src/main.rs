@@ -8,6 +8,7 @@ use crate::sampo::ReleasePlan;
 use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
 use sampo_core::{Config as SampoConfig, current_branch};
+use semver::Version;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -376,14 +377,19 @@ fn prepare_release_pr(
         .base_branch
         .clone()
         .unwrap_or_else(|| branch.to_string());
+    let is_prerelease = releases.values().any(|(_, new_version)| {
+        Version::parse(new_version)
+            .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+    });
     let pr_branch = config
         .pr_branch
         .clone()
-        .unwrap_or_else(|| default_pr_branch(branch));
+        .unwrap_or_else(|| default_pr_branch(branch, is_prerelease));
     let pr_title = config
         .pr_title
         .clone()
-        .unwrap_or_else(|| default_pr_title(branch));
+        .unwrap_or_else(|| default_pr_title(branch, is_prerelease));
 
     // Build PR body BEFORE running release (release will consume changesets)
     let pr_body = {
@@ -447,12 +453,25 @@ fn prepare_release_pr(
     Ok(true)
 }
 
-fn default_pr_branch(branch: &str) -> String {
-    format!("release/{}", branch.replace('/', "-"))
+fn sanitized_branch_name(branch: &str) -> String {
+    branch.replace('/', "-")
 }
 
-fn default_pr_title(branch: &str) -> String {
-    format!("Release ({})", branch)
+fn default_pr_branch(branch: &str, is_prerelease: bool) -> String {
+    let suffix = sanitized_branch_name(branch);
+    if is_prerelease {
+        format!("pre-release/{}", suffix)
+    } else {
+        format!("release/{}", suffix)
+    }
+}
+
+fn default_pr_title(branch: &str, is_prerelease: bool) -> String {
+    if is_prerelease {
+        format!("Pre-release ({})", branch)
+    } else {
+        format!("Release ({})", branch)
+    }
 }
 
 /// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
@@ -522,7 +541,7 @@ fn create_github_release_for_tag(
     };
 
     // Create the release and get upload URL (or find the existing release)
-    let upload_url = match github_client.create_release(tag, &body) {
+    let upload_url = match github_client.create_release(tag, &body, tag_is_prerelease(tag)) {
         Ok(url) => url,
         Err(e) => {
             eprintln!(
@@ -654,6 +673,13 @@ fn parse_tag(tag: &str) -> Option<(String, String)> {
     Some((name.to_string(), version))
 }
 
+fn tag_is_prerelease(tag: &str) -> bool {
+    parse_tag(tag)
+        .and_then(|(_name, version)| Version::parse(&version).ok())
+        .map(|parsed| !parsed.pre.is_empty())
+        .unwrap_or(false)
+}
+
 /// Extract the section that starts at "## <version>" until the next "## " or EOF
 fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -782,15 +808,31 @@ mod tests {
 
     #[test]
     fn default_branch_slugifies_path_segments() {
-        assert_eq!(default_pr_branch("main"), "release/main");
-        assert_eq!(default_pr_branch("3.x"), "release/3.x");
-        assert_eq!(default_pr_branch("feature/foo"), "release/feature-foo");
+        assert_eq!(default_pr_branch("main", false), "release/main");
+        assert_eq!(default_pr_branch("3.x", false), "release/3.x");
+        assert_eq!(
+            default_pr_branch("feature/foo", false),
+            "release/feature-foo"
+        );
     }
 
     #[test]
     fn default_title_includes_branch_name() {
-        assert_eq!(default_pr_title("main"), "Release (main)");
-        assert_eq!(default_pr_title("3.x"), "Release (3.x)");
+        assert_eq!(default_pr_title("main", false), "Release (main)");
+        assert_eq!(default_pr_title("3.x", false), "Release (3.x)");
+    }
+
+    #[test]
+    fn pre_release_branch_has_dedicated_prefix_and_title() {
+        assert_eq!(default_pr_branch("next", true), "pre-release/next");
+        assert_eq!(default_pr_title("next", true), "Pre-release (next)");
+    }
+
+    #[test]
+    fn tag_pre_release_detection() {
+        assert!(tag_is_prerelease("sampo-v1.2.0-alpha.1"));
+        assert!(!tag_is_prerelease("sampo-v1.2.0"));
+        assert!(!tag_is_prerelease("invalid"));
     }
 
     #[test]
