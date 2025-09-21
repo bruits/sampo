@@ -287,6 +287,79 @@ mod tests {
     }
 
     #[test]
+    fn pre_release_preserves_changesets() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "1.0.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha launch");
+
+        workspace
+            .run_release(false)
+            .expect("pre-release should succeed");
+
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+
+        let pending = fs::read_dir(&changesets_dir)
+            .unwrap()
+            .map(|entry| entry.expect("dir entry"))
+            .collect::<Vec<_>>();
+        assert!(pending.is_empty(), "changesets directory should be empty");
+
+        let preserved = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .map(|entry| entry.expect("dir entry"))
+            .collect::<Vec<_>>();
+        assert!(
+            !preserved.is_empty(),
+            "pre-release changesets should be preserved"
+        );
+    }
+
+    #[test]
+    fn final_release_restores_preserved_changesets() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "1.0.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Major, "feat: release candidate");
+
+        workspace
+            .run_release(false)
+            .expect("initial pre-release should succeed");
+
+        // Simulate stabilizing the version before the official release
+        let manifest = workspace
+            .crates
+            .get("foo")
+            .expect("crate should exist")
+            .join("Cargo.toml");
+        fs::write(&manifest, "[package]\nname=\"foo\"\nversion=\"1.0.0\"\n")
+            .expect("should rewrite manifest");
+
+        workspace
+            .run_release(false)
+            .expect("final release should succeed");
+
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+
+        let remaining = fs::read_dir(&changesets_dir)
+            .unwrap()
+            .map(|entry| entry.expect("dir entry"))
+            .collect::<Vec<_>>();
+        assert!(remaining.is_empty(), "all changesets should be consumed");
+
+        let preserved = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .map(|entry| entry.expect("dir entry"))
+            .collect::<Vec<_>>();
+        assert!(
+            preserved.is_empty(),
+            "pre-release cache should be empty after final release"
+        );
+
+        workspace.assert_crate_version("foo", "2.0.0");
+    }
+
+    #[test]
     fn bumps_versions() {
         assert_eq!(bump_version("0.0.0", Bump::Patch).unwrap(), "0.0.1");
         assert_eq!(bump_version("0.1.2", Bump::Minor).unwrap(), "0.2.0");

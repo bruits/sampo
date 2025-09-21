@@ -2,8 +2,10 @@ mod add;
 mod cli;
 mod init;
 mod names;
+mod prerelease;
 mod publish;
 mod release;
+mod ui;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -56,6 +58,12 @@ fn main() -> ExitCode {
         Commands::Release(args) => {
             if let Err(e) = release::run(&args) {
                 eprintln!("Failed to release packages: {e}");
+                return ExitCode::from(1);
+            }
+        }
+        Commands::Pre(args) => {
+            if let Err(e) = prerelease::run(&args) {
+                eprintln!("Failed to manage pre-release versions: {e}");
                 return ExitCode::from(1);
             }
         }

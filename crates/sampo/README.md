@@ -21,6 +21,7 @@ This command creates a `.sampo` directory at your repository root:
 ```
 .sampo/
 ├─ changesets/ <- Individual changeset files describing pending changes
+├─ prerelease/ <- Changesets preserved while shipping pre-release builds (optional)
 ├─ config.toml <- Sampo configuration (package settings, registry options)
 └─ README.md <- Quick links to the online documentation
 ```
@@ -36,7 +37,7 @@ Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate t
 
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
 
-Finally, Sampo follows [SemVer §9](https://semver.org/#spec-item-9) for pre-release identifiers such as `1.8.0-alpha` or `2.0.0-rc.3`. While a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` -> `alpha.2` -> etc). If a higher bump is required, the base version advances first and keeps the same tag (`1.8.0-alpha.2` + major → `2.0.0-alpha`). Purely numeric tags like `1.0.0-1` are rejected.
+Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). While a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` -> `alpha.2` -> etc). If a higher bump is required, the base version advances and numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
 
 #### Changesets
 
@@ -51,6 +52,8 @@ A helpful description of the change, to be read by your users.
 ```
 
 Pending changesets are stored in the `.sampo/changesets` directory.
+
+When you cut pre-release versions (alpha, beta, rc), Sampo preserves the consumed files by moving them into `.sampo/prerelease/`; they are automatically restored for the eventual stable release.
 
 #### Changelog
 
@@ -91,6 +94,14 @@ As long as the release is not finalized, you can continue to add changesets and 
 #### Publish packages
 
 Finally, run `sampo publish` to publish updated packages to their respective registries and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
+
+#### Pre-release versions
+
+Run `sampo pre` to manage pre-release versions for one or more packages.
+
+While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode, any preserved changesets are restored back to `.sampo/changesets/`, so they can be consumed in the next stable release.
+
+You can switch between different pre-release labels (for example, from `alpha` to `beta`) at any time without losing changesets.
 
 ## Configuration
 
@@ -165,6 +176,7 @@ All commands should be run from the root of the repository:
 | `sampo help`    | Show commands or the help of the given subcommand(s)                      |
 | `sampo init`    | Initialize Sampo in the current repository                                |
 | `sampo add`     | Create a new changeset                                                    |
+| `sampo pre`     | Manage pre-release versions (enter or exit pre-release mode)              |
 | `sampo release` | Consume changesets, and prepare release(s) (bump versions and changelogs) |
 | `sampo publish` | Publish packages to registries and tag current versions                   |
 

@@ -1,15 +1,13 @@
 use crate::cli::AddArgs;
 use crate::names;
+use crate::ui::{prompt_io_error, select_packages};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
-    Bump, Config, discover_workspace,
-    errors::{Result, SampoError},
-    filters::list_visible_packages,
+    Bump, Config, discover_workspace, errors::Result, filters::list_visible_packages,
     render_changeset_markdown,
 };
 use std::collections::HashMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn run(args: &AddArgs) -> Result<()> {
@@ -35,7 +33,10 @@ pub fn run(args: &AddArgs) -> Result<()> {
 
     // Collect inputs, prefilling from CLI args if provided
     let selected_packages = if args.package.is_empty() {
-        prompt_packages(&packages)?
+        select_packages(
+            &packages,
+            "Select packages impacted by this changeset (space to toggle, enter to confirm)",
+        )?
     } else {
         args.package.clone()
     };
@@ -61,40 +62,6 @@ fn ensure_dir(dir: &PathBuf) -> Result<()> {
         fs::create_dir_all(dir)?;
     }
     Ok(())
-}
-
-fn prompt_packages(available: &[String]) -> Result<Vec<String>> {
-    if available.is_empty() {
-        return Err(SampoError::InvalidData(
-            "No workspace packages detected. Run this command inside a Cargo workspace.".into(),
-        ));
-    }
-
-    let theme = ColorfulTheme {
-        prompt_prefix: dialoguer::console::style("🧭".to_string()),
-        ..ColorfulTheme::default()
-    };
-    loop {
-        let selections = MultiSelect::with_theme(&theme)
-            .with_prompt(
-                "Select packages impacted by this changeset (space to toggle, enter to confirm)",
-            )
-            .items(available)
-            .report(false)
-            .interact()
-            .map_err(prompt_io_error)?;
-
-        if selections.is_empty() {
-            eprintln!("Select at least one package to continue.");
-            continue;
-        }
-
-        let chosen = selections
-            .into_iter()
-            .map(|index| available[index].clone())
-            .collect();
-        return Ok(chosen);
-    }
 }
 
 fn prompt_package_bumps(packages: &[String]) -> Result<Vec<(String, Bump)>> {
@@ -185,12 +152,6 @@ fn prompt_message() -> Result<String> {
     }
 }
 
-fn prompt_io_error(error: dialoguer::Error) -> io::Error {
-    match error {
-        dialoguer::Error::IO(err) => err,
-    }
-}
-
 fn unique_changeset_path(dir: &Path) -> PathBuf {
     let mut rng = rand::thread_rng();
     let base = names::generate_file_name(&mut rng);
@@ -234,17 +195,6 @@ mod tests {
         let md = render_changeset_markdown(&[("pkg".into(), Bump::Major)], "breaking: api change");
         assert!(md.contains("pkg: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
-    }
-
-    #[test]
-    fn prompt_packages_without_workspace_errors() {
-        let err = prompt_packages(&[]).unwrap_err();
-        match err {
-            SampoError::InvalidData(msg) => {
-                assert!(msg.contains("No workspace packages detected"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
     }
 
     #[test]

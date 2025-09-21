@@ -5,6 +5,7 @@ pub mod errors;
 pub mod filters;
 pub mod git;
 pub mod markdown;
+pub mod prerelease;
 pub mod publish;
 pub mod release;
 pub mod types;
@@ -21,6 +22,7 @@ pub use errors::{Result, SampoError, WorkspaceError};
 pub use filters::{filter_members, list_visible_packages, should_ignore_crate, wildcard_match};
 pub use git::current_branch;
 pub use markdown::format_markdown_list_item;
+pub use prerelease::{VersionChange, enter_prerelease, exit_prerelease};
 pub use publish::{
     is_publishable_to_crates_io, run_publish, tag_published_crate, topo_order,
     version_exists_on_crates_io,
