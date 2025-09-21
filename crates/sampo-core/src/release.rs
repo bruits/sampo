@@ -628,7 +628,7 @@ fn unique_destination_path(dir: &Path, file_name: &OsStr) -> PathBuf {
 ///
 /// Uses `cargo generate-lockfile`, which will rebuild the lockfile with the latest
 /// compatible versions, ensuring the lockfile reflects the new workspace versions.
-fn regenerate_lockfile(root: &Path) -> Result<()> {
+pub(crate) fn regenerate_lockfile(root: &Path) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("generate-lockfile").current_dir(root);
 
@@ -1017,6 +1017,11 @@ fn normalize_version_input(input: &str) -> std::result::Result<String, String> {
     Ok(format!("{normalized_core}{rest}"))
 }
 
+pub(crate) fn parse_version_string(input: &str) -> std::result::Result<Version, String> {
+    let normalized = normalize_version_input(input)?;
+    Version::parse(&normalized).map_err(|err| format!("Invalid semantic version '{input}': {err}"))
+}
+
 fn implied_prerelease_bump(version: &Version) -> std::result::Result<Bump, String> {
     if version.pre.is_empty() {
         return Err("Version does not contain a pre-release identifier".to_string());
@@ -1117,9 +1122,7 @@ fn apply_base_bump(version: &mut Version, bump: Bump) -> std::result::Result<(),
 
 /// Bump a semver version string, including pre-release handling
 pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String> {
-    let normalized = normalize_version_input(old)?;
-    let mut version = Version::parse(&normalized)
-        .map_err(|err| format!("Invalid semantic version '{old}': {err}"))?;
+    let mut version = parse_version_string(old)?;
     let original_pre = version.pre.clone();
 
     if original_pre.is_empty() {

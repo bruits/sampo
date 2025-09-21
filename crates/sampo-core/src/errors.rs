@@ -31,6 +31,9 @@ pub enum SampoError {
     #[error("Release error: {0}")]
     Release(String),
 
+    #[error("Pre-release error: {0}")]
+    Prerelease(String),
+
     #[error("Invalid data: {0}")]
     InvalidData(String),
 

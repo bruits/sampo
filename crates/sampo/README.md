@@ -85,6 +85,14 @@ Each published package has its own `CHANGELOG.md` file at the package root.
 
 Use `sampo add` to create a new changeset file. The command guides you through selecting packages and describing changes. Use [Sampo GitHub bot](https://github.com/bruits/sampo/tree/main/crates/sampo-github-bot) to get reminders on each PR without a changeset.
 
+#### Enter pre-release mode
+
+Run `sampo pre enter <label>` to apply a pre-release tag such as `alpha`, `beta`, or `rc` to selected packages. If you omit `--package`, the CLI prompts you to choose the packages interactively and updates any internal dependency references to the new pre-release version. You can rerun the command with a different label (for example, switching from `alpha` to `beta`) at any time.
+
+#### Exit pre-release mode
+
+Use `sampo pre exit` to return selected packages to their stable version (removing the pre-release suffix). When run without `--package`, the command lists only packages that currently carry a pre-release tag and updates dependent manifests to match the restored stable version.
+
 #### Prepare a release
 
 Run `sampo release` to process all pending changesets, bump package versions, and update changelogs. This can be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
@@ -168,6 +176,8 @@ All commands should be run from the root of the repository:
 | `sampo help`    | Show commands or the help of the given subcommand(s)                      |
 | `sampo init`    | Initialize Sampo in the current repository                                |
 | `sampo add`     | Create a new changeset                                                    |
+| `sampo pre enter <label>` | Apply a pre-release label to selected packages                        |
+| `sampo pre exit` | Restore stable versions for pre-release packages                           |
 | `sampo release` | Consume changesets, and prepare release(s) (bump versions and changelogs) |
 | `sampo publish` | Publish packages to registries and tag current versions                   |
 

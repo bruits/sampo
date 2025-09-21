@@ -22,6 +22,9 @@ pub enum Commands {
 
     /// Consume changesets, bump versions, and update changelogs to prepare for release.
     Release(ReleaseArgs),
+
+    /// Manage pre-release versions for workspace packages
+    Pre(PreArgs),
 }
 
 #[derive(Debug, Args)]
@@ -53,6 +56,38 @@ pub struct ReleaseArgs {
     /// Dry-run: compute and show changes without modifying files
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct PreArgs {
+    #[command(subcommand)]
+    pub command: PreCommands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PreCommands {
+    /// Enter pre-release mode for selected packages
+    Enter(PreEnterArgs),
+
+    /// Exit pre-release mode for selected packages
+    Exit(PreExitArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PreEnterArgs {
+    /// Pre-release label to apply (alpha, beta, rc, etc.)
+    pub label: String,
+
+    /// Packages to update (prompted interactively if omitted)
+    #[arg(short, long, num_args = 1.., value_name = "PACKAGE")]
+    pub package: Vec<String>,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct PreExitArgs {
+    /// Packages to update (prompted interactively if omitted)
+    #[arg(short, long, num_args = 1.., value_name = "PACKAGE")]
+    pub package: Vec<String>,
 }
 
 #[cfg(test)]
@@ -130,6 +165,35 @@ mod tests {
         let cli = Cli::try_parse_from(["sampo", "release", "--dry-run"]).unwrap();
         match cli.command {
             Commands::Release(args) => assert!(args.dry_run),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_pre_enter_with_label_and_packages() {
+        let cli = Cli::try_parse_from(["sampo", "pre", "enter", "alpha", "-p", "foo"]).unwrap();
+        match cli.command {
+            Commands::Pre(pre) => match pre.command {
+                PreCommands::Enter(args) => {
+                    assert_eq!(args.label, "alpha");
+                    assert_eq!(args.package, vec!["foo"]);
+                }
+                _ => panic!("wrong variant"),
+            },
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_pre_exit_with_packages() {
+        let cli = Cli::try_parse_from(["sampo", "pre", "exit", "--package", "foo"]).unwrap();
+        match cli.command {
+            Commands::Pre(pre) => match pre.command {
+                PreCommands::Exit(args) => {
+                    assert_eq!(args.package, vec!["foo"]);
+                }
+                _ => panic!("wrong variant"),
+            },
             _ => panic!("wrong variant"),
         }
     }
