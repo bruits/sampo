@@ -1,4 +1,4 @@
-use crate::errors::{Result, SampoError};
+use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_crate;
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
@@ -8,8 +8,9 @@ use crate::{
 use rustc_hash::FxHashSet;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Format dependency updates for changelog display
@@ -288,6 +289,21 @@ type InitialBumpsResult = (
 /// Type alias for release plan
 type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_version)
 
+/// Aggregated data required to apply a planned release
+struct PlanState {
+    messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>>,
+    used_paths: BTreeSet<PathBuf>,
+    releases: ReleasePlan,
+    released_packages: Vec<ReleasedPackage>,
+}
+
+/// Possible outcomes when computing a release plan from a set of changesets
+enum PlanOutcome {
+    NoApplicablePackages,
+    NoMatchingCrates,
+    Plan(PlanState),
+}
+
 /// Main release function that can be called from CLI or other interfaces
 pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutput> {
     let workspace = discover_workspace(root)?;
@@ -306,60 +322,120 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     validate_fixed_dependencies(&config, &workspace)?;
 
     let changesets_dir = workspace.root.join(".sampo").join("changesets");
-    let changesets = load_changesets(&changesets_dir)?;
-    if changesets.is_empty() {
-        println!(
-            "No changesets found in {}",
-            workspace.root.join(".sampo").join("changesets").display()
-        );
-        return Ok(ReleaseOutput {
-            released_packages: vec![],
-            dry_run,
-        });
+    let prerelease_dir = workspace.root.join(".sampo").join("prerelease");
+
+    let current_changesets = load_changesets(&changesets_dir)?;
+    let preserved_changesets = load_changesets(&prerelease_dir)?;
+
+    let mut using_preserved = false;
+    let mut cached_plan_state: Option<PlanState> = None;
+
+    if current_changesets.is_empty() {
+        if preserved_changesets.is_empty() {
+            println!(
+                "No changesets found in {}",
+                workspace.root.join(".sampo").join("changesets").display()
+            );
+            return Ok(ReleaseOutput {
+                released_packages: vec![],
+                dry_run,
+            });
+        }
+        using_preserved = true;
+    } else {
+        match compute_plan_state(&current_changesets, &workspace, &config)? {
+            PlanOutcome::Plan(plan) => {
+                let is_prerelease_preview = releases_include_prerelease(&plan.releases);
+                if !is_prerelease_preview && !preserved_changesets.is_empty() {
+                    using_preserved = true;
+                } else {
+                    cached_plan_state = Some(plan);
+                }
+            }
+            PlanOutcome::NoApplicablePackages => {
+                if preserved_changesets.is_empty() {
+                    println!("No applicable packages found in changesets.");
+                    return Ok(ReleaseOutput {
+                        released_packages: vec![],
+                        dry_run,
+                    });
+                }
+                using_preserved = true;
+            }
+            PlanOutcome::NoMatchingCrates => {
+                if preserved_changesets.is_empty() {
+                    println!("No matching workspace crates to release.");
+                    return Ok(ReleaseOutput {
+                        released_packages: vec![],
+                        dry_run,
+                    });
+                }
+                using_preserved = true;
+            }
+        }
     }
 
-    // Compute initial bumps from changesets
-    let (mut bump_by_pkg, mut messages_by_pkg, used_paths) =
-        compute_initial_bumps(&changesets, &workspace, &config)?;
+    let mut final_changesets;
+    let plan_state = if using_preserved {
+        if dry_run {
+            final_changesets = current_changesets;
+            final_changesets.extend(preserved_changesets);
+        } else {
+            restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
+            final_changesets = load_changesets(&changesets_dir)?;
+        }
 
-    if bump_by_pkg.is_empty() {
-        println!("No applicable packages found in changesets.");
-        return Ok(ReleaseOutput {
-            released_packages: vec![],
-            dry_run,
-        });
-    }
+        match compute_plan_state(&final_changesets, &workspace, &config)? {
+            PlanOutcome::Plan(plan) => plan,
+            PlanOutcome::NoApplicablePackages => {
+                println!("No applicable packages found in changesets.");
+                return Ok(ReleaseOutput {
+                    released_packages: vec![],
+                    dry_run,
+                });
+            }
+            PlanOutcome::NoMatchingCrates => {
+                println!("No matching workspace crates to release.");
+                return Ok(ReleaseOutput {
+                    released_packages: vec![],
+                    dry_run,
+                });
+            }
+        }
+    } else {
+        final_changesets = current_changesets;
+        match cached_plan_state {
+            Some(plan) => plan,
+            None => match compute_plan_state(&final_changesets, &workspace, &config)? {
+                PlanOutcome::Plan(plan) => plan,
+                PlanOutcome::NoApplicablePackages => {
+                    println!("No applicable packages found in changesets.");
+                    return Ok(ReleaseOutput {
+                        released_packages: vec![],
+                        dry_run,
+                    });
+                }
+                PlanOutcome::NoMatchingCrates => {
+                    println!("No matching workspace crates to release.");
+                    return Ok(ReleaseOutput {
+                        released_packages: vec![],
+                        dry_run,
+                    });
+                }
+            },
+        }
+    };
 
-    // Build dependency graph and apply cascading logic
-    let dependents = build_dependency_graph(&workspace, &config);
-    apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace);
-    apply_linked_dependencies(&mut bump_by_pkg, &config);
-
-    // Prepare and validate release plan
-    let releases = prepare_release_plan(&bump_by_pkg, &workspace)?;
-    if releases.is_empty() {
-        println!("No matching workspace crates to release.");
-        return Ok(ReleaseOutput {
-            released_packages: vec![],
-            dry_run,
-        });
-    }
+    let PlanState {
+        mut messages_by_pkg,
+        used_paths,
+        releases,
+        released_packages,
+    } = plan_state;
 
     print_release_plan(&releases);
 
-    // Convert releases to ReleasedPackage structs
-    let released_packages: Vec<ReleasedPackage> = releases
-        .iter()
-        .map(|(name, old_version, new_version)| {
-            let bump = bump_by_pkg.get(name).copied().unwrap_or(Bump::Patch);
-            ReleasedPackage {
-                name: name.clone(),
-                old_version: old_version.clone(),
-                new_version: new_version.clone(),
-                bump,
-            }
-        })
-        .collect();
+    let is_prerelease_release = releases_include_prerelease(&releases);
 
     if dry_run {
         println!("Dry-run: no files modified, no tags created.");
@@ -369,17 +445,15 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         });
     }
 
-    // Apply changes
     apply_releases(
         &releases,
         &workspace,
         &mut messages_by_pkg,
-        &changesets,
+        &final_changesets,
         &config,
     )?;
 
-    // Clean up
-    cleanup_consumed_changesets(used_paths)?;
+    finalize_consumed_changesets(used_paths, &workspace.root, is_prerelease_release)?;
 
     // If the workspace has a lockfile, regenerate it so the release branch includes
     // a consistent, up-to-date Cargo.lock and avoids a dirty working tree later.
@@ -397,6 +471,157 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         released_packages,
         dry_run: false,
     })
+}
+
+fn compute_plan_state(
+    changesets: &[ChangesetInfo],
+    workspace: &Workspace,
+    config: &Config,
+) -> Result<PlanOutcome> {
+    let (mut bump_by_pkg, messages_by_pkg, used_paths) =
+        compute_initial_bumps(changesets, workspace, config)?;
+
+    if bump_by_pkg.is_empty() {
+        return Ok(PlanOutcome::NoApplicablePackages);
+    }
+
+    let dependents = build_dependency_graph(workspace, config);
+    apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace);
+    apply_linked_dependencies(&mut bump_by_pkg, config);
+
+    let releases = prepare_release_plan(&bump_by_pkg, workspace)?;
+    if releases.is_empty() {
+        return Ok(PlanOutcome::NoMatchingCrates);
+    }
+
+    let released_packages: Vec<ReleasedPackage> = releases
+        .iter()
+        .map(|(name, old_version, new_version)| {
+            let bump = bump_by_pkg.get(name).copied().unwrap_or(Bump::Patch);
+            ReleasedPackage {
+                name: name.clone(),
+                old_version: old_version.clone(),
+                new_version: new_version.clone(),
+                bump,
+            }
+        })
+        .collect();
+
+    Ok(PlanOutcome::Plan(PlanState {
+        messages_by_pkg,
+        used_paths,
+        releases,
+        released_packages,
+    }))
+}
+
+fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
+    releases.iter().any(|(_, _, new_version)| {
+        Version::parse(new_version)
+            .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+fn restore_prerelease_changesets(prerelease_dir: &Path, changesets_dir: &Path) -> Result<()> {
+    if !prerelease_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(prerelease_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        // Ignore the new location; only errors matter here
+        let _ = move_changeset_file(&path, changesets_dir)?;
+    }
+
+    Ok(())
+}
+
+fn finalize_consumed_changesets(
+    used_paths: BTreeSet<PathBuf>,
+    workspace_root: &Path,
+    preserve_for_prerelease: bool,
+) -> Result<()> {
+    if used_paths.is_empty() {
+        return Ok(());
+    }
+
+    if preserve_for_prerelease {
+        let prerelease_dir = workspace_root.join(".sampo").join("prerelease");
+        for path in used_paths {
+            if !path.exists() {
+                continue;
+            }
+            let _ = move_changeset_file(&path, &prerelease_dir)?;
+        }
+        println!("Preserved consumed changesets for pre-release.");
+    } else {
+        for path in used_paths {
+            if !path.exists() {
+                continue;
+            }
+            fs::remove_file(&path).map_err(|err| SampoError::Io(io_error_with_path(err, &path)))?;
+        }
+        println!("Removed consumed changesets.");
+    }
+
+    Ok(())
+}
+
+fn move_changeset_file(source: &Path, dest_dir: &Path) -> Result<PathBuf> {
+    if !source.exists() {
+        return Ok(source.to_path_buf());
+    }
+
+    fs::create_dir_all(dest_dir)?;
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| SampoError::Changeset("Invalid changeset file name".to_string()))?;
+
+    let mut destination = dest_dir.join(file_name);
+    if destination == source {
+        return Ok(destination);
+    }
+
+    if destination.exists() {
+        destination = unique_destination_path(dest_dir, file_name);
+    }
+
+    fs::rename(source, &destination)?;
+    Ok(destination)
+}
+
+fn unique_destination_path(dir: &Path, file_name: &OsStr) -> PathBuf {
+    let file_path = Path::new(file_name);
+    let stem = file_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.to_string_lossy().into_owned());
+    let ext = file_path
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned());
+
+    let mut counter = 1;
+    loop {
+        let candidate_name = if let Some(ref ext) = ext {
+            format!("{}-{}.{}", stem, counter, ext)
+        } else {
+            format!("{}-{}", stem, counter)
+        };
+        let candidate = dir.join(&candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
 }
 
 /// Regenerate the Cargo.lock at the workspace root using Cargo.
@@ -749,15 +974,6 @@ fn apply_releases(
         update_changelog(&info.path, name, old, newv, &messages)?;
     }
 
-    Ok(())
-}
-
-/// Clean up consumed changeset files
-fn cleanup_consumed_changesets(used_paths: BTreeSet<std::path::PathBuf>) -> Result<()> {
-    for p in used_paths {
-        let _ = fs::remove_file(p);
-    }
-    println!("Removed consumed changesets.");
     Ok(())
 }
 

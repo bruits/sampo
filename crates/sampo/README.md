@@ -21,6 +21,7 @@ This command creates a `.sampo` directory at your repository root:
 ```
 .sampo/
 ├─ changesets/ <- Individual changeset files describing pending changes
+├─ prerelease/ <- Changesets preserved while shipping pre-release builds (optional)
 ├─ config.toml <- Sampo configuration (package settings, registry options)
 └─ README.md <- Quick links to the online documentation
 ```
@@ -51,6 +52,8 @@ A helpful description of the change, to be read by your users.
 ```
 
 Pending changesets are stored in the `.sampo/changesets` directory.
+
+When you cut pre-release versions (alpha, beta, rc), Sampo preserves the consumed files by moving them into `.sampo/prerelease/`; they are automatically restored for the eventual stable release.
 
 #### Changelog
 
