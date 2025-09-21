@@ -1,4 +1,4 @@
-use dialoguer::{MultiSelect, theme::ColorfulTheme};
+use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use sampo_core::errors::{Result, SampoError};
 use std::io;
 
@@ -31,6 +31,23 @@ pub fn select_packages(available: &[String], prompt: &str) -> Result<Vec<String>
             .into_iter()
             .map(|index| available[index].clone())
             .collect());
+    }
+}
+
+pub fn prompt_nonempty_string(prompt: &str) -> Result<String> {
+    let theme = ColorfulTheme::default();
+    loop {
+        let value: String = Input::with_theme(&theme)
+            .with_prompt(prompt)
+            .allow_empty(false)
+            .interact_text()
+            .map_err(prompt_io_error)?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            eprintln!("Enter a non-empty value.");
+            continue;
+        }
+        return Ok(trimmed.to_string());
     }
 }
 

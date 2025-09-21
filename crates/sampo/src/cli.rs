@@ -58,10 +58,10 @@ pub struct ReleaseArgs {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Default)]
 pub struct PreArgs {
     #[command(subcommand)]
-    pub command: PreCommands,
+    pub command: Option<PreCommands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,7 +76,7 @@ pub enum PreCommands {
 #[derive(Debug, Args)]
 pub struct PreEnterArgs {
     /// Pre-release label to apply (alpha, beta, rc, etc.)
-    pub label: String,
+    pub label: Option<String>,
 
     /// Packages to update (prompted interactively if omitted)
     #[arg(short, long, num_args = 1.., value_name = "PACKAGE")]
@@ -174,8 +174,8 @@ mod tests {
         let cli = Cli::try_parse_from(["sampo", "pre", "enter", "alpha", "-p", "foo"]).unwrap();
         match cli.command {
             Commands::Pre(pre) => match pre.command {
-                PreCommands::Enter(args) => {
-                    assert_eq!(args.label, "alpha");
+                Some(PreCommands::Enter(args)) => {
+                    assert_eq!(args.label.as_deref(), Some("alpha"));
                     assert_eq!(args.package, vec!["foo"]);
                 }
                 _ => panic!("wrong variant"),
@@ -189,11 +189,20 @@ mod tests {
         let cli = Cli::try_parse_from(["sampo", "pre", "exit", "--package", "foo"]).unwrap();
         match cli.command {
             Commands::Pre(pre) => match pre.command {
-                PreCommands::Exit(args) => {
+                Some(PreCommands::Exit(args)) => {
                     assert_eq!(args.package, vec!["foo"]);
                 }
                 _ => panic!("wrong variant"),
             },
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_pre_without_subcommand() {
+        let cli = Cli::try_parse_from(["sampo", "pre"]).unwrap();
+        match cli.command {
+            Commands::Pre(args) => assert!(args.command.is_none()),
             _ => panic!("wrong variant"),
         }
     }

@@ -1,5 +1,6 @@
-use crate::cli::{PreCommands, PreEnterArgs, PreExitArgs};
-use crate::ui::select_packages;
+use crate::cli::{PreArgs, PreCommands, PreEnterArgs, PreExitArgs};
+use crate::ui::{prompt_io_error, prompt_nonempty_string, select_packages};
+use dialoguer::{Select, console::style, theme::ColorfulTheme};
 use sampo_core::{
     Config, VersionChange, discover_workspace, enter_prerelease,
     errors::{Result, SampoError},
@@ -8,10 +9,13 @@ use sampo_core::{
 };
 use std::collections::BTreeSet;
 
-pub fn run(command: &PreCommands) -> Result<()> {
-    match command {
-        PreCommands::Enter(args) => run_enter(args),
-        PreCommands::Exit(args) => run_exit(args),
+const LABEL_PROMPT: &str = "Pre-release label (alpha, beta, rc, etc.)";
+
+pub fn run(args: &PreArgs) -> Result<()> {
+    match &args.command {
+        Some(PreCommands::Enter(cmd)) => run_enter(cmd),
+        Some(PreCommands::Exit(cmd)) => run_exit(cmd),
+        None => run_interactive(),
     }
 }
 
@@ -33,11 +37,11 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
         return Err(SampoError::Prerelease("No packages selected.".to_string()));
     }
 
-    let label = args.label.trim();
-    let updates = enter_prerelease(&workspace.root, &selections, label)?;
+    let label = resolve_label(args.label.as_deref())?;
+    let updates = enter_prerelease(&workspace.root, &selections, &label)?;
     report_updates(
         "Applied pre-release label",
-        Some(label),
+        Some(label.as_str()),
         &selections,
         &updates,
     );
@@ -83,6 +87,25 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
     Ok(())
 }
 
+fn run_interactive() -> Result<()> {
+    match prompt_mode()? {
+        InteractiveMode::Enter => {
+            let label = prompt_nonempty_string(LABEL_PROMPT)?;
+            let args = PreEnterArgs {
+                label: Some(label),
+                package: Vec::new(),
+            };
+            run_enter(&args)
+        }
+        InteractiveMode::Exit => {
+            let args = PreExitArgs {
+                package: Vec::new(),
+            };
+            run_exit(&args)
+        }
+    }
+}
+
 fn visible_packages(workspace: &sampo_core::Workspace) -> Result<Vec<String>> {
     let config = Config::load(&workspace.root)?;
     Ok(
@@ -108,6 +131,40 @@ fn normalize_packages(names: Vec<String>) -> Vec<String> {
     set.into_iter().collect()
 }
 
+fn resolve_label(existing: Option<&str>) -> Result<String> {
+    if let Some(value) = existing {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    prompt_nonempty_string(LABEL_PROMPT)
+}
+
+enum InteractiveMode {
+    Enter,
+    Exit,
+}
+
+fn prompt_mode() -> Result<InteractiveMode> {
+    let theme = ColorfulTheme {
+        prompt_prefix: style("🧭".to_string()),
+        ..ColorfulTheme::default()
+    };
+    let options = ["Enter pre-release mode", "Exit pre-release mode"];
+    let selection = Select::with_theme(&theme)
+        .with_prompt("Choose pre-release action")
+        .items(&options)
+        .default(0)
+        .report(false)
+        .interact()
+        .map_err(prompt_io_error)?;
+    Ok(match selection {
+        0 => InteractiveMode::Enter,
+        1 => InteractiveMode::Exit,
+        _ => InteractiveMode::Enter,
+    })
+}
 fn report_updates(
     action: &str,
     label: Option<&str>,

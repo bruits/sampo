@@ -62,7 +62,7 @@ fn main() -> ExitCode {
             }
         }
         Commands::Pre(args) => {
-            if let Err(e) = prerelease::run(&args.command) {
+            if let Err(e) = prerelease::run(&args) {
                 eprintln!("Failed to manage pre-release versions: {e}");
                 return ExitCode::from(1);
             }
