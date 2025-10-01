@@ -57,7 +57,7 @@ When you cut pre-release versions (alpha, beta, rc), Sampo preserves the consume
 
 #### Changelog
 
-A generated file listing all changes for each package version released:
+At the root of each published package, a human-readable file listing all changes for each released version. Example:
 
 ```
 # Example
@@ -77,7 +77,9 @@ A generated file listing all changes for each package version released:
 ... previous entries ...
 ```
 
-Each published package has its own `CHANGELOG.md` file at the package root.
+Sampo generates changelog entries from consumed changesets and enriches them with commit hash links and author acknowledgments (can be disabled in config). 
+
+Any intro content or custom main header before the first `##` section is preserved. You can also manually edit the previously released entries, and Sampo will keep them intact.
 
 ### Usage
 
