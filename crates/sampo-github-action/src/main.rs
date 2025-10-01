@@ -9,6 +9,7 @@ use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
 use sampo_core::{Config as SampoConfig, current_branch};
 use semver::Version;
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -94,6 +95,12 @@ struct Config {
     /// Title to use for the Release PR (default: 'Release')
     pr_title: Option<String>,
 
+    /// Branch name to use for the Stabilize PR (default: 'stabilize/<branch>')
+    stabilize_pr_branch: Option<String>,
+
+    /// Title to use for the Stabilize PR (default: 'Release stable (<branch>)')
+    stabilize_pr_title: Option<String>,
+
     /// Create GitHub releases for newly created tags during publish
     create_github_release: bool,
 
@@ -149,6 +156,14 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let stabilize_pr_branch = std::env::var("INPUT_STABILIZE_PR_BRANCH")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let stabilize_pr_title = std::env::var("INPUT_STABILIZE_PR_TITLE")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         let create_github_release = std::env::var("INPUT_CREATE_GITHUB_RELEASE")
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
@@ -182,6 +197,8 @@ impl Config {
             base_branch,
             pr_branch,
             pr_title,
+            stabilize_pr_branch,
+            stabilize_pr_title,
             create_github_release,
             open_discussion,
             discussion_category,
@@ -271,8 +288,9 @@ fn execute_operations(
                     "Detected {} pending release package(s); preparing release PR.",
                     plan.releases.len()
                 );
+                let plan_requires_stabilize = plan_includes_prerelease(&plan.releases);
                 let github_client = create_github_client()?;
-                released = prepare_release_pr(
+                let release_prepared = prepare_release_pr(
                     workspace,
                     config,
                     repo_config,
@@ -280,6 +298,17 @@ fn execute_operations(
                     &github_client,
                     Some(plan),
                 )?;
+                let stabilize_prepared = if release_prepared && plan_requires_stabilize {
+                    prepare_stabilize_pr(workspace, config, repo_config, branch, &github_client)?
+                } else {
+                    if plan_requires_stabilize && !release_prepared {
+                        println!(
+                            "Skipped stabilize PR because release PR preparation did not complete."
+                        );
+                    }
+                    false
+                };
+                released = release_prepared || stabilize_prepared;
             } else {
                 println!(
                     "No pending changesets found on branch '{}'. Checking for merged releases to publish.",
@@ -377,11 +406,7 @@ fn prepare_release_pr(
         .base_branch
         .clone()
         .unwrap_or_else(|| branch.to_string());
-    let is_prerelease = releases.values().any(|(_, new_version)| {
-        Version::parse(new_version)
-            .map(|v| !v.pre.is_empty())
-            .unwrap_or(false)
-    });
+    let is_prerelease = plan_includes_prerelease(releases);
     let pr_branch = config
         .pr_branch
         .clone()
@@ -423,6 +448,7 @@ fn prepare_release_pr(
     // Check for changes and commit
     if !git::has_changes(workspace)? {
         println!("No file changes after release. Skipping commit/PR.");
+        git::git(&["checkout", branch], Some(workspace))?;
         return Ok(false);
     }
 
@@ -445,6 +471,9 @@ fn prepare_release_pr(
     // Create PR
     github_client.ensure_pull_request(&pr_branch, &base_branch, &pr_title, &pr_body)?;
 
+    // Switch back to the release branch's base to keep the workspace ready for subsequent steps
+    git::git(&["checkout", branch], Some(workspace))?;
+
     println!(
         "Prepared release PR with {} pending package(s).",
         releases.len()
@@ -453,8 +482,151 @@ fn prepare_release_pr(
     Ok(true)
 }
 
+fn prepare_stabilize_pr(
+    workspace: &Path,
+    config: &Config,
+    repo_config: &SampoConfig,
+    branch: &str,
+    github_client: &github::GitHubClient,
+) -> Result<bool> {
+    let prerelease_packages = collect_prerelease_packages(workspace)?;
+    if prerelease_packages.is_empty() {
+        println!("Workspace packages are already stable. Skipping stabilize PR.");
+        return Ok(false);
+    }
+
+    let base_branch = config
+        .base_branch
+        .clone()
+        .unwrap_or_else(|| branch.to_string());
+    let pr_branch = config
+        .stabilize_pr_branch
+        .clone()
+        .unwrap_or_else(|| default_stabilize_pr_branch(branch));
+    let pr_title = config
+        .stabilize_pr_title
+        .clone()
+        .unwrap_or_else(|| default_stabilize_pr_title(branch));
+
+    git::setup_bot_user(workspace)?;
+    git::git(&["fetch", "origin", "--prune"], Some(workspace))?;
+    git::git(
+        &[
+            "checkout",
+            "-B",
+            &pr_branch,
+            &format!("origin/{}", base_branch),
+        ],
+        Some(workspace),
+    )?;
+
+    let exit_changes = sampo::exit_prerelease(workspace, &prerelease_packages)?;
+    if exit_changes.is_empty() {
+        println!("No packages required exiting pre-release. Skipping stabilize PR.",);
+        git::git(
+            &["reset", "--hard", &format!("origin/{}", base_branch)],
+            Some(workspace),
+        )?;
+        git::git(&["checkout", branch], Some(workspace))?;
+        return Ok(false);
+    }
+    println!(
+        "Exited pre-release mode for {} package(s).",
+        exit_changes.len()
+    );
+
+    let plan = sampo::capture_release_plan(workspace)?;
+    if !plan.has_changes {
+        println!(
+            "No stable release changes detected after exiting pre-release. Skipping stabilize PR.",
+        );
+        git::git(
+            &["reset", "--hard", &format!("origin/{}", base_branch)],
+            Some(workspace),
+        )?;
+        git::git(&["checkout", branch], Some(workspace))?;
+        return Ok(false);
+    }
+
+    let pr_body = {
+        let body = sampo::build_release_pr_body(workspace, &plan.releases, repo_config)?;
+        if body.trim().is_empty() {
+            println!("No applicable package changes for stabilize PR body. Skipping PR creation.",);
+            git::git(
+                &["reset", "--hard", &format!("origin/{}", base_branch)],
+                Some(workspace),
+            )?;
+            git::git(&["checkout", branch], Some(workspace))?;
+            return Ok(false);
+        }
+        body
+    };
+
+    sampo::run_release(workspace, false, config.cargo_token.as_deref())?;
+
+    if !git::has_changes(workspace)? {
+        println!("No file changes after stabilize release. Skipping commit/PR.");
+        git::git(
+            &["reset", "--hard", &format!("origin/{}", base_branch)],
+            Some(workspace),
+        )?;
+        git::git(&["checkout", branch], Some(workspace))?;
+        return Ok(false);
+    }
+
+    git::git(&["add", "-A"], Some(workspace))?;
+    git::git(
+        &[
+            "commit",
+            "-m",
+            "chore(release): stabilize versions and changelogs",
+        ],
+        Some(workspace),
+    )?;
+
+    git::git(
+        &["push", "origin", &format!("HEAD:{}", pr_branch), "--force"],
+        Some(workspace),
+    )?;
+
+    github_client.ensure_pull_request(&pr_branch, &base_branch, &pr_title, &pr_body)?;
+    git::git(&["checkout", branch], Some(workspace))?;
+
+    println!(
+        "Prepared stabilize PR with {} pending package(s).",
+        plan.releases.len()
+    );
+
+    Ok(true)
+}
+
 fn sanitized_branch_name(branch: &str) -> String {
     branch.replace('/', "-")
+}
+
+fn plan_includes_prerelease(releases: &BTreeMap<String, (String, String)>) -> bool {
+    releases.values().any(|(_, new_version)| {
+        Version::parse(new_version)
+            .map(|version| !version.pre.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+fn collect_prerelease_packages(workspace: &Path) -> Result<Vec<String>> {
+    let ws = discover_workspace(workspace).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "workspace-discovery".to_string(),
+        message: e.to_string(),
+    })?;
+
+    let mut names: Vec<String> = ws
+        .members
+        .iter()
+        .filter(|info| info.version.contains('-'))
+        .map(|info| info.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 fn default_pr_branch(branch: &str, is_prerelease: bool) -> String {
@@ -472,6 +644,14 @@ fn default_pr_title(branch: &str, is_prerelease: bool) -> String {
     } else {
         format!("Release ({})", branch)
     }
+}
+
+fn default_stabilize_pr_branch(branch: &str) -> String {
+    format!("stabilize/{}", sanitized_branch_name(branch))
+}
+
+fn default_stabilize_pr_title(branch: &str) -> String {
+    format!("Release stable ({})", branch)
 }
 
 /// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
@@ -823,6 +1003,57 @@ mod tests {
     }
 
     #[test]
+    fn stabilize_branch_uses_dedicated_prefix() {
+        assert_eq!(default_stabilize_pr_branch("main"), "stabilize/main");
+        assert_eq!(
+            default_stabilize_pr_branch("feature/foo"),
+            "stabilize/feature-foo"
+        );
+    }
+
+    #[test]
+    fn stabilize_title_includes_branch_name() {
+        assert_eq!(default_stabilize_pr_title("main"), "Release stable (main)");
+        assert_eq!(
+            default_stabilize_pr_title("release-branch"),
+            "Release stable (release-branch)"
+        );
+    }
+
+    #[test]
+    fn collect_prerelease_packages_detects_members() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/foo\", \"crates/bar\"]\n",
+        )
+        .unwrap();
+
+        let foo_dir = root.join("crates/foo");
+        let bar_dir = root.join("crates/bar");
+        fs::create_dir_all(&foo_dir).unwrap();
+        fs::create_dir_all(&bar_dir).unwrap();
+
+        fs::write(
+            foo_dir.join("Cargo.toml"),
+            "[package]\nname=\"foo\"\nversion=\"0.2.0-beta.3\"\n",
+        )
+        .unwrap();
+
+        fs::write(
+            bar_dir.join("Cargo.toml"),
+            "[package]\nname=\"bar\"\nversion=\"1.4.0\"\n",
+        )
+        .unwrap();
+
+        let packages = collect_prerelease_packages(root).unwrap();
+        assert_eq!(packages, vec!["foo".to_string()]);
+    }
+
+    #[test]
     fn pre_release_branch_has_dedicated_prefix_and_title() {
         assert_eq!(default_pr_branch("next", true), "pre-release/next");
         assert_eq!(default_pr_title("next", true), "Pre-release (next)");
@@ -854,6 +1085,8 @@ mod tests {
             base_branch: None,
             pr_branch: None,
             pr_title: None,
+            stabilize_pr_branch: None,
+            stabilize_pr_title: None,
             create_github_release: false,
             open_discussion: false,
             discussion_category: None,

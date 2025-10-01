@@ -1,8 +1,9 @@
 use crate::error::{ActionError, Result};
 use sampo_core::format_markdown_list_item;
 use sampo_core::{
-    Bump, Config, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    Bump, Config, VersionChange, detect_all_dependency_explanations,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    exit_prerelease as core_exit_prerelease, get_commit_hash_for_path, load_changesets,
     run_publish as core_publish, run_release as core_release,
 };
 use std::collections::BTreeMap;
@@ -82,6 +83,14 @@ pub fn run_publish(
     })?;
 
     Ok(())
+}
+
+/// Exit pre-release mode for the provided packages.
+pub fn exit_prerelease(workspace: &Path, packages: &[String]) -> Result<Vec<VersionChange>> {
+    core_exit_prerelease(workspace, packages).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "exit-prerelease".to_string(),
+        message: format!("sampo pre exit failed: {}", e),
+    })
 }
 
 /// Compute a markdown PR body summarizing the pending release by crate,

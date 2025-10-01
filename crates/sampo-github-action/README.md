@@ -8,6 +8,7 @@ Not sure what Sampo is? Don't know where to start? Check out Sampo's [Getting St
 
 By default, the action runs in `auto` mode:
 - When changesets exist on the current release branch (see the `[git]` configuration), it prepares or refreshes that branch's release PR.
+- When the release plan targets pre-release versions, it also prepares a stabilize PR that exits pre-release mode and lines up the stable release for the same set of changesets.
 - When that PR is merged, it publishes your crates, creates tags, and can open GitHub Releases/Discussions. Can also mark Github Releases as « pre-release » for pre-releases branches.
 
 ```yaml
@@ -49,6 +50,8 @@ jobs:
 - `base-branch`: base branch used by the release PR that `auto` prepares (defaults to the detected git branch).
 - `pr-branch`: working branch used for the release PR that `auto` prepares (defaults to `release/<current-branch>` with `/` replaced by `-`).
 - `pr-title`: title of the release PR that `auto` prepares (defaults to `Release (<current-branch>)`).
+- `stabilize-pr-branch`: working branch used for the stabilize PR that `auto` prepares (defaults to `stabilize/<current-branch>` with `/` replaced by `-`).
+- `stabilize-pr-title`: title of the stabilize PR that `auto` prepares (defaults to `Release stable (<current-branch>)`).
 - `create-github-release`: if `true`, create GitHub Releases for new tags.
 - `open-discussion`: if `true`, create a GitHub Discussion for each created release (requires GitHub Releases).
 - `discussion-category`: preferred Discussions category slug when creating releases.
@@ -60,7 +63,7 @@ jobs:
 
 ### Outputs
 
-- `released`: `"true"` when release automation ran (release PR prepared or `sampo release` executed).
+- `released`: `"true"` when release automation ran (release PR prepared, stabilize PR prepared, or `sampo release` executed).
 - `published`: `"true"` when new tags were pushed (i.e. crates were published in non-dry runs).
 
 Can be used to gate subsequent steps, example:
