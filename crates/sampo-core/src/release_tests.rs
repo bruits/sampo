@@ -1020,6 +1020,7 @@ tempfile = "3.0"
         )
         .unwrap();
 
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         let result = workspace.run_release(false).unwrap();
 
         assert_eq!(result.released_packages.len(), 1);

@@ -1331,6 +1331,25 @@ fn update_dependency_table_line(line: &str, new_version: &str) -> String {
     line.to_string()
 }
 
+fn split_intro_and_versions(body: &str) -> (&str, &str) {
+    let mut offset = 0;
+    let len = body.len();
+    while offset < len {
+        if body[offset..].starts_with("## ") {
+            return body.split_at(offset);
+        }
+
+        match body[offset..].find('\n') {
+            Some(newline_offset) => {
+                offset += newline_offset + 1;
+            }
+            None => break,
+        }
+    }
+
+    (body, "")
+}
+
 fn update_changelog(
     crate_dir: &Path,
     package: &str,
@@ -1344,15 +1363,13 @@ fn update_changelog(
     } else {
         String::new()
     };
-    let mut body = existing.trim_start_matches('\u{feff}').to_string();
-    // Remove existing top package header if present
-    let package_header = format!("# {}", package);
-    if body.starts_with(&package_header) {
-        if let Some(idx) = body.find('\n') {
-            body = body[idx + 1..].to_string();
-        } else {
-            body.clear();
-        }
+    let cleaned = existing.trim_start_matches('\u{feff}');
+    let (intro_part, versions_part) = split_intro_and_versions(cleaned);
+    let mut intro = intro_part.to_string();
+    let mut versions_body = versions_part.to_string();
+
+    if intro.trim().is_empty() {
+        intro = format!("# {}\n\n", package);
     }
 
     // Parse and merge the current top section only if it's an unpublished section.
@@ -1381,7 +1398,7 @@ fn update_changelog(
     // If body starts with a previous top section (## ...), inspect its header.
     // If header == old_version => preserve it (do not merge or strip).
     // Else => parse and merge its bullets, then strip that section.
-    let trimmed = body.trim_start();
+    let trimmed = versions_body.trim_start();
     if trimmed.starts_with("## ") {
         // Extract first header line text
         let mut lines_iter = trimmed.lines();
@@ -1428,13 +1445,12 @@ fn update_changelog(
                 }
             }
 
-            body = remaining.to_string();
+            versions_body = remaining.to_string();
         }
     }
 
     // Build new aggregated top section
     let mut section = String::new();
-    section.push_str(&format!("# {}\n\n", package));
     section.push_str(&format!("## {}\n\n", new_version));
 
     if !merged_major.is_empty() {
@@ -1459,11 +1475,30 @@ fn update_changelog(
         section.push('\n');
     }
 
-    let combined = if body.trim().is_empty() {
-        section
-    } else {
-        format!("{}{}", section, body)
-    };
+    let mut combined = String::new();
+    combined.push_str(&intro);
+
+    if !combined.is_empty() && !combined.ends_with("\n\n") {
+        if combined.ends_with('\n') {
+            combined.push('\n');
+        } else {
+            combined.push_str("\n\n");
+        }
+    }
+
+    combined.push_str(&section);
+
+    if !versions_body.trim().is_empty() {
+        if !combined.ends_with("\n\n") {
+            if combined.ends_with('\n') {
+                combined.push('\n');
+            } else {
+                combined.push_str("\n\n");
+            }
+        }
+        combined.push_str(&versions_body);
+    }
+
     fs::write(&path, combined)?;
     Ok(())
 }
@@ -1499,6 +1534,49 @@ mod tests {
         let (out, changed) = update_dependency_version(input, "foo", "1.2.3").unwrap();
         assert_eq!(out.trim_end(), input.trim_end());
         assert!(!changed);
+    }
+
+    #[test]
+    fn preserves_changelog_intro_when_updating() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let crate_dir = temp.path();
+        let intro = "# Custom Changelog Header\n\nIntro text before versions.\n\n";
+        let existing = format!(
+            "{}## 1.0.0\n\n### Patch changes\n\n- Existing entry\n",
+            intro
+        );
+        fs::write(crate_dir.join("CHANGELOG.md"), existing).unwrap();
+
+        let entries = vec![("Add new feature".to_string(), Bump::Minor)];
+        update_changelog(crate_dir, "my-package", "1.0.0", "1.0.1", &entries).unwrap();
+
+        let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
+        assert!(updated.starts_with(intro));
+
+        let new_idx = updated.find("## 1.0.1").unwrap();
+        let old_idx = updated.find("## 1.0.0").unwrap();
+        assert!(new_idx >= intro.len());
+        assert!(new_idx < old_idx);
+        assert!(updated.contains("- Add new feature"));
+        assert!(updated.contains("- Existing entry"));
+    }
+
+    #[test]
+    fn creates_default_header_when_missing_intro() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let crate_dir = temp.path();
+
+        let entries = vec![("Initial release".to_string(), Bump::Major)];
+        update_changelog(crate_dir, "new-package", "0.1.0", "1.0.0", &entries).unwrap();
+
+        let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
+        assert!(updated.starts_with("# new-package\n\n## 1.0.0"));
     }
 
     #[test]
