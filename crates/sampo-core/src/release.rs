@@ -1340,8 +1340,8 @@ fn split_intro_and_versions(body: &str) -> (&str, &str) {
         }
 
         match body[offset..].find('\n') {
-            Some(rel) => {
-                offset += rel + 1;
+            Some(newline_offset) => {
+                offset += newline_offset + 1;
             }
             None => break,
         }
