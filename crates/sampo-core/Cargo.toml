@@ -23,6 +23,8 @@ tempfile = { version = "3.13", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["rt", "macros"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
+chrono = { version = "0.4", features = ["clock"] }
+chrono-tz = "0.8"
 
 [dev-dependencies]
 tempfile = "3.13"
