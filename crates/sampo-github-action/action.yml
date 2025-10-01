@@ -29,6 +29,12 @@ inputs:
   pr-title:
     description: "Title for the Release PR when auto prepares it"
     required: false
+  stabilize-pr-branch:
+    description: "Branch name for the Stabilize PR when auto prepares it"
+    required: false
+  stabilize-pr-title:
+    description: "Title for the Stabilize PR when auto prepares it"
+    required: false
   create-github-release:
     description: "If true, create GitHub releases for new tags when publishing"
     required: false
@@ -81,6 +87,8 @@ runs:
         INPUT_BASE_BRANCH: ${{ inputs['base-branch'] }}
         INPUT_PR_BRANCH: ${{ inputs['pr-branch'] }}
         INPUT_PR_TITLE: ${{ inputs['pr-title'] }}
+        INPUT_STABILIZE_PR_BRANCH: ${{ inputs['stabilize-pr-branch'] }}
+        INPUT_STABILIZE_PR_TITLE: ${{ inputs['stabilize-pr-title'] }}
         INPUT_CREATE_GITHUB_RELEASE: ${{ inputs['create-github-release'] }}
         INPUT_OPEN_DISCUSSION: ${{ inputs['open-discussion'] }}
         INPUT_DISCUSSION_CATEGORY: ${{ inputs['discussion-category'] }}
