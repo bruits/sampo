@@ -861,21 +861,33 @@ fn tag_is_prerelease(tag: &str) -> bool {
 }
 
 /// Extract the section that starts at "## <version>" until the next "## " or EOF
+///
+/// The leading "## <version>" header is stripped because the GitHub release title
+/// already conveys the version.
 fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
-    let needle = format!("## {}", version);
-    let start = text.find(&needle)?;
+    let mut collecting = false;
+    let mut collected = Vec::new();
 
-    // Find the next header starting at the line after our needle
-    let next = text[start + needle.len()..]
-        .find("\n## ")
-        .map(|ofs| start + needle.len() + ofs)
-        .unwrap_or_else(|| text.len());
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") {
+            let header = trimmed.trim_start_matches("## ").trim();
+            if collecting {
+                break;
+            }
+            if header == version {
+                collecting = true;
+                continue;
+            }
+        }
 
-    // Include from the beginning of the line with our needle
-    let head = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let slice = &text[head..next];
-    let body = slice.trim().to_string();
+        if collecting {
+            collected.push(line);
+        }
+    }
+
+    let body = collected.join("\n").trim().to_string();
     if body.is_empty() { None } else { Some(body) }
 }
 
@@ -1156,11 +1168,13 @@ mod tests {
         fs::write(&file, content).unwrap();
 
         let got = extract_changelog_section(&file, "1.2.3").unwrap();
-        assert!(got.starts_with("## 1.2.3"));
+        assert!(got.starts_with("### Patch changes"));
+        assert!(!got.contains("## 1.2.3"));
         assert!(got.contains("Fix: foo"));
 
         let older = extract_changelog_section(&file, "1.2.2").unwrap();
-        assert!(older.starts_with("## 1.2.2"));
+        assert!(older.starts_with("- Older"));
+        assert!(!older.contains("## 1.2.2"));
         assert!(!older.contains("1.2.3"));
     }
 }
