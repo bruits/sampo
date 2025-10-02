@@ -360,6 +360,51 @@ mod tests {
     }
 
     #[test]
+    fn switching_prerelease_label_restores_changesets() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "1.0.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+
+        workspace
+            .run_release(false)
+            .expect("initial alpha pre-release should succeed");
+
+        workspace.assert_crate_version("foo", "1.0.0-alpha.1");
+
+        let packages = vec![String::from("foo")];
+        let exit_updates = exit_prerelease(&workspace.root, &packages).unwrap();
+        assert!(!exit_updates.is_empty());
+
+        let restored = restore_preserved_changesets(&workspace.root).unwrap();
+        assert_eq!(restored, 1);
+
+        enter_prerelease(&workspace.root, &packages, "beta").unwrap();
+
+        workspace
+            .run_release(false)
+            .expect("beta pre-release should succeed");
+
+        workspace.assert_crate_version("foo", "1.0.0-beta.1");
+
+        let changelog_path = workspace
+            .crates
+            .get("foo")
+            .expect("crate should exist")
+            .join("CHANGELOG.md");
+        let changelog = fs::read_to_string(changelog_path).expect("changelog to exist");
+
+        assert!(
+            changelog.contains("## 1.0.0-beta.1"),
+            "expected changelog to include beta entry"
+        );
+        assert!(
+            changelog.contains("feat: alpha foundation"),
+            "expected changelog to include preserved alpha changes"
+        );
+    }
+
+    #[test]
     fn bumps_versions() {
         assert_eq!(bump_version("0.0.0", Bump::Patch).unwrap(), "0.0.1");
         assert_eq!(bump_version("0.1.2", Bump::Minor).unwrap(), "0.2.0");
