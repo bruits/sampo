@@ -5,6 +5,8 @@ use crate::{
     changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
+use chrono::{DateTime, FixedOffset, Local, Utc};
+use chrono_tz::Tz;
 use rustc_hash::FxHashSet;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::collections::{BTreeMap, BTreeSet};
@@ -922,6 +924,130 @@ fn print_release_plan(releases: &ReleasePlan) {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ReleaseDateTimezone {
+    Local,
+    Utc,
+    Offset(FixedOffset),
+    Named(Tz),
+}
+
+fn parse_release_date_timezone(spec: &str) -> Result<ReleaseDateTimezone> {
+    let trimmed = spec.trim();
+    let invalid_value = || {
+        SampoError::Config(format!(
+            "Unsupported changelog.release_date_timezone value '{trimmed}'. Use 'UTC', 'local', a fixed offset like '+02:00', or an IANA timezone name such as 'Europe/Paris'."
+        ))
+    };
+    if trimmed.is_empty() {
+        return Ok(ReleaseDateTimezone::Local);
+    }
+
+    if trimmed.eq_ignore_ascii_case("local") {
+        return Ok(ReleaseDateTimezone::Local);
+    }
+
+    if trimmed.eq_ignore_ascii_case("utc") || trimmed.eq_ignore_ascii_case("z") {
+        return Ok(ReleaseDateTimezone::Utc);
+    }
+
+    if let Ok(zone) = trimmed.parse::<Tz>() {
+        return Ok(ReleaseDateTimezone::Named(zone));
+    }
+
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 2 {
+        return Err(invalid_value());
+    }
+
+    let sign = match bytes[0] as char {
+        '+' => 1,
+        '-' => -1,
+        _ => return Err(invalid_value()),
+    };
+
+    let remainder = &trimmed[1..];
+    if remainder.is_empty() {
+        return Err(invalid_value());
+    }
+
+    let (hour_part, minute_part) = if let Some(idx) = remainder.find(':') {
+        let (h, m) = remainder.split_at(idx);
+        if m.len() < 2 {
+            return Err(invalid_value());
+        }
+        (h, &m[1..])
+    } else if remainder.len() == 4 {
+        (&remainder[..2], &remainder[2..])
+    } else if remainder.len() == 2 {
+        (remainder, "00")
+    } else {
+        return Err(invalid_value());
+    };
+
+    let hours: u32 = hour_part.parse().map_err(|_| invalid_value())?;
+    let minutes: u32 = minute_part.parse().map_err(|_| invalid_value())?;
+
+    if hours > 23 || minutes > 59 {
+        return Err(SampoError::Config(format!(
+            "Unsupported changelog.release_date_timezone value '{trimmed}'. Hours must be <= 23 and minutes <= 59."
+        )));
+    }
+
+    let total_seconds = (hours * 3600 + minutes * 60) as i32;
+    let offset = if sign >= 0 {
+        FixedOffset::east_opt(total_seconds)
+    } else {
+        FixedOffset::west_opt(total_seconds)
+    };
+
+    match offset {
+        Some(value) => Ok(ReleaseDateTimezone::Offset(value)),
+        None => Err(SampoError::Config(format!(
+            "Unsupported changelog.release_date_timezone value '{trimmed}'. Offset is out of range."
+        ))),
+    }
+}
+
+fn compute_release_date_display(cfg: &Config) -> Result<Option<String>> {
+    compute_release_date_display_with_now(cfg, Utc::now())
+}
+
+fn compute_release_date_display_with_now(
+    cfg: &Config,
+    now: DateTime<Utc>,
+) -> Result<Option<String>> {
+    if !cfg.changelog_show_release_date {
+        return Ok(None);
+    }
+
+    let format_str = cfg.changelog_release_date_format.trim();
+    if format_str.is_empty() {
+        return Ok(None);
+    }
+
+    let timezone_pref = cfg
+        .changelog_release_date_timezone
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(parse_release_date_timezone)
+        .transpose()?;
+
+    let tz = timezone_pref.unwrap_or(ReleaseDateTimezone::Local);
+
+    let formatted = match tz {
+        ReleaseDateTimezone::Local => now.with_timezone(&Local).format(format_str).to_string(),
+        ReleaseDateTimezone::Utc => now.format(format_str).to_string(),
+        ReleaseDateTimezone::Offset(offset) => {
+            now.with_timezone(&offset).format(format_str).to_string()
+        }
+        ReleaseDateTimezone::Named(zone) => now.with_timezone(&zone).format(format_str).to_string(),
+    };
+
+    Ok(Some(formatted))
+}
+
 /// Apply all releases: update manifests and changelogs
 fn apply_releases(
     releases: &ReleasePlan,
@@ -959,6 +1085,8 @@ fn apply_releases(
             .extend(explanations);
     }
 
+    let release_date_display = compute_release_date_display(cfg)?;
+
     // Apply updates for each release
     for (name, old, newv) in releases {
         let info = by_name.get(name.as_str()).unwrap();
@@ -971,7 +1099,14 @@ fn apply_releases(
         fs::write(&manifest_path, updated)?;
 
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
-        update_changelog(&info.path, name, old, newv, &messages)?;
+        update_changelog(
+            &info.path,
+            name,
+            old,
+            newv,
+            &messages,
+            release_date_display.as_deref(),
+        )?;
     }
 
     Ok(())
@@ -1350,12 +1485,27 @@ fn split_intro_and_versions(body: &str) -> (&str, &str) {
     (body, "")
 }
 
+fn header_matches_release_version(header_text: &str, version: &str) -> bool {
+    if header_text == version {
+        return true;
+    }
+
+    header_text
+        .strip_prefix(version)
+        .map(|rest| {
+            let trimmed = rest.trim_start();
+            trimmed.is_empty() || trimmed.starts_with('—') || trimmed.starts_with('-')
+        })
+        .unwrap_or(false)
+}
+
 fn update_changelog(
     crate_dir: &Path,
     package: &str,
     old_version: &str,
     new_version: &str,
     entries: &[(String, Bump)],
+    release_date_display: Option<&str>,
 ) -> Result<()> {
     let path = crate_dir.join("CHANGELOG.md");
     let existing = if path.exists() {
@@ -1405,7 +1555,7 @@ fn update_changelog(
         let header_line = lines_iter.next().unwrap_or("").trim();
         let header_text = header_line.trim_start_matches("## ").trim();
 
-        let is_published_top = header_text == old_version;
+        let is_published_top = header_matches_release_version(header_text, old_version);
 
         if !is_published_top {
             // Determine the extent of the first section in 'trimmed'
@@ -1451,7 +1601,10 @@ fn update_changelog(
 
     // Build new aggregated top section
     let mut section = String::new();
-    section.push_str(&format!("## {}\n\n", new_version));
+    match release_date_display.and_then(|d| (!d.trim().is_empty()).then_some(d)) {
+        Some(date) => section.push_str(&format!("## {new_version} — {date}\n\n")),
+        None => section.push_str(&format!("## {new_version}\n\n")),
+    }
 
     if !merged_major.is_empty() {
         section.push_str("### Major changes\n\n");
@@ -1527,6 +1680,7 @@ fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn skips_workspace_dependencies_when_updating() {
@@ -1545,13 +1699,21 @@ mod tests {
         let crate_dir = temp.path();
         let intro = "# Custom Changelog Header\n\nIntro text before versions.\n\n";
         let existing = format!(
-            "{}## 1.0.0\n\n### Patch changes\n\n- Existing entry\n",
+            "{}## 1.0.0 — 2024-06-19\n\n### Patch changes\n\n- Existing entry\n",
             intro
         );
         fs::write(crate_dir.join("CHANGELOG.md"), existing).unwrap();
 
         let entries = vec![("Add new feature".to_string(), Bump::Minor)];
-        update_changelog(crate_dir, "my-package", "1.0.0", "1.0.1", &entries).unwrap();
+        update_changelog(
+            crate_dir,
+            "my-package",
+            "1.0.0",
+            "1.0.1",
+            &entries,
+            Some("2024-06-20"),
+        )
+        .unwrap();
 
         let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
         assert!(updated.starts_with(intro));
@@ -1560,6 +1722,7 @@ mod tests {
         let old_idx = updated.find("## 1.0.0").unwrap();
         assert!(new_idx >= intro.len());
         assert!(new_idx < old_idx);
+        assert!(updated.contains("## 1.0.1 — 2024-06-20"));
         assert!(updated.contains("- Add new feature"));
         assert!(updated.contains("- Existing entry"));
     }
@@ -1573,10 +1736,128 @@ mod tests {
         let crate_dir = temp.path();
 
         let entries = vec![("Initial release".to_string(), Bump::Major)];
-        update_changelog(crate_dir, "new-package", "0.1.0", "1.0.0", &entries).unwrap();
+        update_changelog(crate_dir, "new-package", "0.1.0", "1.0.0", &entries, None).unwrap();
 
         let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
         assert!(updated.starts_with("# new-package\n\n## 1.0.0"));
+    }
+
+    #[test]
+    fn header_matches_release_version_handles_suffixes() {
+        assert!(header_matches_release_version("1.0.0", "1.0.0"));
+        assert!(header_matches_release_version(
+            "1.0.0 — 2024-06-20",
+            "1.0.0"
+        ));
+        assert!(header_matches_release_version("1.0.0-2024-06-20", "1.0.0"));
+        assert!(!header_matches_release_version(
+            "1.0.1 — 2024-06-20",
+            "1.0.0"
+        ));
+    }
+
+    #[test]
+    fn update_changelog_skips_blank_release_date() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp = tempdir().unwrap();
+        let crate_dir = temp.path();
+        let entries = vec![("Bug fix".to_string(), Bump::Patch)];
+
+        update_changelog(
+            crate_dir,
+            "blank-date",
+            "0.1.0",
+            "0.1.1",
+            &entries,
+            Some("   "),
+        )
+        .unwrap();
+
+        let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
+        assert!(updated.contains("## 0.1.1\n"));
+        assert!(!updated.contains("—"));
+    }
+
+    #[test]
+    fn parse_release_date_timezone_accepts_utc() {
+        match parse_release_date_timezone("UTC").unwrap() {
+            ReleaseDateTimezone::Utc => {}
+            _ => panic!("Expected UTC timezone"),
+        }
+    }
+
+    #[test]
+    fn parse_release_date_timezone_accepts_offset() {
+        match parse_release_date_timezone("+05:45").unwrap() {
+            ReleaseDateTimezone::Offset(offset) => {
+                assert_eq!(offset.local_minus_utc(), 5 * 3600 + 45 * 60);
+            }
+            _ => panic!("Expected fixed offset"),
+        }
+    }
+
+    #[test]
+    fn parse_release_date_timezone_rejects_invalid() {
+        let err = parse_release_date_timezone("Not/AZone").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("release_date_timezone"));
+    }
+
+    #[test]
+    fn compute_release_date_display_uses_utc() {
+        let cfg = Config {
+            changelog_release_date_format: "%Z".to_string(),
+            changelog_release_date_timezone: Some("UTC".to_string()),
+            ..Default::default()
+        };
+
+        let now = Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
+        let display = compute_release_date_display_with_now(&cfg, now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(display, "UTC");
+    }
+
+    #[test]
+    fn parse_release_date_timezone_accepts_named_zone() {
+        match parse_release_date_timezone("Europe/Paris").unwrap() {
+            ReleaseDateTimezone::Named(zone) => {
+                assert_eq!(zone, chrono_tz::Europe::Paris);
+            }
+            _ => panic!("Expected named timezone"),
+        }
+    }
+
+    #[test]
+    fn compute_release_date_display_uses_offset() {
+        let cfg = Config {
+            changelog_release_date_format: "%z".to_string(),
+            changelog_release_date_timezone: Some("-03:30".to_string()),
+            ..Default::default()
+        };
+
+        let now = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let display = compute_release_date_display_with_now(&cfg, now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(display, "-0330");
+    }
+
+    #[test]
+    fn compute_release_date_display_uses_named_zone() {
+        let cfg = Config {
+            changelog_release_date_format: "%Z".to_string(),
+            changelog_release_date_timezone: Some("America/New_York".to_string()),
+            ..Default::default()
+        };
+
+        let now = Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap();
+        let display = compute_release_date_display_with_now(&cfg, now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(display, "EST");
     }
 
     #[test]

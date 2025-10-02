@@ -62,13 +62,13 @@ At the root of each published package, a human-readable file listing all changes
 ```
 # Example
 
-## 0.2.0
+## 0.2.0 — 2024-06-20
 
 ### Minor changes
 
 - [abcdefg](link/to/commit) A helpful description of the changes. — Thanks @user!
 
-## 0.1.1
+## 0.1.1 — 2024-05-12
 
 ### Patch changes
 
@@ -149,6 +149,12 @@ At runtime you can override the detected branch with the `SAMPO_RELEASE_BRANCH` 
 `show_commit_hash`: Whether to include commit hash links in changelog entries (default: `true`). When enabled, changelog entries include clickable commit hash links that point to the commit on GitHub.
 
 `show_acknowledgments`: Whether to include author acknowledgments in changelog entries (default: `true`). When enabled, changelog entries include author acknowledgments with special messages for first-time contributors.
+
+`show_release_date`: Whether to append a release date to each changelog heading (default: `true`).
+
+`release_date_format`: [`chrono` strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) pattern used for the heading date (default: `%Y-%m-%d`).
+
+`release_date_timezone`: Optional timezone for the stamp. Accepts `local`, `UTC`, numeric offsets such as `+02:00`, or any IANA name (for example `Europe/Paris`).
 
 ### `[packages]` section
 

@@ -11,6 +11,9 @@ pub struct Config {
     pub github_repository: Option<String>,
     pub changelog_show_commit_hash: bool,
     pub changelog_show_acknowledgments: bool,
+    pub changelog_show_release_date: bool,
+    pub changelog_release_date_format: String,
+    pub changelog_release_date_timezone: Option<String>,
     pub fixed_dependencies: Vec<Vec<String>>,
     pub linked_dependencies: Vec<Vec<String>>,
     pub ignore_unpublished: bool,
@@ -26,6 +29,9 @@ impl Default for Config {
             github_repository: None,
             changelog_show_commit_hash: true,
             changelog_show_acknowledgments: true,
+            changelog_show_release_date: true,
+            changelog_release_date_format: "%Y-%m-%d".to_string(),
+            changelog_release_date_timezone: None,
             fixed_dependencies: Vec::new(),
             linked_dependencies: Vec::new(),
             ignore_unpublished: false,
@@ -65,19 +71,35 @@ impl Config {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let changelog_show_commit_hash = value
-            .get("changelog")
-            .and_then(|v| v.as_table())
+        let changelog_table = value.get("changelog").and_then(|v| v.as_table());
+
+        let changelog_show_commit_hash = changelog_table
             .and_then(|t| t.get("show_commit_hash"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let changelog_show_acknowledgments = value
-            .get("changelog")
-            .and_then(|v| v.as_table())
+        let changelog_show_acknowledgments = changelog_table
             .and_then(|t| t.get("show_acknowledgments"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+
+        let changelog_show_release_date = changelog_table
+            .and_then(|t| t.get("show_release_date"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        let changelog_release_date_format = changelog_table
+            .and_then(|t| t.get("release_date_format"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "%Y-%m-%d".to_string());
+
+        let changelog_release_date_timezone = changelog_table
+            .and_then(|t| t.get("release_date_timezone"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         let fixed_dependencies = value
             .get("packages")
@@ -263,6 +285,9 @@ impl Config {
             github_repository,
             changelog_show_commit_hash,
             changelog_show_acknowledgments,
+            changelog_show_release_date,
+            changelog_release_date_format,
+            changelog_release_date_timezone,
             fixed_dependencies,
             linked_dependencies,
             ignore_unpublished,
@@ -305,6 +330,9 @@ mod tests {
         assert!(config.github_repository.is_none());
         assert!(config.changelog_show_commit_hash);
         assert!(config.changelog_show_acknowledgments);
+        assert!(config.changelog_show_release_date);
+        assert_eq!(config.changelog_release_date_format, "%Y-%m-%d");
+        assert!(config.changelog_release_date_timezone.is_none());
         assert_eq!(config.default_branch(), "main");
         assert!(config.is_release_branch("main"));
         assert_eq!(config.git_release_branches, Vec::<String>::new());
@@ -316,13 +344,19 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\n",
+            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nshow_release_date = false\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
         )
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
         assert!(!config.changelog_show_commit_hash);
         assert!(!config.changelog_show_acknowledgments);
+        assert!(!config.changelog_show_release_date);
+        assert_eq!(config.changelog_release_date_format, "%d/%m/%Y");
+        assert_eq!(
+            config.changelog_release_date_timezone.as_deref(),
+            Some("+02:30")
+        );
     }
 
     #[test]
@@ -351,6 +385,9 @@ mod tests {
 
         let config = Config::load(temp.path()).unwrap();
         assert!(!config.changelog_show_commit_hash);
+        assert!(config.changelog_show_release_date);
+        assert_eq!(config.changelog_release_date_format, "%Y-%m-%d");
+        assert!(config.changelog_release_date_timezone.is_none());
         assert_eq!(config.github_repository.as_deref(), Some("owner/repo"));
     }
 
