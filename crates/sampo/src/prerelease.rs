@@ -6,7 +6,9 @@ use sampo_core::{
     errors::{Result, SampoError},
     exit_prerelease,
     filters::list_visible_packages,
+    restore_preserved_changesets,
 };
+use semver::Version;
 use std::collections::BTreeSet;
 
 const LABEL_PROMPT: &str = "Pre-release label (alpha, beta, rc, etc.)";
@@ -38,6 +40,25 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
     }
 
     let label = resolve_label(args.label.as_deref())?;
+
+    let packages_to_reset = packages_requiring_label_switch(&workspace, &selections, &label)?;
+    if !packages_to_reset.is_empty() {
+        let exit_updates = exit_prerelease(&workspace.root, &packages_to_reset)?;
+        if !exit_updates.is_empty() {
+            report_updates(
+                "Restored stable versions",
+                None,
+                &packages_to_reset,
+                &exit_updates,
+            );
+        }
+
+        let restored = restore_preserved_changesets(&workspace.root)?;
+        if restored > 0 {
+            println!("Restored {restored} preserved changeset(s) from previous pre-release phase.");
+        }
+    }
+
     let updates = enter_prerelease(&workspace.root, &selections, &label)?;
     report_updates(
         "Applied pre-release label",
@@ -139,6 +160,45 @@ fn resolve_label(existing: Option<&str>) -> Result<String> {
         }
     }
     prompt_nonempty_string(LABEL_PROMPT)
+}
+
+fn packages_requiring_label_switch(
+    workspace: &sampo_core::Workspace,
+    selections: &[String],
+    desired_label: &str,
+) -> Result<Vec<String>> {
+    let desired_base = normalize_label(desired_label);
+    let mut to_reset = Vec::new();
+
+    for name in selections {
+        if let Some(info) = workspace.members.iter().find(|info| info.name == *name) {
+            let version = Version::parse(&info.version).map_err(|err| {
+                SampoError::Prerelease(format!(
+                    "Invalid semantic version for package '{}': {}",
+                    info.name, err
+                ))
+            })?;
+
+            if version.pre.is_empty() {
+                continue;
+            }
+
+            let current_base = normalize_label(version.pre.as_str());
+            if !current_base.is_empty() && current_base != desired_base {
+                to_reset.push(name.clone());
+            }
+        }
+    }
+
+    Ok(to_reset)
+}
+
+fn normalize_label(label: &str) -> String {
+    label
+        .split('.')
+        .find(|segment| segment.chars().any(|ch| !ch.is_ascii_digit()))
+        .unwrap_or(label)
+        .to_ascii_lowercase()
 }
 
 enum InteractiveMode {
