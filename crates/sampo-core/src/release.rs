@@ -1372,17 +1372,15 @@ fn is_table_dependency_line(trimmed: &str) -> bool {
 }
 
 fn classify_dependency_section(section_name: &str) -> Option<DependencySection> {
-    match section_name {
-        "workspace.dependencies"
-        | "workspace.dev-dependencies"
-        | "workspace.build-dependencies" => Some(DependencySection::Workspace),
-        _ if section_name.starts_with("dependencies")
-            || section_name.starts_with("dev-dependencies")
-            || section_name.starts_with("build-dependencies") =>
-        {
-            Some(DependencySection::Standard)
-        }
-        _ => None,
+    if section_name == "workspace.dependencies" {
+        Some(DependencySection::Workspace)
+    } else if section_name.starts_with("dependencies")
+        || section_name.starts_with("dev-dependencies")
+        || section_name.starts_with("build-dependencies")
+    {
+        Some(DependencySection::Standard)
+    } else {
+        None
     }
 }
 
@@ -1771,23 +1769,6 @@ mod tests {
         let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
         assert_eq!(out.trim_end(), input.trim_end());
         assert!(!changed);
-    }
-
-    #[test]
-    fn updates_workspace_dev_dependency_with_explicit_version() {
-        let input = "[workspace.dev-dependencies]\nfoo = { version = \"0.1.0\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
-        assert!(changed);
-        assert!(out.contains("version = \"0.2.0\""));
-    }
-
-    #[test]
-    fn updates_workspace_build_dependency_with_explicit_version() {
-        let input =
-            "[workspace.build-dependencies]\nfoo = { version = \"0.1.0\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
-        assert!(changed);
-        assert!(out.contains("version = \"0.2.0\""));
     }
 
     #[test]
