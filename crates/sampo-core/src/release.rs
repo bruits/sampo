@@ -525,7 +525,10 @@ fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
     })
 }
 
-fn restore_prerelease_changesets(prerelease_dir: &Path, changesets_dir: &Path) -> Result<()> {
+pub(crate) fn restore_prerelease_changesets(
+    prerelease_dir: &Path,
+    changesets_dir: &Path,
+) -> Result<()> {
     if !prerelease_dir.exists() {
         return Ok(());
     }
@@ -578,7 +581,7 @@ fn finalize_consumed_changesets(
     Ok(())
 }
 
-fn move_changeset_file(source: &Path, dest_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn move_changeset_file(source: &Path, dest_dir: &Path) -> Result<PathBuf> {
     if !source.exists() {
         return Ok(source.to_path_buf());
     }

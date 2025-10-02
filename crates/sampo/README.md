@@ -53,8 +53,6 @@ A helpful description of the change, to be read by your users.
 
 Pending changesets are stored in the `.sampo/changesets` directory.
 
-When you cut pre-release versions (alpha, beta, rc), Sampo preserves the consumed files by moving them into `.sampo/prerelease/`; they are automatically restored for the eventual stable release.
-
 #### Changelog
 
 At the root of each published package, a human-readable file listing all changes for each released version. Example:
@@ -101,9 +99,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 
 Run `sampo pre` to manage pre-release versions for one or more packages.
 
-While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode, any preserved changesets are restored back to `.sampo/changesets/`, so they can be consumed in the next stable release.
-
-You can switch between different pre-release labels (for example, from `alpha` to `beta`) at any time without losing changesets.
+While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual, Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
 
 ## Configuration
 

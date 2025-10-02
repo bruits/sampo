@@ -1,6 +1,9 @@
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
-use crate::release::{parse_version_string, regenerate_lockfile, update_manifest_versions};
+use crate::release::{
+    parse_version_string, regenerate_lockfile, restore_prerelease_changesets,
+    update_manifest_versions,
+};
 use crate::types::{CrateInfo, Workspace};
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,6 +49,40 @@ pub fn exit_prerelease(root: &Path, packages: &[String]) -> Result<Vec<VersionCh
 
     apply_version_updates(&workspace, &new_versions)?;
     Ok(changes)
+}
+
+/// Restore any preserved changesets from a prior pre-release phase back into the
+/// workspace changeset directory.
+///
+/// Returns the number of files moved. When no preserved changesets are present,
+/// the function behaves as a no-op.
+pub fn restore_preserved_changesets(root: &Path) -> Result<usize> {
+    let prerelease_dir = root.join(".sampo").join("prerelease");
+    if !prerelease_dir.exists() {
+        return Ok(0);
+    }
+
+    let changesets_dir = root.join(".sampo").join("changesets");
+    let mut preserved = 0usize;
+
+    for entry in fs::read_dir(&prerelease_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        preserved += 1;
+    }
+
+    if preserved == 0 {
+        return Ok(0);
+    }
+
+    restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
+    Ok(preserved)
 }
 
 fn resolve_targets<'a>(
@@ -351,5 +388,35 @@ mod tests {
             bar_manifest.contains("version = \"2.3.4\"")
                 || bar_manifest.contains("version=\"2.3.4\"")
         );
+    }
+
+    #[test]
+    fn restore_preserved_changesets_moves_files() {
+        let temp = init_workspace();
+        let root = temp.path();
+
+        let prerelease_dir = root.join(".sampo/prerelease");
+        fs::create_dir_all(&prerelease_dir).unwrap();
+        fs::write(prerelease_dir.join("change.md"), "---\nfoo: minor\n---\n").unwrap();
+
+        let restored = restore_preserved_changesets(root).unwrap();
+        assert_eq!(restored, 1);
+
+        let changesets_dir = root.join(".sampo/changesets");
+        let restored_entries = fs::read_dir(&changesets_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(restored_entries.len(), 1);
+        assert!(
+            restored_entries[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("change")
+        );
+
+        let remaining = fs::read_dir(&prerelease_dir).unwrap().collect::<Vec<_>>();
+        assert!(remaining.is_empty());
     }
 }
