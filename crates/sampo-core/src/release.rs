@@ -1358,6 +1358,27 @@ fn update_package_version(input: &str, new_version: &str) -> Result<String> {
 }
 
 /// Update the version of a specific dependency across all dependency sections
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DependencySection {
+    Standard,
+    Workspace,
+}
+
+fn classify_dependency_section(section_name: &str) -> Option<DependencySection> {
+    match section_name {
+        "workspace.dependencies"
+        | "workspace.dev-dependencies"
+        | "workspace.build-dependencies" => Some(DependencySection::Workspace),
+        _ if section_name.starts_with("dependencies")
+            || section_name.starts_with("dev-dependencies")
+            || section_name.starts_with("build-dependencies") =>
+        {
+            Some(DependencySection::Standard)
+        }
+        _ => None,
+    }
+}
+
 fn update_dependency_version(
     input: &str,
     dep_name: &str,
@@ -1366,7 +1387,7 @@ fn update_dependency_version(
     let lines: Vec<&str> = input.lines().collect();
     let mut result_lines = Vec::new();
     let mut was_updated = false;
-    let mut current_section: Option<String> = None;
+    let mut current_section: Option<DependencySection> = None;
 
     for line in lines {
         let trimmed = line.trim();
@@ -1374,20 +1395,13 @@ fn update_dependency_version(
         // Track which section we're in
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             let section_name = trimmed.trim_start_matches('[').trim_end_matches(']');
-            if section_name.starts_with("dependencies")
-                || section_name.starts_with("dev-dependencies")
-                || section_name.starts_with("build-dependencies")
-            {
-                current_section = Some(section_name.to_string());
-            } else {
-                current_section = None;
-            }
+            current_section = classify_dependency_section(section_name);
             result_lines.push(line.to_string());
             continue;
         }
 
         // Check if this line defines our target dependency
-        if current_section.is_some() {
+        if let Some(section) = current_section {
             if trimmed.starts_with(&format!("{} =", dep_name))
                 || trimmed.starts_with(&format!("\"{}\" =", dep_name))
             {
@@ -1398,6 +1412,29 @@ fn update_dependency_version(
                 if trimmed.contains("workspace = true") || trimmed.contains("workspace=true") {
                     // Workspace-based dependency - leave unchanged
                     result_lines.push(line.to_string());
+                } else if section == DependencySection::Workspace {
+                    match extract_dependency_version(line) {
+                        Some(version) if version != "*" && Version::parse(version).is_ok() => {
+                            if trimmed.contains("{ path =") || trimmed.contains("{path =") {
+                                let updated_line = update_dependency_table_line(line, new_version);
+                                result_lines.push(updated_line);
+                                was_updated = true;
+                            } else if trimmed.contains("version =") {
+                                let updated_line = update_dependency_table_line(line, new_version);
+                                result_lines.push(updated_line);
+                                was_updated = true;
+                            } else {
+                                result_lines.push(format!(
+                                    "{}{} = {{ version = \"{}\" }}",
+                                    spaces, dep_name, new_version
+                                ));
+                                was_updated = true;
+                            }
+                        }
+                        _ => {
+                            result_lines.push(line.to_string());
+                        }
+                    }
                 } else if trimmed.contains("{ path =") || trimmed.contains("{path =") {
                     // It's a table format with path - preserve path, update version
                     let updated_line = update_dependency_table_line(line, new_version);
@@ -1425,6 +1462,32 @@ fn update_dependency_version(
     }
 
     Ok((result_lines.join("\n"), was_updated))
+}
+
+fn extract_dependency_version(line: &str) -> Option<&str> {
+    if let Some(version_start) = line.find("version") {
+        let after_version = &line[version_start + "version".len()..];
+        if let Some(equals_pos) = after_version.find('=') {
+            let value = after_version[equals_pos + 1..].trim();
+            if value.starts_with('"') {
+                if let Some(quote_end) = value[1..].find('"') {
+                    return Some(&value[1..1 + quote_end]);
+                }
+            }
+        }
+    } else {
+        let trimmed = line.trim();
+        if let Some(equals_pos) = trimmed.find('=') {
+            let value = trimmed[equals_pos + 1..].trim();
+            if value.starts_with('"') {
+                if let Some(quote_end) = value[1..].find('"') {
+                    return Some(&value[1..1 + quote_end]);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Update the version field in a dependency table line
@@ -1688,6 +1751,47 @@ mod tests {
         let (out, changed) = update_dependency_version(input, "foo", "1.2.3").unwrap();
         assert_eq!(out.trim_end(), input.trim_end());
         assert!(!changed);
+    }
+
+    #[test]
+    fn updates_workspace_dependency_with_explicit_version() {
+        let input = "[workspace.dependencies]\nfoo = { version = \"0.1.0\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
+        assert!(changed);
+        assert!(out.contains("version = \"0.2.0\""));
+    }
+
+    #[test]
+    fn skips_workspace_dependency_with_wildcard_version() {
+        let input = "[workspace.dependencies]\nfoo = { version = \"*\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
+        assert_eq!(out.trim_end(), input.trim_end());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn skips_workspace_dependency_without_version() {
+        let input = "[workspace.dependencies]\nfoo = { path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
+        assert_eq!(out.trim_end(), input.trim_end());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn updates_workspace_dev_dependency_with_explicit_version() {
+        let input = "[workspace.dev-dependencies]\nfoo = { version = \"0.1.0\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
+        assert!(changed);
+        assert!(out.contains("version = \"0.2.0\""));
+    }
+
+    #[test]
+    fn updates_workspace_build_dependency_with_explicit_version() {
+        let input =
+            "[workspace.build-dependencies]\nfoo = { version = \"0.1.0\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
+        assert!(changed);
+        assert!(out.contains("version = \"0.2.0\""));
     }
 
     #[test]
