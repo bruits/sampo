@@ -1,5 +1,6 @@
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_crate;
+use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 use crate::{
     changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
@@ -8,7 +9,7 @@ use crate::{
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
 use rustc_hash::FxHashSet;
-use semver::{BuildMetadata, Prerelease, Version, VersionReq};
+use semver::{BuildMetadata, Prerelease, Version};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -1070,6 +1071,8 @@ fn apply_releases(
         new_version_by_name.insert(name.clone(), newv.clone());
     }
 
+    let manifest_metadata = ManifestMetadata::load(ws)?;
+
     // Build releases map for dependency explanations
     let releases_map: BTreeMap<String, (String, String)> = releases
         .iter()
@@ -1097,8 +1100,13 @@ fn apply_releases(
         let text = fs::read_to_string(&manifest_path)?;
 
         // Update manifest versions
-        let (updated, _dep_updates) =
-            update_manifest_versions(&text, Some(newv.as_str()), ws, &new_version_by_name)?;
+        let (updated, _dep_updates) = update_manifest_versions(
+            &manifest_path,
+            &text,
+            Some(newv.as_str()),
+            &new_version_by_name,
+            Some(&manifest_metadata),
+        )?;
         fs::write(&manifest_path, updated)?;
 
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
@@ -1285,298 +1293,6 @@ pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String
         version.pre = base_pre;
         Ok(version.to_string())
     }
-}
-
-/// Update a crate manifest, setting the crate version (if provided) and retargeting
-/// internal dependency version requirements to the latest planned versions.
-/// Returns the updated TOML string along with a list of (dep_name, new_version) applied.
-///
-/// This implementation preserves the original formatting and only modifies the necessary lines
-/// to avoid unwanted reformatting of the entire Cargo.toml file.
-pub fn update_manifest_versions(
-    input: &str,
-    new_pkg_version: Option<&str>,
-    ws: &Workspace,
-    new_version_by_name: &BTreeMap<String, String>,
-) -> Result<(String, Vec<(String, String)>)> {
-    let mut result = input.to_string();
-    let mut applied: Vec<(String, String)> = Vec::new();
-
-    // Update package version if provided
-    if let Some(new_version) = new_pkg_version {
-        result = update_package_version(&result, new_version)?;
-    }
-
-    // Update internal workspace dependency versions
-    let workspace_crates: BTreeSet<String> = ws.members.iter().map(|c| c.name.clone()).collect();
-    for (crate_name, new_version) in new_version_by_name {
-        if workspace_crates.contains(crate_name) {
-            let (updated_result, was_updated) =
-                update_dependency_version(&result, crate_name, new_version)?;
-            result = updated_result;
-            if was_updated {
-                applied.push((crate_name.clone(), new_version.clone()));
-            }
-        }
-    }
-
-    Ok((result, applied))
-}
-
-/// Update the package version in the [package] section
-fn update_package_version(input: &str, new_version: &str) -> Result<String> {
-    let lines: Vec<&str> = input.lines().collect();
-    let mut result_lines = Vec::new();
-    let mut in_package_section = false;
-
-    for line in lines {
-        let trimmed = line.trim();
-
-        // Check if we're entering the [package] section
-        if trimmed == "[package]" {
-            in_package_section = true;
-            result_lines.push(line.to_string());
-            continue;
-        }
-
-        // Check if we're leaving the [package] section
-        if in_package_section && trimmed.starts_with('[') && trimmed != "[package]" {
-            in_package_section = false;
-        }
-
-        // Update version line if we're in the [package] section
-        if in_package_section && trimmed.starts_with("version") {
-            // Extract the indentation and update the version
-            let indent = line.len() - line.trim_start().len();
-            let spaces = " ".repeat(indent);
-
-            // Try to preserve the original quoting style
-            result_lines.push(format!("{}version = \"{}\"", spaces, new_version));
-        } else {
-            result_lines.push(line.to_string());
-        }
-    }
-
-    Ok(result_lines.join("\n"))
-}
-
-/// Update the version of a specific dependency across all dependency sections
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DependencySection {
-    Standard,
-    Workspace,
-}
-
-fn is_table_dependency_line(trimmed: &str) -> bool {
-    trimmed.contains("{ path =")
-        || trimmed.contains("{path =")
-        || trimmed.contains("version =")
-        || trimmed.contains("version=")
-}
-
-fn classify_dependency_section(section_name: &str) -> Option<DependencySection> {
-    if section_name == "workspace.dependencies" {
-        Some(DependencySection::Workspace)
-    } else if section_name.starts_with("dependencies")
-        || section_name.starts_with("dev-dependencies")
-        || section_name.starts_with("build-dependencies")
-    {
-        Some(DependencySection::Standard)
-    } else {
-        None
-    }
-}
-
-fn update_dependency_version(
-    input: &str,
-    dep_name: &str,
-    new_version: &str,
-) -> Result<(String, bool)> {
-    let lines: Vec<&str> = input.lines().collect();
-    let mut result_lines = Vec::new();
-    let mut was_updated = false;
-    let mut current_section: Option<DependencySection> = None;
-
-    for line in lines {
-        let trimmed = line.trim();
-
-        // Track which section we're in
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            let section_name = trimmed.trim_start_matches('[').trim_end_matches(']');
-            current_section = classify_dependency_section(section_name);
-            result_lines.push(line.to_string());
-            continue;
-        }
-
-        // Check if this line defines our target dependency
-        if let Some(section) = current_section {
-            if trimmed.starts_with(&format!("{} =", dep_name))
-                || trimmed.starts_with(&format!("\"{}\" =", dep_name))
-            {
-                // This is a dependency line for our target crate
-                let indent = line.len() - line.trim_start().len();
-                let spaces = " ".repeat(indent);
-
-                if trimmed.contains("workspace = true") || trimmed.contains("workspace=true") {
-                    // Workspace-based dependency - leave unchanged
-                    result_lines.push(line.to_string());
-                } else if section == DependencySection::Workspace {
-                    match extract_dependency_version(line)
-                        .and_then(|existing| {
-                            compute_workspace_dependency_version(existing, new_version)
-                        })
-                    {
-                        Some(resolved_version) => {
-                            if is_table_dependency_line(trimmed) {
-                                let updated_line =
-                                    update_dependency_table_line(line, &resolved_version);
-                                result_lines.push(updated_line);
-                                was_updated = true;
-                            } else {
-                                result_lines.push(format!(
-                                    "{}{} = {{ version = \"{}\" }}",
-                                    spaces, dep_name, resolved_version
-                                ));
-                                was_updated = true;
-                            }
-                        }
-                        None => {
-                            result_lines.push(line.to_string());
-                        }
-                    }
-                } else if is_table_dependency_line(trimmed) {
-                    // It's a table or inline format - update version where applicable
-                    let updated_line = update_dependency_table_line(line, new_version);
-                    result_lines.push(updated_line);
-                    was_updated = true;
-                } else {
-                    // It's likely a simple string version, convert to table with version
-                    result_lines.push(format!(
-                        "{}{} = {{ version = \"{}\" }}",
-                        spaces, dep_name, new_version
-                    ));
-                    was_updated = true;
-                }
-            } else {
-                result_lines.push(line.to_string());
-            }
-        } else {
-            result_lines.push(line.to_string());
-        }
-    }
-
-    Ok((result_lines.join("\n"), was_updated))
-}
-
-fn extract_dependency_version(line: &str) -> Option<&str> {
-    fn extract_value_segment(value: &str) -> Option<&str> {
-        value
-            .strip_prefix('"')
-            .and_then(|rest| rest.find('"').map(|idx| &rest[..idx]))
-    }
-
-    if let Some(version_start) = line.find("version") {
-        let after_version = &line[version_start + "version".len()..];
-        if let Some(equals_pos) = after_version.find('=') {
-            let value = after_version[equals_pos + 1..].trim();
-            return extract_value_segment(value);
-        }
-    } else {
-        let trimmed = line.trim();
-        if let Some(equals_pos) = trimmed.find('=') {
-            let value = trimmed[equals_pos + 1..].trim();
-            return extract_value_segment(value);
-        }
-    }
-
-    None
-}
-
-fn compute_workspace_dependency_version(existing: &str, new_version: &str) -> Option<String> {
-    let trimmed_existing = existing.trim();
-    if trimmed_existing == "*" {
-        return None;
-    }
-
-    if Version::parse(trimmed_existing).is_ok() {
-        if trimmed_existing == new_version {
-            return None;
-        }
-        return Some(new_version.to_string());
-    }
-
-    let shorthand = parse_numeric_shorthand(trimmed_existing)?;
-    VersionReq::parse(trimmed_existing).ok()?;
-    let parsed_new = Version::parse(new_version).ok()?;
-
-    let resolved = match shorthand.len() {
-        1 => parsed_new.major.to_string(),
-        2 => format!("{}.{}", parsed_new.major, parsed_new.minor),
-        _ => return None,
-    };
-
-    if resolved == trimmed_existing {
-        None
-    } else {
-        Some(resolved)
-    }
-}
-
-fn parse_numeric_shorthand(value: &str) -> Option<Vec<u64>> {
-    let segments: Vec<&str> = value.split('.').collect();
-    if segments.is_empty() || segments.len() > 2 {
-        return None;
-    }
-
-    let mut numeric_segments = Vec::with_capacity(segments.len());
-    for segment in segments {
-        if segment.is_empty() || !segment.chars().all(|ch| ch.is_ascii_digit()) {
-            return None;
-        }
-        let parsed = segment.parse::<u64>().ok()?;
-        numeric_segments.push(parsed);
-    }
-
-    Some(numeric_segments)
-}
-
-/// Update the version field in a dependency table line
-fn update_dependency_table_line(line: &str, new_version: &str) -> String {
-    // Try to update version field if it exists
-    if let Some(version_start) = line.find("version") {
-        let after_version = &line[version_start..];
-        if let Some(equals_pos) = after_version.find('=') {
-            let before_equals = &line[..version_start + equals_pos + 1];
-            let after_equals = &after_version[equals_pos + 1..];
-
-            // Find the quoted string after equals
-            if let Some(quote_start) = after_equals.find('"') {
-                let after_first_quote = &after_equals[quote_start + 1..];
-                if let Some(quote_end) = after_first_quote.find('"') {
-                    let after_second_quote = &after_first_quote[quote_end + 1..];
-                    return format!(
-                        "{} \"{}\"{}",
-                        before_equals, new_version, after_second_quote
-                    );
-                }
-            }
-        }
-    }
-
-    // If no version field exists but it's a table, add version field
-    if line.contains("{ path =") {
-        // Single-line table with path, add version
-        if let Some(closing_brace_pos) = line.rfind('}') {
-            let before_brace = &line[..closing_brace_pos];
-            let after_brace = &line[closing_brace_pos..];
-            return format!(
-                "{}, version = \"{}\" {}",
-                before_brace, new_version, after_brace
-            );
-        }
-    }
-
-    line.to_string()
 }
 
 fn split_intro_and_versions(body: &str) -> (&str, &str) {
@@ -1794,62 +1510,7 @@ fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result
 mod tests {
     use super::*;
     use chrono::TimeZone;
-
-    #[test]
-    fn skips_workspace_dependencies_when_updating() {
-        let input = "[dependencies]\nfoo = { workspace = true, optional = true }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "1.2.3").unwrap();
-        assert_eq!(out.trim_end(), input.trim_end());
-        assert!(!changed);
-    }
-
-    #[test]
-    fn updates_workspace_dependency_with_explicit_version() {
-        let input = "[workspace.dependencies]\nfoo = { version = \"0.1.0\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
-        assert!(changed);
-        assert!(out.contains("version = \"0.2.0\""));
-    }
-
-    #[test]
-    fn keeps_workspace_dependency_shorthand_for_patch_bump() {
-        let input = "[workspace.dependencies]\nfoo = { version = \"0.1\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.1.14").unwrap();
-        assert_eq!(out.trim_end(), input.trim_end());
-        assert!(!changed);
-    }
-
-    #[test]
-    fn updates_workspace_dependency_shorthand_for_minor_bump() {
-        let input = "[workspace.dependencies]\nfoo = { version = \"0.1\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
-        assert!(changed);
-        assert!(out.contains("version = \"0.2\""));
-    }
-
-    #[test]
-    fn updates_workspace_dependency_major_shorthand() {
-        let input = "[workspace.dependencies]\nfoo = { version = \"1\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "2.0.0").unwrap();
-        assert!(changed);
-        assert!(out.contains("version = \"2\""));
-    }
-
-    #[test]
-    fn skips_workspace_dependency_with_wildcard_version() {
-        let input = "[workspace.dependencies]\nfoo = { version = \"*\", path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
-        assert_eq!(out.trim_end(), input.trim_end());
-        assert!(!changed);
-    }
-
-    #[test]
-    fn skips_workspace_dependency_without_version() {
-        let input = "[workspace.dependencies]\nfoo = { path = \"foo\" }\n";
-        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
-        assert_eq!(out.trim_end(), input.trim_end());
-        assert!(!changed);
-    }
+    use std::collections::BTreeMap;
 
     #[test]
     fn preserves_changelog_intro_when_updating() {
@@ -2019,15 +1680,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(display, "EST");
-    }
-
-    #[test]
-    fn converts_simple_dep_without_quotes() {
-        let input = "[dependencies]\nbar = \"0.1.0\"\n";
-        let (out, changed) = update_dependency_version(input, "bar", "0.2.0").unwrap();
-        assert!(changed);
-        assert!(out.contains("bar = { version = \"0.2.0\" }"));
-        assert!(!out.contains("\"bar\""));
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod enrichment;
 pub mod errors;
 pub mod filters;
 pub mod git;
+pub mod manifest;
 pub mod markdown;
 pub mod prerelease;
 pub mod publish;
@@ -21,6 +22,7 @@ pub use enrichment::{
 pub use errors::{Result, SampoError, WorkspaceError};
 pub use filters::{filter_members, list_visible_packages, should_ignore_crate, wildcard_match};
 pub use git::current_branch;
+pub use manifest::{ManifestMetadata, update_manifest_versions};
 pub use markdown::format_markdown_list_item;
 pub use prerelease::{
     VersionChange, enter_prerelease, exit_prerelease, restore_preserved_changesets,
@@ -33,7 +35,7 @@ pub use release::{
     build_dependency_updates, bump_version, create_dependency_update_entry,
     create_fixed_dependency_policy_entry, detect_all_dependency_explanations,
     detect_fixed_dependency_policy_packages, format_dependency_updates_message,
-    infer_bump_from_versions, run_release, update_manifest_versions,
+    infer_bump_from_versions, run_release,
 };
 pub use types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
 pub use workspace::{discover_workspace, parse_workspace_members};

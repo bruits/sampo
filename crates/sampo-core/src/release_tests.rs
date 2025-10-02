@@ -84,11 +84,17 @@ mod tests {
 
         fn add_crate(&mut self, name: &str, version: &str) -> &mut Self {
             let crate_dir = self.root.join("crates").join(name);
-            fs::create_dir_all(&crate_dir).unwrap();
+            fs::create_dir_all(crate_dir.join("src")).unwrap();
 
             fs::write(
                 crate_dir.join("Cargo.toml"),
                 format!("[package]\nname=\"{}\"\nversion=\"{}\"\n", name, version),
+            )
+            .unwrap();
+
+            fs::write(
+                crate_dir.join("src/lib.rs"),
+                "pub fn __sampo_test_marker() {}\n",
             )
             .unwrap();
 
@@ -448,17 +454,11 @@ mod tests {
     #[test]
     fn updates_version_in_toml() {
         let input = "[package]\nname=\"x\"\nversion = \"0.1.0\"\n\n[dependencies]\n";
-        let ws = Workspace {
-            root: PathBuf::from("/test"),
-            members: vec![CrateInfo {
-                name: "x".to_string(),
-                version: "0.1.0".to_string(),
-                path: PathBuf::from("/test/crates/x"),
-                internal_deps: Default::default(),
-            }],
-        };
         let new_versions = BTreeMap::new();
-        let (out, _) = update_manifest_versions(input, Some("0.2.0"), &ws, &new_versions).unwrap();
+        let manifest_path = std::path::Path::new("/test/crates/x/Cargo.toml");
+        let (out, _) =
+            update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions, None)
+                .unwrap();
         assert!(out.contains("version = \"0.2.0\""));
         assert!(out.contains("[dependencies]"));
     }
@@ -489,17 +489,11 @@ rustc-hash = "2.0"
 tempfile = "3.0"
 "#;
 
-        let ws = Workspace {
-            root: PathBuf::from("/test"),
-            members: vec![CrateInfo {
-                name: "sampo-github-action".to_string(),
-                version: "0.1.0".to_string(),
-                path: PathBuf::from("/test/crates/sampo-github-action"),
-                internal_deps: Default::default(),
-            }],
-        };
         let new_versions = BTreeMap::new();
-        let (out, _) = update_manifest_versions(input, Some("0.2.0"), &ws, &new_versions).unwrap();
+        let manifest_path = std::path::Path::new("/test/crates/sampo-github-action/Cargo.toml");
+        let (out, _) =
+            update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions, None)
+                .unwrap();
 
         // Should update version but preserve all other formatting
         assert!(out.contains("version = \"0.2.0\""));
