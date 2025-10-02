@@ -8,7 +8,7 @@ use crate::{
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
 use rustc_hash::FxHashSet;
-use semver::{BuildMetadata, Prerelease, Version};
+use semver::{BuildMetadata, Prerelease, Version, VersionReq};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -1421,21 +1421,26 @@ fn update_dependency_version(
                     // Workspace-based dependency - leave unchanged
                     result_lines.push(line.to_string());
                 } else if section == DependencySection::Workspace {
-                    match extract_dependency_version(line) {
-                        Some(version) if version != "*" && Version::parse(version).is_ok() => {
+                    match extract_dependency_version(line)
+                        .and_then(|existing| {
+                            compute_workspace_dependency_version(existing, new_version)
+                        })
+                    {
+                        Some(resolved_version) => {
                             if is_table_dependency_line(trimmed) {
-                                let updated_line = update_dependency_table_line(line, new_version);
+                                let updated_line =
+                                    update_dependency_table_line(line, &resolved_version);
                                 result_lines.push(updated_line);
                                 was_updated = true;
                             } else {
                                 result_lines.push(format!(
                                     "{}{} = {{ version = \"{}\" }}",
-                                    spaces, dep_name, new_version
+                                    spaces, dep_name, resolved_version
                                 ));
                                 was_updated = true;
                             }
                         }
-                        _ => {
+                        None => {
                             result_lines.push(line.to_string());
                         }
                     }
@@ -1485,6 +1490,54 @@ fn extract_dependency_version(line: &str) -> Option<&str> {
     }
 
     None
+}
+
+fn compute_workspace_dependency_version(existing: &str, new_version: &str) -> Option<String> {
+    let trimmed_existing = existing.trim();
+    if trimmed_existing == "*" {
+        return None;
+    }
+
+    if Version::parse(trimmed_existing).is_ok() {
+        if trimmed_existing == new_version {
+            return None;
+        }
+        return Some(new_version.to_string());
+    }
+
+    let shorthand = parse_numeric_shorthand(trimmed_existing)?;
+    VersionReq::parse(trimmed_existing).ok()?;
+    let parsed_new = Version::parse(new_version).ok()?;
+
+    let resolved = match shorthand.len() {
+        1 => parsed_new.major.to_string(),
+        2 => format!("{}.{}", parsed_new.major, parsed_new.minor),
+        _ => return None,
+    };
+
+    if resolved == trimmed_existing {
+        None
+    } else {
+        Some(resolved)
+    }
+}
+
+fn parse_numeric_shorthand(value: &str) -> Option<Vec<u64>> {
+    let segments: Vec<&str> = value.split('.').collect();
+    if segments.is_empty() || segments.len() > 2 {
+        return None;
+    }
+
+    let mut numeric_segments = Vec::with_capacity(segments.len());
+    for segment in segments {
+        if segment.is_empty() || !segment.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
+        }
+        let parsed = segment.parse::<u64>().ok()?;
+        numeric_segments.push(parsed);
+    }
+
+    Some(numeric_segments)
 }
 
 /// Update the version field in a dependency table line
@@ -1756,6 +1809,30 @@ mod tests {
         let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
         assert!(changed);
         assert!(out.contains("version = \"0.2.0\""));
+    }
+
+    #[test]
+    fn keeps_workspace_dependency_shorthand_for_patch_bump() {
+        let input = "[workspace.dependencies]\nfoo = { version = \"0.1\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.1.14").unwrap();
+        assert_eq!(out.trim_end(), input.trim_end());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn updates_workspace_dependency_shorthand_for_minor_bump() {
+        let input = "[workspace.dependencies]\nfoo = { version = \"0.1\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "0.2.0").unwrap();
+        assert!(changed);
+        assert!(out.contains("version = \"0.2\""));
+    }
+
+    #[test]
+    fn updates_workspace_dependency_major_shorthand() {
+        let input = "[workspace.dependencies]\nfoo = { version = \"1\", path = \"foo\" }\n";
+        let (out, changed) = update_dependency_version(input, "foo", "2.0.0").unwrap();
+        assert!(changed);
+        assert!(out.contains("version = \"2\""));
     }
 
     #[test]
