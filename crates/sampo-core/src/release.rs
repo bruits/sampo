@@ -1364,6 +1364,13 @@ enum DependencySection {
     Workspace,
 }
 
+fn is_table_dependency_line(trimmed: &str) -> bool {
+    trimmed.contains("{ path =")
+        || trimmed.contains("{path =")
+        || trimmed.contains("version =")
+        || trimmed.contains("version=")
+}
+
 fn classify_dependency_section(section_name: &str) -> Option<DependencySection> {
     match section_name {
         "workspace.dependencies"
@@ -1415,11 +1422,7 @@ fn update_dependency_version(
                 } else if section == DependencySection::Workspace {
                     match extract_dependency_version(line) {
                         Some(version) if version != "*" && Version::parse(version).is_ok() => {
-                            if trimmed.contains("{ path =") || trimmed.contains("{path =") {
-                                let updated_line = update_dependency_table_line(line, new_version);
-                                result_lines.push(updated_line);
-                                was_updated = true;
-                            } else if trimmed.contains("version =") {
+                            if is_table_dependency_line(trimmed) {
                                 let updated_line = update_dependency_table_line(line, new_version);
                                 result_lines.push(updated_line);
                                 was_updated = true;
@@ -1435,13 +1438,8 @@ fn update_dependency_version(
                             result_lines.push(line.to_string());
                         }
                     }
-                } else if trimmed.contains("{ path =") || trimmed.contains("{path =") {
-                    // It's a table format with path - preserve path, update version
-                    let updated_line = update_dependency_table_line(line, new_version);
-                    result_lines.push(updated_line);
-                    was_updated = true;
-                } else if trimmed.contains("version =") {
-                    // It's already a table format or inline table
+                } else if is_table_dependency_line(trimmed) {
+                    // It's a table or inline format - update version where applicable
                     let updated_line = update_dependency_table_line(line, new_version);
                     result_lines.push(updated_line);
                     was_updated = true;
@@ -1465,25 +1463,23 @@ fn update_dependency_version(
 }
 
 fn extract_dependency_version(line: &str) -> Option<&str> {
+    fn extract_value_segment(value: &str) -> Option<&str> {
+        value
+            .strip_prefix('"')
+            .and_then(|rest| rest.find('"').map(|idx| &rest[..idx]))
+    }
+
     if let Some(version_start) = line.find("version") {
         let after_version = &line[version_start + "version".len()..];
         if let Some(equals_pos) = after_version.find('=') {
             let value = after_version[equals_pos + 1..].trim();
-            if value.starts_with('"') {
-                if let Some(quote_end) = value[1..].find('"') {
-                    return Some(&value[1..1 + quote_end]);
-                }
-            }
+            return extract_value_segment(value);
         }
     } else {
         let trimmed = line.trim();
         if let Some(equals_pos) = trimmed.find('=') {
             let value = trimmed[equals_pos + 1..].trim();
-            if value.starts_with('"') {
-                if let Some(quote_end) = value[1..].find('"') {
-                    return Some(&value[1..1 + quote_end]);
-                }
-            }
+            return extract_value_segment(value);
         }
     }
 
