@@ -83,3 +83,7 @@ Can be used to gate subsequent steps, example:
         if: steps.sampo.outputs.published == 'true'
         run: echo "Crates were published"
 ```
+
+## Development
+
+Refer to [CONTRIBUTING.md](../../CONTRIBUTING.md#sampo-github-action) for development setup and workflow details.

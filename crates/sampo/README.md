@@ -185,3 +185,7 @@ All commands should be run from the root of the repository:
 | `sampo publish` | Publish packages to registries and tag current versions                   |
 
 For detailed command options, use `sampo help <command>` or `sampo <command> --help`.
+
+## Development
+
+Refer to [CONTRIBUTING.md](../../CONTRIBUTING.md#sampo) for development setup and workflow details.
