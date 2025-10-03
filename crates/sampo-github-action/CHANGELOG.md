@@ -1,5 +1,11 @@
 # sampo-github-action
 
+## 0.8.1 — 2025-10-03
+
+### Patch changes
+
+- [8ccbf32](https://github.com/bruits/sampo/commit/8ccbf3225a3ee005a958e592f909f547ec464b84) Fix GitHub Release bodies not being correctly filled when changelogs include release timestamps in their headings. — Thanks @goulvenclech!
+
 ## 0.8.0 — 2025-10-03
 
 ### Minor changes
