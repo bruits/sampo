@@ -4,11 +4,11 @@
 
 The following versions of our projects are currently supported with security updates:
 
-| Package | Version | Supported          |
-| ------- | ------- | ------------------ |
-| sampo  | 0.x.x   | :white_check_mark: |
-| sampo-github-bot   | 0.x.x   | :white_check_mark: |
-| sampo-github-action   | 0.x.x   | :white_check_mark: |
+| Package             | Version | Supported          |
+| ------------------- | ------- | ------------------ |
+| sampo               | 0.x.x   | :white_check_mark: |
+| sampo-github-bot    | 0.x.x   | :white_check_mark: |
+| sampo-github-action | 0.x.x   | :white_check_mark: |
 
 ## What is a Security Vulnerability?
 
@@ -18,7 +18,7 @@ Please note that we will not accept reports related to vulnerabilities in other 
 
 ## Reporting a Vulnerability
 
-We take security issues very seriously. If you discover a vulnerability, please report it through our private reporting form: [Report a Security Vulnerability](https://github.com/bruits/maudit/security/advisories/new).
+We take security issues very seriously. If you discover a vulnerability, please report it through our private reporting form: [Report a Security Vulnerability](https://github.com/bruits/sampo/security/advisories/new).
 
 ### Guidelines for Reporting
 
@@ -34,6 +34,6 @@ Keep in mind that we are an open-source project, and our team is composed of vol
 
 ### Post-Fix Communication
 
-Once the fix is deployed, a **public security advisory** will be published here: [Security Advisories](https://github.com/bruits/maudit/security/advisories). If applicable, credit will be given to the reporter for their responsible disclosure.
+Once the fix is deployed, a **public security advisory** will be published here: [Security Advisories](https://github.com/bruits/sampo/security/advisories). If applicable, credit will be given to the reporter for their responsible disclosure.
 
 We greatly appreciate your efforts to help us maintain the security of our projects.
