@@ -860,11 +860,11 @@ fn tag_is_prerelease(tag: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Extract the section that starts at "## <version>" until the next "## " or EOF
+/// Extract the section that follows the first `##` heading until the next `##` or EOF.
 ///
-/// The leading "## <version>" header is stripped because the GitHub release title
-/// already conveys the version.
-fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
+/// The leading heading itself is stripped because the GitHub release title already
+/// conveys the version.
+fn extract_changelog_section(path: &Path, _version: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut collecting = false;
     let mut collected = Vec::new();
@@ -872,14 +872,11 @@ fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     for line in text.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("## ") {
-            let header = trimmed.trim_start_matches("## ").trim();
             if collecting {
                 break;
             }
-            if header == version {
-                collecting = true;
-                continue;
-            }
+            collecting = true;
+            continue;
         }
 
         if collecting {
@@ -1157,24 +1154,35 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_changelog_section() {
+    fn test_extract_changelog_section_with_timestamp() {
         use std::fs;
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("CHANGELOG.md");
-        let content =
-            "# my-crate\n\n## 1.2.3\n\n### Patch changes\n\n- Fix: foo\n\n## 1.2.2\n\n- Older";
+        let content = "# my-crate\n\n## 1.2.3 — 2024-06-17\n\n### Patch changes\n\n- Fix: foo\n\n## 1.2.2\n\n- Older";
         fs::write(&file, content).unwrap();
 
         let got = extract_changelog_section(&file, "1.2.3").unwrap();
         assert!(got.starts_with("### Patch changes"));
         assert!(!got.contains("## 1.2.3"));
         assert!(got.contains("Fix: foo"));
+        assert!(!got.contains("1.2.2"));
+    }
 
-        let older = extract_changelog_section(&file, "1.2.2").unwrap();
-        assert!(older.starts_with("- Older"));
-        assert!(!older.contains("## 1.2.2"));
-        assert!(!older.contains("1.2.3"));
+    #[test]
+    fn test_extract_changelog_section_without_timestamp() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("CHANGELOG.md");
+        let content = "# my-crate\n\n## 2.0.0\n\n- New feature\n\n## 1.9.0 — 2023-12-01\n\n- Previous";
+        fs::write(&file, content).unwrap();
+
+        let got = extract_changelog_section(&file, "2.0.0").unwrap();
+        assert!(got.starts_with("- New feature"));
+        assert!(!got.contains("## 2.0.0"));
+        assert!(!got.contains("1.9.0"));
     }
 }
