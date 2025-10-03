@@ -1177,7 +1177,8 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("CHANGELOG.md");
-        let content = "# my-crate\n\n## 2.0.0\n\n- New feature\n\n## 1.9.0 — 2023-12-01\n\n- Previous";
+        let content =
+            "# my-crate\n\n## 2.0.0\n\n- New feature\n\n## 1.9.0 — 2023-12-01\n\n- Previous";
         fs::write(&file, content).unwrap();
 
         let got = extract_changelog_section(&file, "2.0.0").unwrap();
