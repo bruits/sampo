@@ -1,9 +1,7 @@
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
-use crate::release::{
-    parse_version_string, regenerate_lockfile, restore_prerelease_changesets,
-    update_manifest_versions,
-};
+use crate::manifest::{ManifestMetadata, update_manifest_versions};
+use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
 use crate::types::{CrateInfo, Workspace};
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
@@ -225,12 +223,22 @@ fn apply_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
+    let manifest_metadata = ManifestMetadata::load(workspace).map_err(|err| match err {
+        SampoError::Release(msg) => SampoError::Prerelease(msg),
+        other => other,
+    })?;
+
     for info in &workspace.members {
         let manifest_path = info.path.join("Cargo.toml");
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
-        let (updated, _deps) =
-            update_manifest_versions(&original, new_pkg_version, workspace, new_versions)?;
+        let (updated, _deps) = update_manifest_versions(
+            &manifest_path,
+            &original,
+            new_pkg_version,
+            new_versions,
+            Some(&manifest_metadata),
+        )?;
 
         if updated != original {
             fs::write(&manifest_path, updated)?;
@@ -265,15 +273,20 @@ mod tests {
         )
         .unwrap();
 
+        write_manifest(&root.join("crates/foo"), "foo", "0.1.0");
+        write_manifest(&root.join("crates/bar"), "bar", "0.1.0");
+
         temp
     }
 
     fn write_manifest(path: &Path, name: &str, version: &str) {
+        fs::create_dir_all(path.join("src")).unwrap();
         fs::write(
             path.join("Cargo.toml"),
             format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n"),
         )
         .unwrap();
+        fs::write(path.join("src/lib.rs"), "pub fn __sampo_test_marker() {}\n").unwrap();
     }
 
     fn append_dependency(path: &Path, dep: &str, dep_version: &str) {
