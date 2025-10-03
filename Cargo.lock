@@ -1876,7 +1876,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-action"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "reqwest 0.12.23",
  "rustc-hash",
