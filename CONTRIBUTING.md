@@ -30,7 +30,10 @@ We’re also committed to fostering a welcoming and respectful community. Any is
 - **Write and run tests.** If you're adding new functionality or fixing a bug, please include tests to cover it. Run `cargo test --all` to ensure all existing tests pass.
 - **Write a changeset.** That's the whole point of Sampo! Run `sampo add` to create a new changeset file describing your changes.
 - Prefer small, focused PRs that address a single issue or feature. Larger PRs can be harder to review, and can often be broken down into smaller, more manageable pieces.
-- We deeply value idiomatic, expressive, easy-to-maintain Rust code. Avoid code duplication when possible. And prefer clarity over cleverness, and small focused functions over dark magic 🧙‍♂️
+- Prefer self-documenting code first, with expressive names and straightforward logic. Comments should explain *why* (intent, invariants, trade-offs), not *how*. Variable and function names should be clear and descriptive, not cryptic abbreviations.
+- Document any new public APIs, configuration options, or user-facing changes in the relevant README files. If you're unsure where or how to document something, just ask and we'll help you out.
+- We deeply value idiomatic, easy-to-maintain Rust code. Avoid code duplication when possible. And prefer clarity over cleverness, and small focused functions over dark magic 🧙‍♂️
+- As PRs will be squashed when merged, ensure your commit message follows the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. If you're unsure, just write a brief summary of your changes in the PR description, and we can help craft a good commit message when merging.
 - **PRs don't need to be perfect.** Submit your best effort, and we will gladly assist in polishing the work.
 
 ## Getting started
