@@ -1878,6 +1878,7 @@ dependencies = [
 name = "sampo-github-action"
 version = "0.8.1"
 dependencies = [
+ "glob",
  "reqwest 0.12.23",
  "rustc-hash",
  "sampo-core",
@@ -1886,7 +1887,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
- "toml",
 ]
 
 [[package]]

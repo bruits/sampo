@@ -5,11 +5,12 @@ mod sampo;
 
 use crate::error::{ActionError, Result};
 use crate::sampo::ReleasePlan;
+use glob::glob;
 use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
 use sampo_core::{Config as SampoConfig, current_branch};
 use semver::Version;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,12 +26,8 @@ struct GitHubReleaseOptions {
     open_discussion: bool,
     /// Preferred Discussions category slug (e.g., "announcements")
     discussion_category: Option<String>,
-    /// Upload Linux binary as release asset when creating GitHub releases
-    upload_binary: bool,
-    /// Binary name to upload (defaults to the main package name)
-    binary_name: Option<String>,
-    /// Optional list of target triples to build and upload assets for
-    targets: Vec<String>,
+    /// Release asset patterns provided by the workflow (already-built artifacts)
+    asset_specs: Vec<AssetSpec>,
 }
 
 impl GitHubReleaseOptions {
@@ -39,11 +36,21 @@ impl GitHubReleaseOptions {
             create_github_release: config.create_github_release,
             open_discussion: config.open_discussion,
             discussion_category: config.discussion_category.clone(),
-            upload_binary: config.upload_binary,
-            binary_name: config.binary_name.clone(),
-            targets: parse_targets(config.targets.as_deref()),
+            asset_specs: parse_asset_specs(config.release_assets.as_deref()),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct AssetSpec {
+    pattern: String,
+    rename: Option<String>,
+}
+
+#[derive(Debug)]
+struct ResolvedAsset {
+    path: PathBuf,
+    asset_name: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -110,14 +117,8 @@ struct Config {
     /// Preferred Discussions category slug (e.g., "announcements")
     discussion_category: Option<String>,
 
-    /// Upload Linux binary as release asset when creating GitHub releases
-    upload_binary: bool,
-
-    /// Binary name to upload (defaults to the main package name)
-    binary_name: Option<String>,
-
-    /// Optional list of target triples to build and upload assets for (space or comma-separated)
-    targets: Option<String>,
+    /// Paths or glob patterns to upload as release assets (comma or newline separated)
+    release_assets: Option<String>,
 }
 
 impl Config {
@@ -176,15 +177,7 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
 
-        let upload_binary = std::env::var("INPUT_UPLOAD_BINARY")
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let binary_name = std::env::var("INPUT_BINARY_NAME")
-            .ok()
-            .filter(|v| !v.is_empty());
-
-        let targets = std::env::var("INPUT_TARGETS")
+        let release_assets = std::env::var("INPUT_RELEASE_ASSETS")
             .ok()
             .filter(|v| !v.is_empty());
 
@@ -202,9 +195,7 @@ impl Config {
             create_github_release,
             open_discussion,
             discussion_category,
-            upload_binary,
-            binary_name,
-            targets,
+            release_assets,
         }
     }
 }
@@ -732,81 +723,40 @@ fn create_github_release_for_tag(
         }
     };
 
-    // If binary upload is requested, compile and upload binaries for requested targets (or host)
-    if github_options.upload_binary
-        && !upload_url.is_empty()
-        && let Some((crate_name, _version)) = parse_tag(tag)
-    {
-        // Locate crate dir
-        let ws = discover_workspace(workspace).ok();
-        let crate_dir = ws
-            .as_ref()
-            .and_then(|w| {
-                w.members
-                    .iter()
-                    .find(|c| c.name == crate_name)
-                    .map(|c| c.path.clone())
-            })
-            .unwrap_or_else(|| workspace.join("crates").join(&crate_name));
-
-        if is_binary_crate(&crate_dir) {
-            let bin_name = github_options
-                .binary_name
-                .as_deref()
-                .map(|s| s.to_string())
-                .or_else(|| resolve_primary_bin_name(&crate_dir, &crate_name));
-
-            // Determine target list: use configured list if provided; otherwise use host only
-            let targets = if !github_options.targets.is_empty() {
-                github_options.targets.clone()
-            } else {
-                crate::github::detect_host_triple()
-                    .map(|t| vec![t])
-                    .unwrap_or_else(|| vec!["unknown-target".to_string()])
-            };
-
-            // Strict verification for requested targets: all must be installed
-            if !github_options.targets.is_empty() {
-                let installed = rustup_installed_targets();
-                let missing: Vec<String> = github_options
-                    .targets
-                    .iter()
-                    .filter(|t| !installed.iter().any(|it| it == *t))
-                    .cloned()
-                    .collect();
-                if !missing.is_empty() {
-                    return Err(ActionError::SampoCommandFailed {
-                        operation: "binary-build".to_string(),
-                        message: format!(
-                            "Missing Rust targets: {}. Install with: rustup target add {}",
-                            missing.join(", "),
-                            missing.join(" ")
-                        ),
-                    });
-                }
-            }
-
-            for triple in targets {
-                if let Err(e) = github_client.upload_binary_asset(
-                    &upload_url,
-                    workspace,
-                    bin_name.as_deref(),
-                    Some(&crate_name),
-                    Some(&triple),
-                ) {
-                    eprintln!(
-                        "Warning: Failed to upload binary for target {}: {}",
-                        triple, e
-                    );
-                } else {
-                    println!("Successfully uploaded binary for {} ({})", tag, triple);
-                }
+    // Upload pre-built release assets if requested
+    if !upload_url.is_empty() {
+        let assets = resolve_release_assets(workspace, tag, &github_options.asset_specs)?;
+        if assets.is_empty() {
+            if !github_options.asset_specs.is_empty() {
+                println!(
+                    "No release assets matched the configured patterns for {}.",
+                    tag
+                );
             }
         } else {
-            println!(
-                "Skipping binary upload for {} (crate '{}' is a library)",
-                tag, crate_name
-            );
+            for asset in assets {
+                match github_client.upload_release_asset(
+                    &upload_url,
+                    &asset.path,
+                    &asset.asset_name,
+                ) {
+                    Ok(()) => {
+                        println!(
+                            "Uploaded release asset '{}' from {}",
+                            asset.asset_name,
+                            asset.path.display()
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "Warning: Failed to upload release asset '{}' ({}): {}",
+                            asset.asset_name,
+                            asset.path.display(),
+                            error
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -888,107 +838,157 @@ fn extract_changelog_section(path: &Path, _version: &str) -> Option<String> {
     if body.is_empty() { None } else { Some(body) }
 }
 
-fn parse_targets(input: Option<&str>) -> Vec<String> {
+fn parse_asset_specs(input: Option<&str>) -> Vec<AssetSpec> {
     input
-        .map(|s| {
-            s.split(|c: char| c.is_whitespace() || c == ',')
-                .filter(|t| !t.is_empty())
-                .map(|t| t.to_string())
-                .collect::<Vec<_>>()
+        .map(|raw| {
+            raw.lines()
+                .flat_map(|line| line.split(','))
+                .filter_map(|entry| {
+                    let trimmed = entry.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    let mut parts = trimmed.splitn(2, "=>");
+                    let pattern = parts.next().unwrap().trim();
+                    if pattern.is_empty() {
+                        return None;
+                    }
+                    let rename = parts
+                        .next()
+                        .map(|r| r.trim().to_string())
+                        .filter(|r| !r.is_empty());
+                    Some(AssetSpec {
+                        pattern: pattern.to_string(),
+                        rename,
+                    })
+                })
+                .collect()
         })
         .unwrap_or_default()
 }
 
-fn rustup_installed_targets() -> Vec<String> {
-    let out = std::process::Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        _ => Vec::new(),
+fn resolve_release_assets(
+    workspace: &Path,
+    tag: &str,
+    specs: &[AssetSpec],
+) -> Result<Vec<ResolvedAsset>> {
+    if specs.is_empty() {
+        return Ok(Vec::new());
     }
-}
 
-/// Determine if a crate directory contains a binary target
-fn is_binary_crate(crate_dir: &Path) -> bool {
-    // 1) src/main.rs exists
-    if crate_dir.join("src").join("main.rs").exists() {
-        return true;
-    }
-    // 2) src/bin contains at least one .rs file
-    let bin_dir = crate_dir.join("src").join("bin");
-    if bin_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&bin_dir)
-    {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("rs") {
-                return true;
+    let parsed_tag = parse_tag(tag);
+    let crate_name = parsed_tag.as_ref().map(|(name, _)| name.as_str());
+    let version = parsed_tag.as_ref().map(|(_, ver)| ver.as_str());
+
+    let mut resolved = Vec::new();
+    let mut used_names = BTreeSet::new();
+
+    for spec in specs {
+        let rendered_pattern = render_asset_template(&spec.pattern, tag, crate_name, version);
+        let rename_template = spec
+            .rename
+            .as_deref()
+            .map(|value| render_asset_template(value, tag, crate_name, version));
+
+        let pattern_path = {
+            let base = Path::new(&rendered_pattern);
+            if base.is_absolute() {
+                base.to_path_buf()
+            } else {
+                workspace.join(base)
+            }
+        };
+        let pattern_string = pattern_path.to_string_lossy().into_owned();
+
+        let entries = glob(&pattern_string).map_err(|e| ActionError::SampoCommandFailed {
+            operation: "release-asset-discovery".to_string(),
+            message: format!(
+                "Invalid release asset pattern '{}': {}",
+                rendered_pattern, e
+            ),
+        })?;
+
+        let mut matched = false;
+        for entry in entries {
+            match entry {
+                Ok(path) => {
+                    if path.is_dir() {
+                        println!(
+                            "Skipping directory match for pattern '{}': {}",
+                            spec.pattern,
+                            path.display()
+                        );
+                        continue;
+                    }
+
+                    matched = true;
+                    let asset_name = rename_template
+                        .as_deref()
+                        .map(|name| name.to_string())
+                        .unwrap_or_else(|| {
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or(tag)
+                                .to_string()
+                        });
+
+                    if asset_name.trim().is_empty() {
+                        println!(
+                            "Skipping asset with empty name for pattern '{}' (path: {})",
+                            spec.pattern,
+                            path.display()
+                        );
+                        continue;
+                    }
+
+                    if !used_names.insert(asset_name.clone()) {
+                        println!(
+                            "Skipping asset '{}' because another file already uses that name",
+                            asset_name
+                        );
+                        continue;
+                    }
+
+                    resolved.push(ResolvedAsset { path, asset_name });
+                }
+                Err(err) => {
+                    println!(
+                        "Warning: Failed to read a path for pattern '{}': {}",
+                        rendered_pattern, err
+                    );
+                }
             }
         }
+
+        if !matched {
+            println!(
+                "No files matched release asset pattern '{}' (rendered: '{}')",
+                spec.pattern, rendered_pattern
+            );
+        }
     }
-    // 3) [[bin]] entries in Cargo.toml
-    let manifest = crate_dir.join("Cargo.toml");
-    if let Ok(text) = std::fs::read_to_string(&manifest)
-        && let Ok(val) = text.parse::<toml::Value>()
-        && val.get("bin").is_some()
-    {
-        return true;
-    }
-    false
+
+    Ok(resolved)
 }
 
-/// Try to resolve the primary binary name for a crate
-/// - If exactly one [[bin]] with a name is defined, return it
-/// - Else if src/main.rs exists, default to crate name
-/// - Else if exactly one file in src/bin exists, use its stem
-fn resolve_primary_bin_name(crate_dir: &Path, crate_name: &str) -> Option<String> {
-    let manifest = crate_dir.join("Cargo.toml");
-    if let Ok(text) = std::fs::read_to_string(&manifest)
-        && let Ok(val) = text.parse::<toml::Value>()
-        && let Some(arr) = val.get("bin").and_then(|v| v.as_array())
-    {
-        // Collect names
-        let mut names: Vec<String> = arr
-            .iter()
-            .filter_map(|item| item.as_table())
-            .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
-            .map(|s| s.to_string())
-            .collect();
-        names.sort();
-        names.dedup();
-        if names.len() == 1 {
-            return names.into_iter().next();
-        }
+fn render_asset_template(
+    template: &str,
+    tag: &str,
+    crate_name: Option<&str>,
+    version: Option<&str>,
+) -> String {
+    let mut rendered = template.replace("{{tag}}", tag);
+    if let Some(name) = crate_name {
+        rendered = rendered.replace("{{crate}}", name);
+    } else {
+        rendered = rendered.replace("{{crate}}", "");
     }
-
-    // src/main.rs => default to crate name
-    if crate_dir.join("src").join("main.rs").exists() {
-        return Some(crate_name.to_string());
+    if let Some(ver) = version {
+        rendered = rendered.replace("{{version}}", ver);
+    } else {
+        rendered = rendered.replace("{{version}}", "");
     }
-
-    // Single file under src/bin => use stem
-    let bin_dir = crate_dir.join("src").join("bin");
-    if bin_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&bin_dir)
-    {
-        let files: Vec<_> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("rs"))
-            .collect();
-        if files.len() == 1
-            && let Some(stem) = files[0].file_stem().and_then(|s| s.to_str())
-        {
-            return Some(stem.to_string());
-        }
-    }
-
-    Some(crate_name.to_string())
+    rendered
 }
 
 #[cfg(test)]
@@ -1099,9 +1099,7 @@ mod tests {
             create_github_release: false,
             open_discussion: false,
             discussion_category: None,
-            upload_binary: false,
-            binary_name: None,
-            targets: None,
+            release_assets: None,
         };
         let result = determine_workspace(&config).unwrap();
         assert_eq!(result, PathBuf::from("/test/path"));
@@ -1141,6 +1139,49 @@ mod tests {
     fn test_emit_github_output() {
         // This test would need mocking for real testing
         assert!(emit_github_output("test", true).is_ok());
+    }
+
+    #[test]
+    fn parse_asset_specs_supports_patterns_and_rename() {
+        let specs = parse_asset_specs(Some("dist/*.zip => package.zip,extra.bin"));
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].pattern, "dist/*.zip");
+        assert_eq!(specs[0].rename.as_deref(), Some("package.zip"));
+        assert_eq!(specs[1].pattern, "extra.bin");
+        assert!(specs[1].rename.is_none());
+    }
+
+    #[test]
+    fn render_asset_template_substitutes_known_placeholders() {
+        let rendered = render_asset_template(
+            "artifacts/{{crate}}-{{version}}/{{tag}}.tar.gz",
+            "my-crate-v1.0.0",
+            Some("my-crate"),
+            Some("1.0.0"),
+        );
+        assert_eq!(rendered, "artifacts/my-crate-1.0.0/my-crate-v1.0.0.tar.gz");
+    }
+
+    #[test]
+    fn resolve_release_assets_matches_files() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path();
+        let dist_dir = workspace.join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+        let artifact_path = dist_dir.join("my-crate-v1.0.0-x86_64.tar.gz");
+        fs::write(&artifact_path, b"dummy").unwrap();
+
+        let specs = vec![AssetSpec {
+            pattern: "dist/{{crate}}-v{{version}}-*.tar.gz".to_string(),
+            rename: Some("{{crate}}-{{version}}.tar.gz".to_string()),
+        }];
+
+        let assets = resolve_release_assets(workspace, "my-crate-v1.0.0", &specs)
+            .expect("asset resolution should succeed");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].asset_name, "my-crate-1.0.0.tar.gz");
+        assert_eq!(assets[0].path, artifact_path);
     }
 
     #[test]

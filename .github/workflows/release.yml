@@ -12,7 +12,44 @@ permissions:
   discussions: write
 
 jobs:
+  build-artifacts:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: sampo
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: sampo
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: sampo.exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --bin sampo
+          mkdir -p dist/tmp
+          cp "target/release/${{ matrix.binary }}" "dist/tmp/${{ matrix.binary }}"
+          tar -C dist/tmp -czf "dist/sampo-${{ matrix.target }}.tar.gz" "${{ matrix.binary }}"
+          rm -rf dist/tmp
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: sampo-${{ matrix.target }}
+          path: dist/sampo-${{ matrix.target }}.tar.gz
+
   release:
+    needs: build-artifacts
     runs-on: ubuntu-latest
     environment: sampo
     steps:
@@ -20,8 +57,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust targets for binary releases
-        run: rustup target add x86_64-apple-darwin x86_64-pc-windows-msvc
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sampo-*
+          merge-multiple: true
+          path: dist
 
       - name: Run Sampo to release & publish
         id: sampo
@@ -30,8 +71,10 @@ jobs:
           command: auto
           cargo-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           create-github-release: true
-          upload-binary: true
-          targets: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
+          release-assets: |
+            dist/sampo-x86_64-unknown-linux-gnu.tar.gz => sampo-{{tag}}-x86_64-unknown-linux-gnu.tar.gz
+            dist/sampo-x86_64-apple-darwin.tar.gz => sampo-{{tag}}-x86_64-apple-darwin.tar.gz
+            dist/sampo-x86_64-pc-windows-msvc.tar.gz => sampo-{{tag}}-x86_64-pc-windows-msvc.tar.gz
           open-discussion: true
           discussion-category: announcements
           use-local-build: true
