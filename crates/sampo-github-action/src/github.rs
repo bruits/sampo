@@ -28,10 +28,9 @@ struct CreateReleasePayload {
 }
 
 #[derive(Debug, Serialize)]
-struct CreateDiscussionPayload {
-    title: String,
-    body: String,
-    category_id: u64,
+struct GraphQLRequest {
+    query: String,
+    variables: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,8 +48,36 @@ struct Release {
 
 #[derive(Debug, Deserialize)]
 struct DiscussionCategory {
-    id: u64,
+    id: String,
     slug: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQLResponse<T> {
+    data: Option<T>,
+    errors: Option<Vec<GraphQLError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQLError {
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryData {
+    repository: RepositoryInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepositoryInfo {
+    id: String,
+    #[serde(rename = "discussionCategories")]
+    discussion_categories: DiscussionCategoriesConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscussionCategoriesConnection {
+    nodes: Vec<DiscussionCategory>,
 }
 
 pub struct GitHubClient {
@@ -303,68 +330,112 @@ impl GitHubClient {
         }
     }
 
-    /// Get discussion categories for the repository
-    fn get_discussion_categories(&self) -> Result<Vec<DiscussionCategory>> {
-        let api_url = format!(
-            "https://api.github.com/repos/{}/discussions/categories",
-            self.repo
-        );
+    /// Get discussion categories for the repository using GraphQL
+    fn get_discussion_categories(&self) -> Result<(String, Vec<DiscussionCategory>)> {
+        let parts: Vec<&str> = self.repo.split('/').collect();
+        if parts.len() != 2 {
+            return Err(ActionError::SampoCommandFailed {
+                operation: "github-list-discussion-categories".to_string(),
+                message: format!("Invalid repository format: {}", self.repo),
+            });
+        }
+        let (owner, name) = (parts[0], parts[1]);
+
+        let query = r#"
+            query($owner: String!, $name: String!) {
+                repository(owner: $owner, name: $name) {
+                    id
+                    discussionCategories(first: 100) {
+                        nodes {
+                            id
+                            slug
+                        }
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "owner": owner,
+            "name": name,
+        });
+
+        let payload = GraphQLRequest {
+            query: query.to_string(),
+            variables,
+        };
 
         let response = self
             .client
-            .get(&api_url)
+            .post("https://api.github.com/graphql")
             .header("Authorization", self.auth_header())
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&payload)
             .send()
             .map_err(|e| ActionError::SampoCommandFailed {
                 operation: "github-list-discussion-categories".to_string(),
-                message: format!("HTTP request failed: {}", e),
+                message: format!("GraphQL request failed: {}", e),
             })?;
 
-        if response.status().is_success() {
-            let categories: Vec<DiscussionCategory> =
-                response
-                    .json()
-                    .map_err(|e| ActionError::SampoCommandFailed {
-                        operation: "github-list-discussion-categories".to_string(),
-                        message: format!("Failed to parse categories response: {}", e),
-                    })?;
-            Ok(categories)
-        } else {
+        if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
-            // Provide actionable context for common failure modes
             let hint = if status.as_u16() == 404 {
                 "Hint: Discussions may be disabled on this repository, or the token lacks discussions permissions. Enable Discussions in Settings and grant `permissions: discussions: write` in the workflow."
-            } else if status.as_u16() == 410 {
-                "Hint: Discussions are disabled for this repository. Enable Discussions in Settings > Features."
             } else if status.as_u16() == 403 {
                 "Hint: Missing permissions. Grant `permissions: discussions: write` in the workflow."
             } else {
                 ""
             };
-            Err(ActionError::SampoCommandFailed {
+            return Err(ActionError::SampoCommandFailed {
                 operation: "github-list-discussion-categories".to_string(),
                 message: format!(
-                    "Failed to get categories ({}): {}{}{}",
+                    "GraphQL query failed ({}): {}{}{}",
                     status,
                     error_text,
                     if hint.is_empty() { "" } else { " — " },
                     hint
                 ),
-            })
+            });
         }
+
+        let graphql_response: GraphQLResponse<RepositoryData> =
+            response
+                .json()
+                .map_err(|e| ActionError::SampoCommandFailed {
+                    operation: "github-list-discussion-categories".to_string(),
+                    message: format!("Failed to parse GraphQL response: {}", e),
+                })?;
+
+        if let Some(errors) = graphql_response.errors {
+            let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+            return Err(ActionError::SampoCommandFailed {
+                operation: "github-list-discussion-categories".to_string(),
+                message: format!("GraphQL errors: {}", error_messages.join(", ")),
+            });
+        }
+
+        let data = graphql_response
+            .data
+            .ok_or_else(|| ActionError::SampoCommandFailed {
+                operation: "github-list-discussion-categories".to_string(),
+                message: "No data in GraphQL response".to_string(),
+            })?;
+
+        let repo_id = data.repository.id;
+        let categories = data.repository.discussion_categories.nodes;
+
+        Ok((repo_id, categories))
     }
 
-    /// Create a GitHub Discussion
+    /// Create a GitHub Discussion using GraphQL
     pub fn create_discussion(
         &self,
         tag: &str,
         body: &str,
         preferred_category: Option<&str>,
     ) -> Result<()> {
-        let categories = self.get_discussion_categories()?;
+        let (repo_id, categories) = self.get_discussion_categories()?;
 
         let desired_slug = preferred_category
             .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
@@ -376,64 +447,97 @@ impl GitHubClient {
             .find(|cat| cat.slug == desired_slug)
             .or_else(|| categories.iter().find(|cat| cat.slug == "announcements"))
             .or_else(|| categories.first())
-            .map(|cat| cat.id)
+            .map(|cat| cat.id.clone())
             .ok_or_else(|| ActionError::SampoCommandFailed {
                 operation: "github-find-discussion-category".to_string(),
                 message: "No discussion categories available".into(),
             })?;
 
-        let api_url = format!("https://api.github.com/repos/{}/discussions", self.repo);
         let title = format!("Release {}", tag);
         let body_with_link = format!(
             "{}\n\n—\nSee release page: https://github.com/{}/releases/tag/{}",
             body, self.repo, tag
         );
 
-        let payload = CreateDiscussionPayload {
-            title,
-            body: body_with_link,
-            category_id,
+        let mutation = r#"
+            mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+                createDiscussion(input: {
+                    repositoryId: $repositoryId,
+                    categoryId: $categoryId,
+                    title: $title,
+                    body: $body
+                }) {
+                    discussion {
+                        url
+                    }
+                }
+            }
+        "#;
+
+        let variables = serde_json::json!({
+            "repositoryId": repo_id,
+            "categoryId": category_id,
+            "title": title,
+            "body": body_with_link,
+        });
+
+        let payload = GraphQLRequest {
+            query: mutation.to_string(),
+            variables,
         };
 
         let response = self
             .client
-            .post(&api_url)
+            .post("https://api.github.com/graphql")
             .header("Authorization", self.auth_header())
             .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
             .json(&payload)
             .send()
             .map_err(|e| ActionError::SampoCommandFailed {
                 operation: "github-create-discussion".to_string(),
-                message: format!("HTTP request failed: {}", e),
+                message: format!("GraphQL request failed: {}", e),
             })?;
 
-        if response.status().is_success() {
-            println!("Opened GitHub Discussion for {}", tag);
-            Ok(())
-        } else {
+        if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
             let hint = if status.as_u16() == 404 {
                 "Hint: Discussions may be disabled on this repository, or the token lacks discussions permissions. Enable Discussions in Settings and grant `permissions: discussions: write` in the workflow."
-            } else if status.as_u16() == 410 {
-                "Hint: Discussions are disabled for this repository. Enable Discussions in Settings > Features."
             } else if status.as_u16() == 403 {
                 "Hint: Missing permissions. Grant `permissions: discussions: write` in the workflow."
             } else {
                 ""
             };
-            Err(ActionError::SampoCommandFailed {
+            return Err(ActionError::SampoCommandFailed {
                 operation: "github-create-discussion".to_string(),
                 message: format!(
-                    "Failed to create discussion ({}): {}{}{}",
+                    "GraphQL mutation failed ({}): {}{}{}",
                     status,
                     error_text,
                     if hint.is_empty() { "" } else { " — " },
                     hint
                 ),
-            })
+            });
         }
+
+        let graphql_response: GraphQLResponse<serde_json::Value> =
+            response
+                .json()
+                .map_err(|e| ActionError::SampoCommandFailed {
+                    operation: "github-create-discussion".to_string(),
+                    message: format!("Failed to parse GraphQL response: {}", e),
+                })?;
+
+        if let Some(errors) = graphql_response.errors {
+            let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+            return Err(ActionError::SampoCommandFailed {
+                operation: "github-create-discussion".to_string(),
+                message: format!("GraphQL errors: {}", error_messages.join(", ")),
+            });
+        }
+
+        println!("Opened GitHub Discussion for {}", tag);
+        Ok(())
     }
 
     /// Upload binary as a release asset
@@ -609,5 +713,19 @@ mod tests {
         let client = result.expect("Client should be created successfully");
         assert_eq!(client.repo, "owner/repo");
         assert_eq!(client.token, "token");
+    }
+
+    #[test]
+    fn test_graphql_payload_serialization() {
+        let payload = GraphQLRequest {
+            query: "query { test }".to_string(),
+            variables: serde_json::json!({"key": "value"}),
+        };
+
+        let json = serde_json::to_string(&payload)
+            .expect("GraphQL payload should serialize to valid JSON");
+        assert!(json.contains("query"));
+        assert!(json.contains("variables"));
+        assert!(json.contains("query { test }"));
     }
 }
