@@ -1,5 +1,11 @@
 # sampo-github-action
 
+## 0.8.2 — 2025-10-04
+
+### Patch changes
+
+- [4440d02](https://github.com/bruits/sampo/commit/4440d02cc1ab274f77ba14e93fab3d34211e0947) Fixed GitHub Discussions creation failing with 404 error by migrating from REST API to GraphQL API. — Thanks @goulvenclech!
+
 ## 0.8.1 — 2025-10-03
 
 ### Patch changes
