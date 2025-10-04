@@ -1,4 +1,5 @@
 use crate::error::{ActionError, Result};
+use reqwest::Url;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -540,135 +541,56 @@ impl GitHubClient {
         Ok(())
     }
 
-    /// Upload binary as a release asset
-    pub fn upload_binary_asset(
+    /// Upload an existing file as a release asset
+    pub fn upload_release_asset(
         &self,
         upload_url: &str,
-        workspace: &Path,
-        binary_name: Option<&str>,
-        crate_name: Option<&str>,
-        target_triple: Option<&str>,
+        asset_path: &Path,
+        asset_name: &str,
     ) -> Result<()> {
-        // Determine binary name - prefer provided name, otherwise default to crate/workspace name
-        let bin_name = binary_name.unwrap_or_else(|| {
-            workspace
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("binary")
-        });
-
-        // Build for the requested target (or host if none provided)
-        let mut cmd = std::process::Command::new("cargo");
-        cmd.arg("build").arg("--release").current_dir(workspace);
-        if let Some(triple) = target_triple {
-            cmd.arg("--target").arg(triple);
-        }
-        if let Some(pkg) = crate_name {
-            cmd.arg("-p").arg(pkg);
-        }
-        println!(
-            "Building binary{}: {}{}",
-            target_triple
-                .map(|t| format!(" for target {}", t))
-                .unwrap_or_else(|| " for host target".to_string()),
-            bin_name,
-            crate_name
-                .map(|p| format!(" (package: {})", p))
-                .unwrap_or_default(),
-        );
-
-        let output = cmd.output().map_err(ActionError::Io)?;
-        if !output.status.success() {
+        if !asset_path.is_file() {
             return Err(ActionError::SampoCommandFailed {
-                operation: "binary-build".to_string(),
+                operation: "release-asset-upload".to_string(),
                 message: format!(
-                    "Failed to build binary: {}",
-                    String::from_utf8_lossy(&output.stderr)
+                    "Release asset not found or not a file: {}",
+                    asset_path.display()
                 ),
             });
         }
 
-        // Determine target triple for naming and extension for Windows
-        let triple = target_triple
-            .map(|s| s.to_string())
-            .or_else(detect_host_triple)
-            .unwrap_or_else(|| "unknown-target".to_string());
-        let exe_suffix = if triple.contains("windows") {
-            ".exe"
-        } else {
-            ""
-        };
+        let asset_bytes = std::fs::read(asset_path).map_err(ActionError::Io)?;
 
-        // Path to the compiled binary
-        let binary_path = if let Some(triple) = target_triple {
-            workspace
-                .join("target")
-                .join(triple)
-                .join("release")
-                .join(format!("{}{}", bin_name, exe_suffix))
-        } else {
-            workspace
-                .join("target")
-                .join("release")
-                .join(format!("{}{}", bin_name, exe_suffix))
-        };
-        if !binary_path.exists() {
-            return Err(ActionError::SampoCommandFailed {
-                operation: "binary-locate".to_string(),
-                message: format!("Binary not found at {}", binary_path.display()),
-            });
-        }
-
-        // Read binary file
-        let binary_data = std::fs::read(&binary_path).map_err(ActionError::Io)?;
-
-        // Upload the binary as a release asset
-        let asset_name = format!("{}-{}{}", bin_name, triple, exe_suffix);
-        println!("Uploading binary as {}", asset_name);
+        let mut url = Url::parse(upload_url).map_err(|e| ActionError::SampoCommandFailed {
+            operation: "release-asset-upload".to_string(),
+            message: format!("Invalid upload URL '{}': {}", upload_url, e),
+        })?;
+        url.query_pairs_mut().append_pair("name", asset_name);
 
         let response = self
             .client
-            .post(format!("{}?name={}", upload_url, asset_name))
+            .post(url)
             .header("Authorization", self.auth_header())
             .header("Accept", "application/vnd.github+json")
             .header("Content-Type", "application/octet-stream")
             .header("X-GitHub-Api-Version", "2022-11-28")
-            .body(binary_data)
+            .body(asset_bytes)
             .send()
             .map_err(|e| ActionError::SampoCommandFailed {
-                operation: "binary-upload".to_string(),
+                operation: "release-asset-upload".to_string(),
                 message: format!("HTTP request failed: {}", e),
             })?;
 
         if response.status().is_success() {
-            println!("Binary uploaded successfully");
             Ok(())
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
             Err(ActionError::SampoCommandFailed {
-                operation: "binary-upload".to_string(),
-                message: format!("Failed to upload binary ({}): {}", status, error_text),
+                operation: "release-asset-upload".to_string(),
+                message: format!("Failed to upload asset ({}): {}", status, error_text),
             })
         }
     }
-}
-
-pub fn detect_host_triple() -> Option<String> {
-    let out = std::process::Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    for line in s.lines() {
-        if let Some(rest) = line.strip_prefix("host: ") {
-            return Some(rest.trim().to_string());
-        }
-    }
-    None
 }
 
 #[cfg(test)]

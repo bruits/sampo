@@ -46,15 +46,8 @@ inputs:
   discussion-category:
     description: "Preferred Discussions category slug (default: 'announcements' if it exists)"
     required: false
-  upload-binary:
-    description: "If true, upload binary as release asset when creating GitHub releases (only for binary crates)"
-    required: false
-    default: "false"
-  binary-name:
-    description: "Binary name to upload (defaults to the main package name)"
-    required: false
-  targets:
-    description: "Space- or comma-separated Rust target triples to build and upload (must be installed). If empty, builds host only."
+  release-assets:
+    description: "Comma or newline separated paths/globs for pre-built release assets (optional)"
     required: false
   github-token:
     description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"
@@ -92,9 +85,7 @@ runs:
         INPUT_CREATE_GITHUB_RELEASE: ${{ inputs['create-github-release'] }}
         INPUT_OPEN_DISCUSSION: ${{ inputs['open-discussion'] }}
         INPUT_DISCUSSION_CATEGORY: ${{ inputs['discussion-category'] }}
-        INPUT_UPLOAD_BINARY: ${{ inputs['upload-binary'] }}
-        INPUT_BINARY_NAME: ${{ inputs['binary-name'] }}
-        INPUT_TARGETS: ${{ inputs.targets }}
+        INPUT_RELEASE_ASSETS: ${{ inputs['release-assets'] }}
         INPUT_GITHUB_TOKEN: ${{ inputs['github-token'] }}
         INPUT_USE_LOCAL_BUILD: ${{ inputs['use-local-build'] }}
       run: |
@@ -179,11 +170,6 @@ runs:
           CREATE_GH_RELEASE_FLAG="--create-github-release"
         fi
 
-        UPLOAD_BINARY_FLAG=""
-        if [[ "${INPUT_UPLOAD_BINARY:-}" == "true" || "${INPUT_UPLOAD_BINARY:-}" == "1" ]]; then
-          UPLOAD_BINARY_FLAG="--upload-binary"
-        fi
-
         # Run sampo-github-action binary directly
         cd "${WORKDIR}"
         sampo-github-action \
@@ -195,9 +181,7 @@ runs:
           ${INPUT_BASE_BRANCH:+--base-branch "${INPUT_BASE_BRANCH}"} \
           ${INPUT_PR_BRANCH:+--pr-branch "${INPUT_PR_BRANCH}"} \
           ${INPUT_PR_TITLE:+--pr-title "${INPUT_PR_TITLE}"} \
-          ${CREATE_GH_RELEASE_FLAG} \
-          ${UPLOAD_BINARY_FLAG} \
-          ${INPUT_BINARY_NAME:+--binary-name "${INPUT_BINARY_NAME}"}
+          ${CREATE_GH_RELEASE_FLAG}
 
         # Capture outputs exposed by the binary via GITHUB_OUTPUT
         # (Already written by the binary)
