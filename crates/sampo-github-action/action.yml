@@ -47,7 +47,7 @@ inputs:
     description: "Preferred Discussions category slug (default: 'announcements' if it exists)"
     required: false
   release-assets:
-    description: "Comma- or newline-separated paths/globs for pre-built release assets (optional)"
+    description: "Comma or newline separated paths/globs for pre-built release assets (optional)"
     required: false
   github-token:
     description: "GitHub token to create/update PRs (defaults to GITHUB_TOKEN env)"

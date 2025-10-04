@@ -110,7 +110,7 @@ The action supports the following inputs:
 - `create-github-release`: if `true`, create GitHub Releases for new tags.
 - `open-discussion`: if `true`, create a GitHub Discussion for each created release (requires GitHub Releases).
 - `discussion-category`: preferred Discussions category slug when creating releases.
-- `release-assets`: comma- or newline-separated list of paths or glob patterns for pre-built artifacts to upload when creating GitHub releases. Use `=>` to rename matches (e.g. `dist/*.zip => my-tool.zip`). Placeholders `{{tag}}`, `{{crate}}`, and `{{version}}` are available.
+- `release-assets`: comma or newline separated list of paths or glob patterns for pre-built artifacts to upload when creating GitHub releases. Use `=>` to rename matches (e.g. `dist/*.zip => my-tool.zip`). Placeholders `{{tag}}`, `{{crate}}`, and `{{version}}` are available.
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env).
 - `use-local-build`: if `true`, compile the local `sampo-github-action` binary instead of installing it with `cargo-binstall`.
 
