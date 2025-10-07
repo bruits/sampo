@@ -1167,23 +1167,26 @@ tempfile = "3.0"
         let ws = Workspace {
             root: PathBuf::from("/test"),
             members: vec![
-                CrateInfo {
+                PackageInfo {
                     name: "pkg-a".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-a"),
                     internal_deps: BTreeSet::from(["pkg-b".to_string()]),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "pkg-b".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-b"),
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "pkg-c".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-c"),
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
             ],
         };
@@ -1256,11 +1259,12 @@ tempfile = "3.0"
     fn detect_all_dependency_explanations_empty_cases() {
         let ws = Workspace {
             root: PathBuf::from("/test"),
-            members: vec![CrateInfo {
+            members: vec![PackageInfo {
                 name: "pkg-a".to_string(),
                 version: "1.0.0".to_string(),
                 path: PathBuf::from("/test/pkg-a"),
                 internal_deps: BTreeSet::new(),
+                kind: PackageKind::Cargo,
             }],
         };
 

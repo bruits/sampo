@@ -20,7 +20,7 @@ pub use enrichment::{
     enrich_changeset_message, get_commit_hash_for_path,
 };
 pub use errors::{Result, SampoError, WorkspaceError};
-pub use filters::{filter_members, list_visible_packages, should_ignore_crate, wildcard_match};
+pub use filters::{filter_members, list_visible_packages, should_ignore_package, wildcard_match};
 pub use git::current_branch;
 pub use manifest::{ManifestMetadata, update_manifest_versions};
 pub use markdown::format_markdown_list_item;
@@ -37,7 +37,9 @@ pub use release::{
     detect_fixed_dependency_policy_packages, format_dependency_updates_message,
     infer_bump_from_versions, run_release,
 };
-pub use types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
+pub use types::{
+    Bump, DependencyUpdate, PackageInfo, PackageKind, ReleaseOutput, ReleasedPackage, Workspace,
+};
 pub use workspace::{discover_workspace, parse_workspace_members};
 
 #[cfg(test)]

@@ -2,6 +2,12 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+/// Identifies the ecosystem a package belongs to
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageKind {
+    Cargo,
+}
+
 /// Information about a dependency update during release
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyUpdate {
@@ -27,20 +33,21 @@ pub struct ReleaseOutput {
     pub dry_run: bool,
 }
 
-/// Information about a crate in the workspace
+/// Information about a package in the workspace
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CrateInfo {
+pub struct PackageInfo {
     pub name: String,
     pub version: String,
     pub path: PathBuf,
     pub internal_deps: BTreeSet<String>,
+    pub kind: PackageKind,
 }
 
-/// Represents a Cargo workspace with its members
+/// Represents a workspace with its package members
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub root: PathBuf,
-    pub members: Vec<CrateInfo>,
+    pub members: Vec<PackageInfo>,
 }
 
 /// Semantic version bump types, ordered by impact

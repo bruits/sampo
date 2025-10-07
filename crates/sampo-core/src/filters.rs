@@ -2,16 +2,16 @@ use crate::errors::Result;
 use crate::{
     Config,
     publish::is_publishable_to_crates_io,
-    types::{CrateInfo, Workspace},
+    types::{PackageInfo, Workspace},
 };
 use std::collections::BTreeSet;
 
-/// Determines whether a crate should be ignored based on configuration.
+/// Determines whether a package should be ignored based on configuration.
 ///
 /// Rules:
-/// - When `ignore_unpublished` is true, skip crates that are not publishable to crates.io
-/// - When `ignore` contains patterns, skip crates matching by name or workspace-relative path
-pub fn should_ignore_crate(cfg: &Config, ws: &Workspace, info: &CrateInfo) -> Result<bool> {
+/// - When `ignore_unpublished` is true, skip packages that are not publishable to crates.io
+/// - When `ignore` contains patterns, skip packages matching by name or workspace-relative path
+pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -> Result<bool> {
     // 1) ignore_unpublished
     if cfg.ignore_unpublished {
         let manifest = info.path.join("Cargo.toml");
@@ -39,10 +39,10 @@ pub fn should_ignore_crate(cfg: &Config, ws: &Workspace, info: &CrateInfo) -> Re
 }
 
 /// Filters workspace members according to the configuration.
-pub fn filter_members<'a>(ws: &'a Workspace, cfg: &Config) -> Result<Vec<&'a CrateInfo>> {
+pub fn filter_members<'a>(ws: &'a Workspace, cfg: &Config) -> Result<Vec<&'a PackageInfo>> {
     let mut out = Vec::new();
     for c in &ws.members {
-        if !should_ignore_crate(cfg, ws, c)? {
+        if !should_ignore_package(cfg, ws, c)? {
             out.push(c);
         }
     }
@@ -109,26 +109,30 @@ mod tests {
     use std::path::PathBuf;
 
     fn dummy_ws() -> Workspace {
+        use crate::types::PackageKind;
         Workspace {
             root: PathBuf::from("/repo"),
             members: vec![
-                CrateInfo {
+                PackageInfo {
                     name: "internal-tool".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/tools/internal-tool"),
                     internal_deps: Default::default(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "examples-lib".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/examples/lib"),
                     internal_deps: Default::default(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "normal".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/crates/normal"),
                     internal_deps: Default::default(),
+                    kind: PackageKind::Cargo,
                 },
             ],
         }
@@ -155,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn should_ignore_crate_by_name_pattern() {
+    fn should_ignore_package_by_name_pattern() {
         let ws = dummy_ws();
         let cfg = Config {
             ignore: vec!["internal-*".into()],
@@ -165,12 +169,12 @@ mod tests {
         let internal_crate = &ws.members[0]; // "internal-tool"
         let normal_crate = &ws.members[2]; // "normal"
 
-        assert!(should_ignore_crate(&cfg, &ws, internal_crate).unwrap());
-        assert!(!should_ignore_crate(&cfg, &ws, normal_crate).unwrap());
+        assert!(should_ignore_package(&cfg, &ws, internal_crate).unwrap());
+        assert!(!should_ignore_package(&cfg, &ws, normal_crate).unwrap());
     }
 
     #[test]
-    fn should_ignore_crate_by_path_pattern() {
+    fn should_ignore_package_by_path_pattern() {
         let ws = dummy_ws();
         let cfg = Config {
             ignore: vec!["examples/*".into()],
@@ -180,8 +184,8 @@ mod tests {
         let examples_crate = &ws.members[1]; // "examples-lib" at "/repo/examples/lib"
         let normal_crate = &ws.members[2]; // "normal"
 
-        assert!(should_ignore_crate(&cfg, &ws, examples_crate).unwrap());
-        assert!(!should_ignore_crate(&cfg, &ws, normal_crate).unwrap());
+        assert!(should_ignore_package(&cfg, &ws, examples_crate).unwrap());
+        assert!(!should_ignore_package(&cfg, &ws, normal_crate).unwrap());
     }
 
     #[test]

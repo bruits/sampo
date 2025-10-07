@@ -1,8 +1,8 @@
-use crate::types::CrateInfo;
+use crate::types::PackageInfo;
 use crate::{
     Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
-    filters::should_ignore_crate,
+    filters::should_ignore_package,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -45,19 +45,19 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         )));
     }
 
-    // Determine which crates are publishable to crates.io and not ignored
-    let mut name_to_crate: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    // Determine which packages are publishable to crates.io and not ignored
+    let mut name_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     for c in &ws.members {
         // Skip ignored packages
-        if should_ignore_crate(&config, &ws, c)? {
+        if should_ignore_package(&config, &ws, c)? {
             continue;
         }
 
         let manifest = c.path.join("Cargo.toml");
         if is_publishable_to_crates_io(&manifest)? {
             publishable.insert(c.name.clone());
-            name_to_crate.insert(c.name.clone(), c);
+            name_to_package.insert(c.name.clone(), c);
         }
     }
 
@@ -69,7 +69,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     // Validate internal deps do not include non-publishable crates
     let mut errors: Vec<String> = Vec::new();
     for name in &publishable {
-        let c = name_to_crate.get(name).ok_or_else(|| {
+        let c = name_to_package.get(name).ok_or_else(|| {
             SampoError::Publish(format!(
                 "internal error: crate '{}' not found in workspace",
                 name
@@ -94,7 +94,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     }
 
     // Compute publish order (topological: deps first) for all publishable crates.
-    let order = topo_order(&name_to_crate, &publishable)?;
+    let order = topo_order(&name_to_package, &publishable)?;
 
     println!("Publish plan (crates.io):");
     for name in &order {
@@ -103,7 +103,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 
     // Execute cargo publish in order
     for name in &order {
-        let c = name_to_crate.get(name).ok_or_else(|| {
+        let c = name_to_package.get(name).ok_or_else(|| {
             SampoError::Publish(format!(
                 "internal error: crate '{}' not found in workspace",
                 name
@@ -356,26 +356,26 @@ pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bo
 /// before the crates that depend on them.
 ///
 /// # Arguments
-/// * `name_to_crate` - Map from crate names to their info
-/// * `include` - Set of crate names to include in the ordering
+/// * `name_to_package` - Map from package names to their info
+/// * `include` - Set of package names to include in the ordering
 ///
 /// # Examples
 /// ```no_run
 /// use std::collections::{BTreeMap, BTreeSet};
-/// use sampo_core::{topo_order, types::CrateInfo};
+/// use sampo_core::{topo_order, types::PackageInfo};
 /// use std::path::PathBuf;
 ///
-/// let mut crates = BTreeMap::new();
+/// let mut packages = BTreeMap::new();
 /// let mut include = BTreeSet::new();
 ///
-/// // Setup crates: foundation -> middleware -> app
-/// // ... (create CrateInfo instances) ...
+/// // Setup packages: foundation -> middleware -> app
+/// // ... (create PackageInfo instances) ...
 ///
-/// let order = topo_order(&crates, &include).unwrap();
+/// let order = topo_order(&packages, &include).unwrap();
 /// // Returns: ["foundation", "middleware", "app"]
 /// ```
 pub fn topo_order(
-    name_to_crate: &BTreeMap<String, &CrateInfo>,
+    name_to_package: &BTreeMap<String, &PackageInfo>,
     include: &BTreeSet<String>,
 ) -> Result<Vec<String>> {
     // Build graph: edge dep -> crate
@@ -388,9 +388,9 @@ pub fn topo_order(
     }
 
     for name in include {
-        let c = name_to_crate
+        let c = name_to_package
             .get(name)
-            .ok_or_else(|| SampoError::Publish(format!("missing crate info for '{}'", name)))?;
+            .ok_or_else(|| SampoError::Publish(format!("missing package info for '{}'", name)))?;
         for dep in &c.internal_deps {
             if include.contains(dep) {
                 // dep -> name
@@ -443,6 +443,7 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{PackageInfo, PackageKind, Workspace};
     use rustc_hash::FxHashMap;
     use std::{
         fs,
@@ -639,31 +640,34 @@ mod tests {
 
     #[test]
     fn topo_orders_deps_first() {
-        // Build a small fake graph using CrateInfo structures
-        let a = CrateInfo {
+        // Build a small fake graph using PackageInfo structures
+        let a = PackageInfo {
             name: "a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: BTreeSet::new(),
+            kind: PackageKind::Cargo,
         };
         let mut deps_b = BTreeSet::new();
         deps_b.insert("a".into());
-        let b = CrateInfo {
+        let b = PackageInfo {
             name: "b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
+            kind: PackageKind::Cargo,
         };
         let mut deps_c = BTreeSet::new();
         deps_c.insert("b".into());
-        let c = CrateInfo {
+        let c = PackageInfo {
             name: "c".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/c"),
             internal_deps: deps_c,
+            kind: PackageKind::Cargo,
         };
 
-        let mut map: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+        let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
         map.insert("a".into(), &a);
         map.insert("b".into(), &b);
         map.insert("c".into(), &c);
@@ -682,23 +686,25 @@ mod tests {
         // Create a circular dependency: a -> b -> a
         let mut deps_a = BTreeSet::new();
         deps_a.insert("b".into());
-        let a = CrateInfo {
+        let a = PackageInfo {
             name: "a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: deps_a,
+            kind: PackageKind::Cargo,
         };
 
         let mut deps_b = BTreeSet::new();
         deps_b.insert("a".into());
-        let b = CrateInfo {
+        let b = PackageInfo {
             name: "b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
+            kind: PackageKind::Cargo,
         };
 
-        let mut map: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+        let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
         map.insert("a".into(), &a);
         map.insert("b".into(), &b);
 
@@ -825,7 +831,6 @@ mod tests {
 
     #[test]
     fn skips_ignored_packages_during_publish() {
-        use crate::types::{CrateInfo, Workspace};
         use std::collections::BTreeSet;
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -868,17 +873,19 @@ edition = "2021"
         let workspace = Workspace {
             root: root.to_path_buf(),
             members: vec![
-                CrateInfo {
+                PackageInfo {
                     name: "main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: main_pkg,
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "examples-demo".to_string(),
                     version: "1.0.0".to_string(),
                     path: examples_pkg,
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
             ],
         };
@@ -889,7 +896,7 @@ edition = "2021"
         let mut publishable: BTreeSet<String> = BTreeSet::new();
         for c in &workspace.members {
             // Skip ignored packages
-            if should_ignore_crate(&config, &workspace, c).unwrap() {
+            if should_ignore_package(&config, &workspace, c).unwrap() {
                 continue;
             }
 
