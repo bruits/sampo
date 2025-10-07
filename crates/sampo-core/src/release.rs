@@ -1,7 +1,9 @@
 use crate::errors::{Result, SampoError, io_error_with_path};
-use crate::filters::should_ignore_crate;
+use crate::filters::should_ignore_package;
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
-use crate::types::{Bump, CrateInfo, DependencyUpdate, ReleaseOutput, ReleasedPackage, Workspace};
+use crate::types::{
+    Bump, DependencyUpdate, PackageInfo, ReleaseOutput, ReleasedPackage, Workspace,
+};
 use crate::{
     changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
@@ -135,11 +137,11 @@ pub fn detect_all_dependency_explanations(
         .map(|(name, (_old, new_ver))| (name.clone(), new_ver.clone()))
         .collect();
 
-    // Build map of crate name -> CrateInfo for quick lookup (only non-ignored packages)
-    let by_name: BTreeMap<String, &CrateInfo> = workspace
+    // Build map of package name -> PackageInfo for quick lookup (only non-ignored packages)
+    let by_name: BTreeMap<String, &PackageInfo> = workspace
         .members
         .iter()
-        .filter(|c| !should_ignore_crate(config, workspace, c).unwrap_or(false))
+        .filter(|c| !should_ignore_package(config, workspace, c).unwrap_or(false))
         .map(|c| (c.name.clone(), c))
         .collect();
 
@@ -192,7 +194,7 @@ pub fn detect_fixed_dependency_policy_packages(
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for crate_info in &workspace.members {
         // Skip ignored packages when building the dependency graph
-        if should_ignore_crate(config, workspace, crate_info).unwrap_or(false) {
+        if should_ignore_package(config, workspace, crate_info).unwrap_or(false) {
             continue;
         }
 
@@ -666,8 +668,8 @@ fn compute_initial_bumps(
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
-    // Build quick lookup for crate info
-    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    // Build quick lookup for package info
+    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
         by_name.insert(c.name.clone(), c);
     }
@@ -676,7 +678,7 @@ fn compute_initial_bumps(
         let mut consumed_changeset = false;
         for (pkg, bump) in &cs.entries {
             if let Some(info) = by_name.get(pkg)
-                && should_ignore_crate(cfg, ws, info)?
+                && should_ignore_package(cfg, ws, info)?
             {
                 continue;
             }
@@ -731,7 +733,7 @@ fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTre
     let ignored_packages: BTreeSet<String> = ws
         .members
         .iter()
-        .filter(|c| should_ignore_crate(cfg, ws, c).unwrap_or(false))
+        .filter(|c| should_ignore_package(cfg, ws, c).unwrap_or(false))
         .map(|c| c.name.clone())
         .collect();
 
@@ -770,8 +772,8 @@ fn apply_dependency_cascade(
             .position(|group| group.contains(&pkg_name.to_string()))
     };
 
-    // Build a quick lookup map for crate info
-    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    // Build a quick lookup map for package info
+    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
         by_name.insert(c.name.clone(), c);
     }
@@ -787,7 +789,7 @@ fn apply_dependency_cascade(
             for dep_name in deps {
                 // Check if this dependent package should be ignored
                 if let Some(info) = by_name.get(dep_name) {
-                    match should_ignore_crate(cfg, ws, info) {
+                    match should_ignore_package(cfg, ws, info) {
                         Ok(true) => continue,
                         Ok(false) => {} // Continue processing
                         Err(_) => {
@@ -827,7 +829,7 @@ fn apply_dependency_cascade(
                 if group_member != &changed {
                     // Check if this group member should be ignored
                     if let Some(info) = by_name.get(group_member) {
-                        match should_ignore_crate(cfg, ws, info) {
+                        match should_ignore_package(cfg, ws, info) {
                             Ok(true) => continue,
                             Ok(false) => {} // Continue processing
                             Err(_) => {
@@ -896,8 +898,8 @@ fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
 ) -> Result<ReleasePlan> {
-    // Map crate name -> CrateInfo for quick lookup
-    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    // Map package name -> PackageInfo for quick lookup
+    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
         by_name.insert(c.name.clone(), c);
     }
@@ -1061,7 +1063,7 @@ fn apply_releases(
     cfg: &Config,
 ) -> Result<()> {
     // Build lookup maps
-    let mut by_name: BTreeMap<String, &CrateInfo> = BTreeMap::new();
+    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
         by_name.insert(c.name.clone(), c);
     }
@@ -1684,7 +1686,7 @@ mod tests {
 
     #[test]
     fn test_ignore_packages_in_dependency_cascade() {
-        use crate::types::{CrateInfo, Workspace};
+        use crate::types::{PackageInfo, PackageKind, Workspace};
         use std::path::PathBuf;
 
         // Create a mock workspace with packages
@@ -1692,23 +1694,26 @@ mod tests {
         let workspace = Workspace {
             root: root.clone(),
             members: vec![
-                CrateInfo {
+                PackageInfo {
                     name: "main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("main-package"),
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "examples-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("examples/package"),
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "benchmarks-utils".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("benchmarks/utils"),
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
             ],
         };
@@ -1745,7 +1750,7 @@ mod tests {
 
     #[test]
     fn test_ignored_packages_excluded_from_dependency_graph() {
-        use crate::types::{CrateInfo, Workspace};
+        use crate::types::{PackageInfo, PackageKind, Workspace};
         use std::collections::BTreeSet;
         use std::path::PathBuf;
 
@@ -1753,17 +1758,19 @@ mod tests {
         let workspace = Workspace {
             root: root.clone(),
             members: vec![
-                CrateInfo {
+                PackageInfo {
                     name: "main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("main-package"),
                     internal_deps: ["examples-package".to_string()].into_iter().collect(),
+                    kind: PackageKind::Cargo,
                 },
-                CrateInfo {
+                PackageInfo {
                     name: "examples-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("examples/package"),
                     internal_deps: BTreeSet::new(),
+                    kind: PackageKind::Cargo,
                 },
             ],
         };

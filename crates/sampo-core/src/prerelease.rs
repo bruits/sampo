@@ -2,7 +2,7 @@ use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
-use crate::types::{CrateInfo, Workspace};
+use crate::types::{PackageInfo, Workspace};
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -86,14 +86,14 @@ pub fn restore_preserved_changesets(root: &Path) -> Result<usize> {
 fn resolve_targets<'a>(
     workspace: &'a Workspace,
     packages: &[String],
-) -> Result<Vec<&'a CrateInfo>> {
+) -> Result<Vec<&'a PackageInfo>> {
     if packages.is_empty() {
         return Err(SampoError::Prerelease(
             "At least one package must be specified.".to_string(),
         ));
     }
 
-    let mut lookup: BTreeMap<&str, &CrateInfo> = BTreeMap::new();
+    let mut lookup: BTreeMap<&str, &PackageInfo> = BTreeMap::new();
     for info in &workspace.members {
         lookup.insert(info.name.as_str(), info);
     }
@@ -144,7 +144,7 @@ fn validate_label(label: &str) -> Result<Prerelease> {
 }
 
 fn plan_enter_updates(
-    targets: &[&CrateInfo],
+    targets: &[&PackageInfo],
     prerelease: &Prerelease,
 ) -> Result<(Vec<VersionChange>, BTreeMap<String, String>)> {
     let mut changes = Vec::new();
@@ -182,7 +182,7 @@ fn plan_enter_updates(
 }
 
 fn plan_exit_updates(
-    targets: &[&CrateInfo],
+    targets: &[&PackageInfo],
 ) -> Result<(Vec<VersionChange>, BTreeMap<String, String>)> {
     let mut changes = Vec::new();
     let mut new_versions: BTreeMap<String, String> = BTreeMap::new();

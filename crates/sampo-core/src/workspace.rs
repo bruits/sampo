@@ -1,5 +1,5 @@
 use crate::errors::WorkspaceError;
-use crate::types::{CrateInfo, Workspace};
+use crate::types::{PackageInfo, PackageKind, Workspace};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -51,14 +51,15 @@ pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
     }
 
     // Second pass: compute internal dependencies
-    let mut out: Vec<CrateInfo> = Vec::new();
+    let mut out: Vec<PackageInfo> = Vec::new();
     for (name, version, path, manifest) in crates {
         let internal_deps = collect_internal_deps(&path, &name_to_path, &manifest);
-        out.push(CrateInfo {
+        out.push(PackageInfo {
             name,
             version,
             path,
             internal_deps,
+            kind: PackageKind::Cargo,
         });
     }
 
