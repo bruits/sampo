@@ -443,6 +443,7 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{PackageInfo, PackageKind, Workspace};
     use rustc_hash::FxHashMap;
     use std::{
         fs,
@@ -639,7 +640,6 @@ mod tests {
 
     #[test]
     fn topo_orders_deps_first() {
-        use crate::types::PackageKind;
         // Build a small fake graph using PackageInfo structures
         let a = PackageInfo {
             name: "a".into(),
@@ -683,7 +683,6 @@ mod tests {
 
     #[test]
     fn detects_dependency_cycle() {
-        use crate::types::PackageKind;
         // Create a circular dependency: a -> b -> a
         let mut deps_a = BTreeSet::new();
         deps_a.insert("b".into());
@@ -832,7 +831,6 @@ mod tests {
 
     #[test]
     fn skips_ignored_packages_during_publish() {
-        use crate::types::{PackageInfo, Workspace};
         use std::collections::BTreeSet;
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -872,7 +870,6 @@ edition = "2021"
         fs::write(examples_pkg.join("Cargo.toml"), examples_toml).unwrap();
 
         // Create a workspace with both packages
-        use crate::types::PackageKind;
         let workspace = Workspace {
             root: root.to_path_buf(),
             members: vec![
