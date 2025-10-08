@@ -49,6 +49,11 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     let mut name_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     for c in &ws.members {
+        // Skip non-Cargo packages (only Cargo publishing is currently supported)
+        if c.kind != crate::types::PackageKind::Cargo {
+            continue;
+        }
+
         // Skip ignored packages
         if should_ignore_package(&config, &ws, c)? {
             continue;

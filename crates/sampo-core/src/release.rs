@@ -668,10 +668,13 @@ fn compute_initial_bumps(
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
-    // Build quick lookup for package info
+    // Build quick lookup for package info (only Cargo packages for now)
     let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        by_name.insert(c.name.clone(), c);
+        // Only process Cargo packages in release planning
+        if c.kind == crate::types::PackageKind::Cargo {
+            by_name.insert(c.name.clone(), c);
+        }
     }
 
     for cs in changesets {
@@ -738,6 +741,11 @@ fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTre
         .collect();
 
     for c in &ws.members {
+        // Skip non-Cargo packages (only Cargo is currently supported for releases)
+        if c.kind != crate::types::PackageKind::Cargo {
+            continue;
+        }
+
         // Skip ignored packages when building the dependency graph
         if ignored_packages.contains(&c.name) {
             continue;
@@ -772,10 +780,12 @@ fn apply_dependency_cascade(
             .position(|group| group.contains(&pkg_name.to_string()))
     };
 
-    // Build a quick lookup map for package info
+    // Build a quick lookup map for package info (only Cargo packages)
     let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        by_name.insert(c.name.clone(), c);
+        if c.kind == crate::types::PackageKind::Cargo {
+            by_name.insert(c.name.clone(), c);
+        }
     }
 
     let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
@@ -898,10 +908,12 @@ fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
 ) -> Result<ReleasePlan> {
-    // Map package name -> PackageInfo for quick lookup
+    // Map package name -> PackageInfo for quick lookup (only Cargo packages)
     let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        by_name.insert(c.name.clone(), c);
+        if c.kind == crate::types::PackageKind::Cargo {
+            by_name.insert(c.name.clone(), c);
+        }
     }
 
     let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
@@ -1062,10 +1074,12 @@ fn apply_releases(
     changesets: &[ChangesetInfo],
     cfg: &Config,
 ) -> Result<()> {
-    // Build lookup maps
+    // Build lookup maps (only Cargo packages)
     let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        by_name.insert(c.name.clone(), c);
+        if c.kind == crate::types::PackageKind::Cargo {
+            by_name.insert(c.name.clone(), c);
+        }
     }
 
     let mut new_version_by_name: BTreeMap<String, String> = BTreeMap::new();
