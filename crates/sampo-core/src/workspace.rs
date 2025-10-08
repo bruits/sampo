@@ -23,9 +23,7 @@ pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
             let packages = discoverer.discover(&discovered_root)?;
 
             // Use the first discovered root as the workspace root
-            if root.is_none() {
-                root = Some(discovered_root);
-            }
+            root.get_or_insert(discovered_root);
             all_members.extend(packages);
         }
     }
