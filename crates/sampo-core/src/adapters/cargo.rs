@@ -132,7 +132,7 @@ fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> 
         // Include a short, normalized snippet of the response body for diagnostics
         let body = res.text().unwrap_or_default();
         let snippet: String = body.trim().chars().take(500).collect();
-        let snippet: String = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+        let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
 
         let body_part = if snippet.is_empty() {
             String::new()
