@@ -16,7 +16,7 @@ pub mod workspace;
 // Re-export commonly used items
 pub use changeset::{ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown};
 pub use config::Config;
-pub use discovery::{CargoDiscovery, PackageDiscovery};
+pub use discovery::PackageDiscoverer;
 pub use enrichment::{
     CommitInfo, GitHubUserInfo, detect_github_repo_slug, detect_github_repo_slug_with_config,
     enrich_changeset_message, get_commit_hash_for_path,
@@ -42,7 +42,7 @@ pub use release::{
 pub use types::{
     Bump, DependencyUpdate, PackageInfo, PackageKind, ReleaseOutput, ReleasedPackage, Workspace,
 };
-pub use workspace::{discover_workspace, parse_workspace_members};
+pub use workspace::discover_workspace;
 
 #[cfg(test)]
 mod release_tests;

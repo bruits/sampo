@@ -1,4 +1,4 @@
-use crate::discovery::{CargoDiscovery, PackageDiscovery};
+use crate::discovery::PackageDiscoverer;
 use crate::errors::WorkspaceError;
 use crate::types::Workspace;
 use std::path::{Path, PathBuf};
@@ -7,19 +7,17 @@ type Result<T> = std::result::Result<T, WorkspaceError>;
 
 /// Discover workspace packages using registered ecosystem discoverers
 pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
-    // Registry of available discovery implementations
-    // TODO: When adding new ecosystems, register them here
-    let discoverers: Vec<Box<dyn PackageDiscovery>> = vec![Box::new(CargoDiscovery)];
+    // Registry of available discoverers
+    // When adding new ecosystems, add them here
+    let discoverers = [PackageDiscoverer::Cargo];
 
-    // Try each discoverer until one succeeds
     let mut root = None;
     let mut all_members = Vec::new();
 
     for discoverer in &discoverers {
         if discoverer.can_discover(start_dir) {
             // Find the workspace root by walking up from start_dir
-            let discovered_root =
-                find_workspace_root_for_discoverer(start_dir, discoverer.as_ref())?;
+            let discovered_root = find_workspace_root_for_discoverer(start_dir, discoverer)?;
 
             // Discover packages in this ecosystem
             let packages = discoverer.discover(&discovered_root)?;
@@ -43,7 +41,7 @@ pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
 /// Find the workspace root for a given discoverer by walking up the directory tree
 fn find_workspace_root_for_discoverer(
     start_dir: &Path,
-    discoverer: &dyn PackageDiscovery,
+    discoverer: &PackageDiscoverer,
 ) -> Result<PathBuf> {
     let mut current = start_dir;
     loop {
@@ -52,12 +50,6 @@ fn find_workspace_root_for_discoverer(
         }
         current = current.parent().ok_or(WorkspaceError::NotFound)?;
     }
-}
-
-/// Parse Cargo workspace members (delegates to CargoDiscovery)
-pub fn parse_workspace_members(root: &Path, root_toml: &toml::Value) -> Result<Vec<PathBuf>> {
-    let discovery = CargoDiscovery;
-    discovery.parse_workspace_members(root, root_toml)
 }
 
 #[cfg(test)]
@@ -143,47 +135,6 @@ mod tests {
         let x = ws.members.iter().find(|c| c.name == "x").unwrap();
         assert!(x.internal_deps.contains("y"));
         assert!(x.internal_deps.contains("z"));
-    }
-
-    #[test]
-    fn parse_workspace_members_delegates_to_cargo_discovery() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-
-        // Create workspace
-        fs::write(
-            root.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
-        )
-        .unwrap();
-
-        // Create crates
-        let crates_dir = root.join("crates");
-        fs::create_dir_all(crates_dir.join("a")).unwrap();
-        fs::create_dir_all(crates_dir.join("b")).unwrap();
-        fs::write(
-            crates_dir.join("a/Cargo.toml"),
-            "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
-        )
-        .unwrap();
-        fs::write(
-            crates_dir.join("b/Cargo.toml"),
-            "[package]\nname = \"b\"\nversion = \"0.2.0\"\n",
-        )
-        .unwrap();
-
-        let root_toml: toml::Value = std::fs::read_to_string(root.join("Cargo.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
-
-        let members = parse_workspace_members(root, &root_toml).unwrap();
-        let mut names: Vec<_> = members
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
-            .collect();
-        names.sort();
-        assert_eq!(names, vec!["a", "b"]);
     }
 
     #[test]
