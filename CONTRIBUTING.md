@@ -46,7 +46,7 @@ Sampo is a Rust monorepo using [Cargo workspaces](https://doc.rust-lang.org/book
 
 `sampo-core` is a plain Rust library that owns the release planning, changelog generation, and configuration parsing shared by every other crate. It leans heavily on [`serde`](https://docs.rs/serde/latest/serde/) / [`toml`](https://docs.rs/toml/latest/toml/) for configuration parsing, [`semver`](https://docs.rs/semver/latest/semver/) for version math, and [`reqwest`](https://docs.rs/reqwest/latest/reqwest/) + [`tokio`](https://docs.rs/tokio/latest/tokio/) for the bits that fetch metadata or talk to registries. Most tests spin up throwaway workspaces—check the helpers in `src/release_tests.rs` and `src/workspace.rs` before reaching for manual temp-dir plumbing.
 
-The `PackageAdapter` trait abstracts all ecosystem-specific operations (workspace discovery, manifest parsing, publishability checks, registry APIs, lockfile regen) so orchestration stays ecosystem-agnostic. To add another ecosystems, create a new adapter in `src/adapters/<ecosystem>.rs` implementing the trait, then register it in `workspace::discover_workspace()`.
+The `PackageAdapter` enum abstracts all ecosystem-specific operations: workspace discovery, manifest parsing, publishability checks, registry APIs, lockfile regen, etc. To add another ecosystem, create a new adapter in `src/adapters/<ecosystem>.rs`, add a variant to the enum, and update all match statements to delegate to your adapter.
 
 ### Sampo
 
