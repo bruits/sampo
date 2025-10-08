@@ -1,5 +1,9 @@
 use crate::errors::Result;
-use crate::{Config, adapters::PackageAdapter, types::{PackageInfo, Workspace}};
+use crate::{
+    Config,
+    adapters::PackageAdapter,
+    types::{PackageInfo, Workspace},
+};
 use std::collections::BTreeSet;
 
 /// Determines whether a package should be ignored based on configuration.

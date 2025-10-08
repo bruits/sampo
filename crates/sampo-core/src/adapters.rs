@@ -13,6 +13,7 @@ pub enum PackageAdapter {
 
 impl PackageAdapter {
     /// All registered adapters, checked in order during workspace discovery.
+    /// TODO: it's fine for now, but eventually we could using strum or enum-iterators here.
     pub fn all() -> &'static [PackageAdapter] {
         &[PackageAdapter::Cargo]
     }
