@@ -46,6 +46,8 @@ Sampo is a Rust monorepo using [Cargo workspaces](https://doc.rust-lang.org/book
 
 `sampo-core` is a plain Rust library that owns the release planning, changelog generation, and configuration parsing shared by every other crate. It leans heavily on [`serde`](https://docs.rs/serde/latest/serde/) / [`toml`](https://docs.rs/toml/latest/toml/) for configuration parsing, [`semver`](https://docs.rs/semver/latest/semver/) for version math, and [`reqwest`](https://docs.rs/reqwest/latest/reqwest/) + [`tokio`](https://docs.rs/tokio/latest/tokio/) for the bits that fetch metadata or talk to registries. Most tests spin up throwaway workspaces—check the helpers in `src/release_tests.rs` and `src/workspace.rs` before reaching for manual temp-dir plumbing.
 
+The `PackageAdapter` enum abstracts all ecosystem-specific operations: workspace discovery, manifest parsing, publishability checks, registry APIs, lockfile regen, etc. To add another ecosystem, create a new adapter in `src/adapters/<ecosystem>.rs`, add a variant to the enum, and update all match statements to delegate to your adapter.
+
 ### Sampo
 
 `sampo` is the CLI façade on top of `sampo-core`. It wires commands together with [`clap`](https://docs.rs/clap/latest/clap/) and relies on [`dialoguer`](https://docs.rs/dialoguer/latest/dialoguer/) for interactive prompts, so changes to choices or flows should be exercised manually. Run commands locally with `cargo run -p sampo -- <command>` from the repository root; creating a scratch repo and trying `cargo run -p sampo -- init` is the quickest way to validate the `.sampo` layout, release flow, and any user-facing copy you touch.

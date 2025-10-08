@@ -1,7 +1,7 @@
 use crate::errors::Result;
 use crate::{
     Config,
-    publish::is_publishable_to_crates_io,
+    adapters::PackageAdapter,
     types::{PackageInfo, Workspace},
 };
 use std::collections::BTreeSet;
@@ -14,8 +14,9 @@ use std::collections::BTreeSet;
 pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -> Result<bool> {
     // 1) ignore_unpublished
     if cfg.ignore_unpublished {
-        let manifest = info.path.join("Cargo.toml");
-        if !is_publishable_to_crates_io(&manifest)? {
+        let adapter = PackageAdapter::Cargo;
+        let manifest = adapter.manifest_path(&info.path);
+        if !adapter.is_publishable(&manifest)? {
             return Ok(true);
         }
     }

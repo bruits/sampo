@@ -1,3 +1,4 @@
+use crate::adapters::PackageAdapter;
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
@@ -16,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Format dependency updates for changelog display
 ///
@@ -637,19 +637,7 @@ fn unique_destination_path(dir: &Path, file_name: &OsStr) -> PathBuf {
 /// Uses `cargo generate-lockfile`, which will rebuild the lockfile with the latest
 /// compatible versions, ensuring the lockfile reflects the new workspace versions.
 pub(crate) fn regenerate_lockfile(root: &Path) -> Result<()> {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("generate-lockfile").current_dir(root);
-
-    println!("Regenerating Cargo.lock…");
-    let status = cmd.status().map_err(SampoError::Io)?;
-    if !status.success() {
-        return Err(SampoError::Release(format!(
-            "cargo generate-lockfile failed with status {}",
-            status
-        )));
-    }
-    println!("Cargo.lock updated.");
-    Ok(())
+    PackageAdapter::Cargo.regenerate_lockfile(root)
 }
 
 /// Compute initial bumps from changesets and collect messages
@@ -1110,9 +1098,10 @@ fn apply_releases(
     let release_date_display = compute_release_date_display(cfg)?;
 
     // Apply updates for each release
+    let adapter = crate::adapters::PackageAdapter::Cargo;
     for (name, old, newv) in releases {
         let info = by_name.get(name.as_str()).unwrap();
-        let manifest_path = info.path.join("Cargo.toml");
+        let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
 
         // Update manifest versions

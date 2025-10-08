@@ -1,3 +1,4 @@
+use crate::adapters::PackageAdapter;
 use crate::types::PackageInfo;
 use crate::{
     Config, current_branch, discover_workspace,
@@ -5,10 +6,8 @@ use crate::{
     filters::should_ignore_package,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 /// Publishes all publishable crates in a workspace to crates.io in dependency order.
 ///
@@ -59,8 +58,9 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
             continue;
         }
 
-        let manifest = c.path.join("Cargo.toml");
-        if is_publishable_to_crates_io(&manifest)? {
+        let adapter = PackageAdapter::Cargo;
+        let manifest = adapter.manifest_path(&c.path);
+        if adapter.is_publishable(&manifest)? {
             publishable.insert(c.name.clone());
             name_to_package.insert(c.name.clone(), c);
         }
@@ -106,7 +106,8 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         println!("  - {name}");
     }
 
-    // Execute cargo publish in order
+    // Execute cargo publish in order using the adapter
+    let adapter = PackageAdapter::Cargo;
     for name in &order {
         let c = name_to_package.get(name).ok_or_else(|| {
             SampoError::Publish(format!(
@@ -114,9 +115,10 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
                 name
             ))
         })?;
-        let manifest = c.path.join("Cargo.toml");
+        let manifest = adapter.manifest_path(&c.path);
+
         // Skip if the exact version already exists on crates.io
-        match version_exists_on_crates_io(&c.name, &c.version) {
+        match adapter.version_exists(&c.name, &c.version) {
             Ok(true) => {
                 println!(
                     "Skipping {}@{} (already exists on crates.io)",
@@ -133,27 +135,8 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
             }
         }
 
-        let mut cmd = Command::new("cargo");
-        cmd.arg("publish").arg("--manifest-path").arg(&manifest);
-        if dry_run {
-            cmd.arg("--dry-run");
-        }
-        if !cargo_args.is_empty() {
-            cmd.args(cargo_args);
-        }
-
-        println!(
-            "Running: {}",
-            format_command_display(cmd.get_program(), cmd.get_args())
-        );
-
-        let status = cmd.status()?;
-        if !status.success() {
-            return Err(SampoError::Publish(format!(
-                "cargo publish failed for crate '{}' with status {}",
-                name, status
-            )));
-        }
+        // Publish using the adapter
+        adapter.publish(&manifest, dry_run, cargo_args)?;
 
         // Create an annotated git tag after successful publish (not in dry-run)
         if !dry_run && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version) {
@@ -171,66 +154,6 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     }
 
     Ok(())
-}
-
-/// Determines if a crate is publishable to crates.io based on its Cargo.toml manifest.
-///
-/// Checks the `publish` field in the `[package]` section according to Cargo's rules:
-/// - No `publish` field: publishable (default)
-/// - `publish = false`: not publishable
-/// - `publish = ["registry1", "registry2"]`: publishable only if "crates-io" is in the array
-///
-/// # Arguments
-/// * `manifest_path` - Path to the Cargo.toml file to check
-///
-/// # Examples
-/// ```no_run
-/// use std::path::Path;
-/// use sampo_core::is_publishable_to_crates_io;
-///
-/// // Check if a crate is publishable
-/// let publishable = is_publishable_to_crates_io(Path::new("./Cargo.toml")).unwrap();
-/// if publishable {
-///     println!("This crate can be published to crates.io");
-/// }
-/// ```
-///
-/// # Errors
-/// Returns an error if:
-/// - The manifest file cannot be read
-/// - The TOML is malformed
-/// - The manifest has no `[package]` section (returns `Ok(false)`)
-pub fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
-    let text = fs::read_to_string(manifest_path)
-        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let value: toml::Value = text.parse().map_err(|e| {
-        SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
-    })?;
-
-    let pkg = match value.get("package").and_then(|v| v.as_table()) {
-        Some(p) => p,
-        None => return Ok(false),
-    };
-
-    // If publish = false => skip
-    if let Some(val) = pkg.get("publish") {
-        match val {
-            toml::Value::Boolean(false) => return Ok(false),
-            toml::Value::Array(arr) => {
-                // Only publish if the array contains "crates-io"
-                // (Cargo uses this to whitelist registries.)
-                let allowed: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-                return Ok(allowed.iter().any(|s| s == "crates-io"));
-            }
-            _ => {}
-        }
-    }
-
-    // Default case: publishable
-    Ok(true)
 }
 
 /// Creates an annotated git tag for a published crate.
@@ -290,66 +213,6 @@ pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) ->
         Err(SampoError::Publish(format!(
             "git tag failed with status {}",
             status
-        )))
-    }
-}
-
-/// Checks if a specific version of a crate already exists on crates.io.
-///
-/// Makes an HTTP request to the crates.io API to determine if the exact
-/// version is already published. Useful for skipping redundant publishes.
-///
-/// # Arguments
-/// * `crate_name` - Name of the crate to check
-/// * `version` - Exact version string to check
-///
-/// # Examples
-/// ```no_run
-/// use sampo_core::version_exists_on_crates_io;
-///
-/// // Check if serde 1.0.0 exists (it does)
-/// let exists = version_exists_on_crates_io("serde", "1.0.0").unwrap();
-/// assert!(exists);
-///
-/// // Check if a fictional version exists
-/// let exists = version_exists_on_crates_io("serde", "999.999.999").unwrap();
-/// assert!(!exists);
-/// ```
-pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> {
-    // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
-    let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .user_agent(format!("sampo-core/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| SampoError::Publish(format!("failed to build HTTP client: {}", e)))?;
-
-    let res = client
-        .get(&url)
-        .send()
-        .map_err(|e| SampoError::Publish(format!("HTTP request failed: {}", e)))?;
-
-    let status = res.status();
-    if status == reqwest::StatusCode::OK {
-        Ok(true)
-    } else if status == reqwest::StatusCode::NOT_FOUND {
-        Ok(false)
-    } else {
-        // Include a short, normalized snippet of the response body for diagnostics
-        let body = res.text().unwrap_or_default();
-        let snippet: String = body.trim().chars().take(500).collect();
-        let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
-
-        let body_part = if snippet.is_empty() {
-            String::new()
-        } else {
-            format!(" body=\"{}\"", snippet)
-        };
-
-        Err(SampoError::Publish(format!(
-            "Crates.io {} response:{}",
-            status, body_part
         )))
     }
 }
@@ -432,17 +295,6 @@ pub fn topo_order(
         ));
     }
     Ok(out)
-}
-
-fn format_command_display(program: &std::ffi::OsStr, args: std::process::CommandArgs) -> String {
-    let prog = program.to_string_lossy();
-    let mut s = String::new();
-    s.push_str(&prog);
-    for a in args {
-        s.push(' ');
-        s.push_str(&a.to_string_lossy());
-    }
-    s
 }
 
 #[cfg(test)]
@@ -592,10 +444,11 @@ mod tests {
         fn assert_publishable_crates(&self, expected: &[&str]) {
             let ws = discover_workspace(&self.root).unwrap();
             let mut actual_publishable = Vec::new();
+            let adapter = PackageAdapter::Cargo;
 
             for c in &ws.members {
-                let manifest = c.path.join("Cargo.toml");
-                if is_publishable_to_crates_io(&manifest).unwrap() {
+                let manifest = adapter.manifest_path(&c.path);
+                if adapter.is_publishable(&manifest).unwrap() {
                     actual_publishable.push(c.name.clone());
                 }
             }
@@ -775,6 +628,7 @@ mod tests {
     #[test]
     fn parses_manifest_publish_field_correctly() {
         let temp_dir = tempfile::tempdir().unwrap();
+        let adapter = PackageAdapter::Cargo;
 
         // Test publish = false
         let manifest_false = temp_dir.path().join("false.toml");
@@ -783,7 +637,7 @@ mod tests {
             "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = false\n",
         )
         .unwrap();
-        assert!(!is_publishable_to_crates_io(&manifest_false).unwrap());
+        assert!(!adapter.is_publishable(&manifest_false).unwrap());
 
         // Test publish = ["custom-registry"] (not crates-io)
         let manifest_custom = temp_dir.path().join("custom.toml");
@@ -792,7 +646,7 @@ mod tests {
             "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"custom-registry\"]\n",
         )
         .unwrap();
-        assert!(!is_publishable_to_crates_io(&manifest_custom).unwrap());
+        assert!(!adapter.is_publishable(&manifest_custom).unwrap());
 
         // Test publish = ["crates-io"] (explicitly allowed)
         let manifest_allowed = temp_dir.path().join("allowed.toml");
@@ -801,7 +655,7 @@ mod tests {
             "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"crates-io\"]\n",
         )
         .unwrap();
-        assert!(is_publishable_to_crates_io(&manifest_allowed).unwrap());
+        assert!(adapter.is_publishable(&manifest_allowed).unwrap());
 
         // Test default (no publish field)
         let manifest_default = temp_dir.path().join("default.toml");
@@ -810,7 +664,7 @@ mod tests {
             "[package]\nname=\"test\"\nversion=\"0.1.0\"\n",
         )
         .unwrap();
-        assert!(is_publishable_to_crates_io(&manifest_default).unwrap());
+        assert!(adapter.is_publishable(&manifest_default).unwrap());
     }
 
     #[test]
@@ -819,8 +673,9 @@ mod tests {
         let manifest_path = temp_dir.path().join("no-package.toml");
         fs::write(&manifest_path, "[dependencies]\nserde = \"1.0\"\n").unwrap();
 
+        let adapter = PackageAdapter::Cargo;
         // Should return false (not publishable) for manifests without [package]
-        assert!(!is_publishable_to_crates_io(&manifest_path).unwrap());
+        assert!(!adapter.is_publishable(&manifest_path).unwrap());
     }
 
     #[test]
@@ -829,7 +684,8 @@ mod tests {
         let manifest_path = temp_dir.path().join("broken.toml");
         fs::write(&manifest_path, "[package\nname=\"test\"\n").unwrap(); // Missing closing bracket
 
-        let result = is_publishable_to_crates_io(&manifest_path);
+        let adapter = PackageAdapter::Cargo;
+        let result = adapter.is_publishable(&manifest_path);
         assert!(result.is_err());
         assert!(format!("{}", result.unwrap_err()).contains("Invalid data"));
     }
@@ -899,14 +755,15 @@ edition = "2021"
 
         // Simulate what run_publish does for determining publishable packages
         let mut publishable: BTreeSet<String> = BTreeSet::new();
+        let adapter = PackageAdapter::Cargo;
         for c in &workspace.members {
             // Skip ignored packages
             if should_ignore_package(&config, &workspace, c).unwrap() {
                 continue;
             }
 
-            let manifest = c.path.join("Cargo.toml");
-            if is_publishable_to_crates_io(&manifest).unwrap() {
+            let manifest = adapter.manifest_path(&c.path);
+            if adapter.is_publishable(&manifest).unwrap() {
                 publishable.insert(c.name.clone());
             }
         }

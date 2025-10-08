@@ -228,8 +228,9 @@ fn apply_version_updates(
         other => other,
     })?;
 
+    let adapter = crate::adapters::PackageAdapter::Cargo;
     for info in &workspace.members {
-        let manifest_path = info.path.join("Cargo.toml");
+        let manifest_path = adapter.manifest_path(&info.path);
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
         let (updated, _deps) = update_manifest_versions(

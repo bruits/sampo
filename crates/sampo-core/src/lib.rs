@@ -1,6 +1,6 @@
+pub mod adapters;
 pub mod changeset;
 pub mod config;
-pub mod discovery;
 pub mod enrichment;
 pub mod errors;
 pub mod filters;
@@ -16,7 +16,6 @@ pub mod workspace;
 // Re-export commonly used items
 pub use changeset::{ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown};
 pub use config::Config;
-pub use discovery::PackageDiscoverer;
 pub use enrichment::{
     CommitInfo, GitHubUserInfo, detect_github_repo_slug, detect_github_repo_slug_with_config,
     enrich_changeset_message, get_commit_hash_for_path,
@@ -29,10 +28,7 @@ pub use markdown::format_markdown_list_item;
 pub use prerelease::{
     VersionChange, enter_prerelease, exit_prerelease, restore_preserved_changesets,
 };
-pub use publish::{
-    is_publishable_to_crates_io, run_publish, tag_published_crate, topo_order,
-    version_exists_on_crates_io,
-};
+pub use publish::{run_publish, tag_published_crate, topo_order};
 pub use release::{
     build_dependency_updates, bump_version, create_dependency_update_entry,
     create_fixed_dependency_policy_entry, detect_all_dependency_explanations,
