@@ -1098,9 +1098,10 @@ fn apply_releases(
     let release_date_display = compute_release_date_display(cfg)?;
 
     // Apply updates for each release
+    let adapter = crate::adapters::PackageAdapter::Cargo;
     for (name, old, newv) in releases {
         let info = by_name.get(name.as_str()).unwrap();
-        let manifest_path = info.path.join("Cargo.toml");
+        let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
 
         // Update manifest versions

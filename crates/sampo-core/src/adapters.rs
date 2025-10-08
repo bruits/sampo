@@ -31,6 +31,13 @@ impl PackageAdapter {
         }
     }
 
+    /// Get the path to the manifest file for a package directory.
+    pub fn manifest_path(&self, package_dir: &Path) -> std::path::PathBuf {
+        match self {
+            Self::Cargo => cargo::CargoAdapter.manifest_path(package_dir),
+        }
+    }
+
     /// Check if a package is publishable to its primary registry.
     pub fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
         match self {

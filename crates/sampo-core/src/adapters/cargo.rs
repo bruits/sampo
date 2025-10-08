@@ -22,6 +22,10 @@ impl CargoAdapter {
         discover_cargo(root)
     }
 
+    pub(super) fn manifest_path(&self, package_dir: &Path) -> PathBuf {
+        package_dir.join("Cargo.toml")
+    }
+
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
         is_publishable_to_crates_io(manifest_path)
     }
@@ -128,7 +132,7 @@ fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> 
         // Include a short, normalized snippet of the response body for diagnostics
         let body = res.text().unwrap_or_default();
         let snippet: String = body.trim().chars().take(500).collect();
-        let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+        let snippet: String = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
 
         let body_part = if snippet.is_empty() {
             String::new()
