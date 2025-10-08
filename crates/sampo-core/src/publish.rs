@@ -1,3 +1,4 @@
+use crate::adapters::PackageAdapter;
 use crate::types::PackageInfo;
 use crate::{
     Config, current_branch, discover_workspace,
@@ -5,10 +6,8 @@ use crate::{
     filters::should_ignore_package,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
 
 /// Publishes all publishable crates in a workspace to crates.io in dependency order.
 ///
@@ -60,7 +59,8 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         }
 
         let manifest = c.path.join("Cargo.toml");
-        if is_publishable_to_crates_io(&manifest)? {
+        let adapter = PackageAdapter::Cargo;
+        if adapter.is_publishable(&manifest)? {
             publishable.insert(c.name.clone());
             name_to_package.insert(c.name.clone(), c);
         }
@@ -106,7 +106,8 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         println!("  - {name}");
     }
 
-    // Execute cargo publish in order
+    // Execute cargo publish in order using the adapter
+    let adapter = PackageAdapter::Cargo;
     for name in &order {
         let c = name_to_package.get(name).ok_or_else(|| {
             SampoError::Publish(format!(
@@ -115,8 +116,9 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
             ))
         })?;
         let manifest = c.path.join("Cargo.toml");
+
         // Skip if the exact version already exists on crates.io
-        match version_exists_on_crates_io(&c.name, &c.version) {
+        match adapter.version_exists(&c.name, &c.version) {
             Ok(true) => {
                 println!(
                     "Skipping {}@{} (already exists on crates.io)",
@@ -133,27 +135,8 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
             }
         }
 
-        let mut cmd = Command::new("cargo");
-        cmd.arg("publish").arg("--manifest-path").arg(&manifest);
-        if dry_run {
-            cmd.arg("--dry-run");
-        }
-        if !cargo_args.is_empty() {
-            cmd.args(cargo_args);
-        }
-
-        println!(
-            "Running: {}",
-            format_command_display(cmd.get_program(), cmd.get_args())
-        );
-
-        let status = cmd.status()?;
-        if !status.success() {
-            return Err(SampoError::Publish(format!(
-                "cargo publish failed for crate '{}' with status {}",
-                name, status
-            )));
-        }
+        // Publish using the adapter
+        adapter.publish(&manifest, dry_run, cargo_args)?;
 
         // Create an annotated git tag after successful publish (not in dry-run)
         if !dry_run && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version) {
@@ -201,36 +184,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 /// - The TOML is malformed
 /// - The manifest has no `[package]` section (returns `Ok(false)`)
 pub fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
-    let text = fs::read_to_string(manifest_path)
-        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let value: toml::Value = text.parse().map_err(|e| {
-        SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
-    })?;
-
-    let pkg = match value.get("package").and_then(|v| v.as_table()) {
-        Some(p) => p,
-        None => return Ok(false),
-    };
-
-    // If publish = false => skip
-    if let Some(val) = pkg.get("publish") {
-        match val {
-            toml::Value::Boolean(false) => return Ok(false),
-            toml::Value::Array(arr) => {
-                // Only publish if the array contains "crates-io"
-                // (Cargo uses this to whitelist registries.)
-                let allowed: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-                return Ok(allowed.iter().any(|s| s == "crates-io"));
-            }
-            _ => {}
-        }
-    }
-
-    // Default case: publishable
-    Ok(true)
+    PackageAdapter::Cargo.is_publishable(manifest_path)
 }
 
 /// Creates an annotated git tag for a published crate.
@@ -316,42 +270,7 @@ pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) ->
 /// assert!(!exists);
 /// ```
 pub fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> {
-    // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
-    let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .user_agent(format!("sampo-core/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| SampoError::Publish(format!("failed to build HTTP client: {}", e)))?;
-
-    let res = client
-        .get(&url)
-        .send()
-        .map_err(|e| SampoError::Publish(format!("HTTP request failed: {}", e)))?;
-
-    let status = res.status();
-    if status == reqwest::StatusCode::OK {
-        Ok(true)
-    } else if status == reqwest::StatusCode::NOT_FOUND {
-        Ok(false)
-    } else {
-        // Include a short, normalized snippet of the response body for diagnostics
-        let body = res.text().unwrap_or_default();
-        let snippet: String = body.trim().chars().take(500).collect();
-        let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
-
-        let body_part = if snippet.is_empty() {
-            String::new()
-        } else {
-            format!(" body=\"{}\"", snippet)
-        };
-
-        Err(SampoError::Publish(format!(
-            "Crates.io {} response:{}",
-            status, body_part
-        )))
-    }
+    PackageAdapter::Cargo.version_exists(crate_name, version)
 }
 
 /// Computes topological ordering for publishing crates (dependencies first).
@@ -432,17 +351,6 @@ pub fn topo_order(
         ));
     }
     Ok(out)
-}
-
-fn format_command_display(program: &std::ffi::OsStr, args: std::process::CommandArgs) -> String {
-    let prog = program.to_string_lossy();
-    let mut s = String::new();
-    s.push_str(&prog);
-    for a in args {
-        s.push(' ');
-        s.push_str(&a.to_string_lossy());
-    }
-    s
 }
 
 #[cfg(test)]

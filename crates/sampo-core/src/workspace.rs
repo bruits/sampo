@@ -1,26 +1,23 @@
-use crate::discovery::PackageDiscoverer;
+use crate::adapters::PackageAdapter;
 use crate::errors::WorkspaceError;
 use crate::types::Workspace;
 use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
 
-/// Discover workspace packages using registered ecosystem discoverers
+/// Discover workspace packages using registered ecosystem adapters.
 pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
-    // Registry of available discoverers
-    // When adding new ecosystems, add them here
-    let discoverers = [PackageDiscoverer::Cargo];
-
     let mut root = None;
     let mut all_members = Vec::new();
 
-    for discoverer in &discoverers {
-        if discoverer.can_discover(start_dir) {
+    // Try each registered adapter (static dispatch, zero-cost)
+    for adapter in PackageAdapter::all() {
+        if adapter.can_discover(start_dir) {
             // Find the workspace root by walking up from start_dir
-            let discovered_root = find_workspace_root_for_discoverer(start_dir, discoverer)?;
+            let discovered_root = find_workspace_root_for_adapter(start_dir, *adapter)?;
 
             // Discover packages in this ecosystem
-            let packages = discoverer.discover(&discovered_root)?;
+            let packages = adapter.discover(&discovered_root)?;
 
             // Use the first discovered root as the workspace root
             root.get_or_insert(discovered_root);
@@ -36,14 +33,11 @@ pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
     })
 }
 
-/// Find the workspace root for a given discoverer by walking up the directory tree
-fn find_workspace_root_for_discoverer(
-    start_dir: &Path,
-    discoverer: &PackageDiscoverer,
-) -> Result<PathBuf> {
+/// Find the workspace root for a given adapter by walking up the directory tree.
+fn find_workspace_root_for_adapter(start_dir: &Path, adapter: PackageAdapter) -> Result<PathBuf> {
     let mut current = start_dir;
     loop {
-        if discoverer.can_discover(current) {
+        if adapter.can_discover(current) {
             return Ok(current.to_path_buf());
         }
         current = current.parent().ok_or(WorkspaceError::NotFound)?;
