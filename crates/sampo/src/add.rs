@@ -3,8 +3,11 @@ use crate::names;
 use crate::ui::{prompt_io_error, select_packages};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
-    Bump, Config, discover_workspace, errors::Result, filters::list_visible_packages,
+    Bump, Config, Workspace, discover_workspace,
+    errors::{Result, SampoError},
+    filters::filter_members,
     render_changeset_markdown,
+    types::PackageSpecifier,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -13,18 +16,23 @@ use std::path::{Path, PathBuf};
 pub fn run(args: &AddArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // Discover workspace (optional but helps list packages)
-    let (root, packages) = match discover_workspace(&cwd) {
-        Ok(ws) => {
-            // Load config to respect ignore rules when listing packages
-            let cfg = Config::load(&ws.root).unwrap_or_default();
-            let names = match list_visible_packages(&ws, &cfg) {
-                Ok(v) => v,
-                Err(_) => ws.members.into_iter().map(|c| c.name).collect::<Vec<_>>(),
+    let workspace = discover_workspace(&cwd).ok();
+    let (root, available_packages) = if let Some(ref ws) = workspace {
+        let cfg = Config::load(&ws.root).unwrap_or_default();
+        let visible =
+            filter_members(ws, &cfg).unwrap_or_else(|_| ws.members.iter().collect::<Vec<_>>());
+        let mut out = Vec::new();
+        for info in visible {
+            let label = format!("{} ({})", info.name, info.kind.as_str());
+            let spec = PackageSpecifier {
+                kind: Some(info.kind),
+                name: info.name.clone(),
             };
-            (ws.root, names)
+            out.push((label, spec));
         }
-        Err(_) => (cwd.clone(), Vec::new()),
+        (ws.root.clone(), out)
+    } else {
+        (cwd.clone(), Vec::new())
     };
 
     // Create changesets directory if it doesn't exist
@@ -32,16 +40,63 @@ pub fn run(args: &AddArgs) -> Result<()> {
     ensure_dir(&changesets_dir)?;
 
     // Collect inputs, prefilling from CLI args if provided
-    let selected_packages = if args.package.is_empty() {
-        select_packages(
-            &packages,
-            "Select packages impacted by this changeset (space to toggle, enter to confirm)",
-        )?
+    let selected_specs = if args.package.is_empty() {
+        let labels: Vec<String> = available_packages
+            .iter()
+            .map(|(label, _)| label.clone())
+            .collect();
+        if labels.is_empty() {
+            select_packages(
+                &labels,
+                "Select packages impacted by this changeset (space to toggle, enter to confirm)",
+            )?; // This will yield a consistent error message for empty workspaces.
+            Vec::new()
+        } else {
+            let selections = select_packages(
+                &labels,
+                "Select packages impacted by this changeset (space to toggle, enter to confirm)",
+            )?;
+            let map: HashMap<&str, &PackageSpecifier> = available_packages
+                .iter()
+                .map(|(label, spec)| (label.as_str(), spec))
+                .collect();
+            selections
+                .into_iter()
+                .map(|label| {
+                    map.get(label.as_str())
+                        .cloned()
+                        .ok_or_else(|| {
+                            SampoError::InvalidData(format!(
+                                "Selected package '{}' could not be resolved.",
+                                label
+                            ))
+                        })
+                        .map(|spec| (*spec).clone())
+                })
+                .collect::<Result<Vec<_>>>()?
+        }
     } else {
-        args.package.clone()
+        resolve_cli_packages(workspace.as_ref(), &args.package)?
     };
 
-    let package_bumps = prompt_package_bumps(&selected_packages)?;
+    if selected_specs.is_empty() {
+        return Err(SampoError::InvalidData(
+            "No packages selected for the changeset.".to_string(),
+        ));
+    }
+
+    let labels_for_bumps: Vec<String> = selected_specs.iter().map(package_display_label).collect();
+    let package_bumps_display = prompt_package_bumps(&labels_for_bumps)?;
+    let mut package_bumps: Vec<(PackageSpecifier, Bump)> =
+        Vec::with_capacity(package_bumps_display.len());
+    for (idx, (_label, bump)) in package_bumps_display.into_iter().enumerate() {
+        let spec = selected_specs.get(idx).cloned().ok_or_else(|| {
+            SampoError::InvalidData(
+                "Bump selections did not match the selected packages.".to_string(),
+            )
+        })?;
+        package_bumps.push((spec, bump));
+    }
 
     let message = match &args.message {
         Some(m) if !m.trim().is_empty() => m.trim().to_string(),
@@ -166,6 +221,73 @@ fn unique_changeset_path(dir: &Path) -> PathBuf {
     candidate
 }
 
+fn package_display_label(spec: &PackageSpecifier) -> String {
+    match spec.kind {
+        Some(kind) => format!("{} ({})", spec.name, kind.as_str()),
+        None => spec.name.clone(),
+    }
+}
+
+fn resolve_cli_packages(
+    workspace: Option<&Workspace>,
+    inputs: &[String],
+) -> Result<Vec<PackageSpecifier>> {
+    let mut resolved = Vec::new();
+    for raw in inputs {
+        let spec = PackageSpecifier::parse(raw).map_err(|reason| {
+            SampoError::InvalidData(format!("Invalid package reference '{}': {}", raw, reason))
+        })?;
+
+        if let Some(ws) = workspace {
+            if let Some(kind) = spec.kind {
+                let identifier = format!("{}:{}", kind.as_str(), spec.name);
+                if let Some(info) = ws.find_by_identifier(&identifier) {
+                    resolved.push(PackageSpecifier {
+                        kind: Some(info.kind),
+                        name: info.name.clone(),
+                    });
+                } else {
+                    return Err(SampoError::InvalidData(format!(
+                        "Package '{}' not found in the workspace.",
+                        spec.to_canonical_string()
+                    )));
+                }
+            } else {
+                let matches = ws.match_specifier(&spec);
+                match matches.len() {
+                    0 => {
+                        return Err(SampoError::InvalidData(format!(
+                            "Package '{}' not found in the workspace.",
+                            spec.name
+                        )));
+                    }
+                    1 => {
+                        let info = matches[0];
+                        resolved.push(PackageSpecifier {
+                            kind: Some(info.kind),
+                            name: info.name.clone(),
+                        });
+                    }
+                    _ => {
+                        let options = matches
+                            .iter()
+                            .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return Err(SampoError::InvalidData(format!(
+                            "Package '{}' is ambiguous. Disambiguate using one of: {}.",
+                            spec.name, options
+                        )));
+                    }
+                }
+            }
+        } else {
+            resolved.push(spec);
+        }
+    }
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +296,10 @@ mod tests {
     #[test]
     fn render_has_frontmatter() {
         let md = render_changeset_markdown(
-            &[("a".into(), Bump::Minor), ("b".into(), Bump::Minor)],
+            &[
+                (PackageSpecifier::parse("a").unwrap(), Bump::Minor),
+                (PackageSpecifier::parse("b").unwrap(), Bump::Minor),
+            ],
             "feat: add stuff",
         );
         assert!(md.starts_with("---\n"));
@@ -185,14 +310,20 @@ mod tests {
 
     #[test]
     fn render_single_package() {
-        let md = render_changeset_markdown(&[("single".into(), Bump::Patch)], "fix: bug");
+        let md = render_changeset_markdown(
+            &[(PackageSpecifier::parse("single").unwrap(), Bump::Patch)],
+            "fix: bug",
+        );
         assert!(md.contains("single: patch\n"));
         assert!(md.ends_with("fix: bug\n"));
     }
 
     #[test]
     fn render_major_release() {
-        let md = render_changeset_markdown(&[("pkg".into(), Bump::Major)], "breaking: api change");
+        let md = render_changeset_markdown(
+            &[(PackageSpecifier::parse("pkg").unwrap(), Bump::Major)],
+            "breaking: api change",
+        );
         assert!(md.contains("pkg: major\n"));
         assert!(md.ends_with("breaking: api change\n"));
     }

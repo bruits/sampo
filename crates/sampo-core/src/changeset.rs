@@ -1,7 +1,6 @@
 use crate::errors::{Result, SampoError};
-use crate::types::Bump;
+use crate::types::{Bump, PackageSpecifier};
 use changesets::Change;
-use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub struct ChangesetInfo {
     pub path: PathBuf,
     /// (package, bump) pairs parsed from frontmatter
-    pub entries: Vec<(String, Bump)>,
+    pub entries: Vec<(PackageSpecifier, Bump)>,
     pub message: String,
 }
 
@@ -21,7 +20,8 @@ pub struct ChangesetInfo {
 /// ```rust,ignore
 /// let text = "---\nmy-package: minor\n---\n\nfeat: new feature\n";
 /// let info = parse_changeset(text, &Path::new("test.md")).unwrap();
-/// assert_eq!(info.entries, vec![("my-package".into(), Bump::Minor)]);
+/// assert_eq!(info.entries[0].0.to_canonical_string(), "my-package");
+/// assert_eq!(info.entries[0].1, Bump::Minor);
 /// ```
 pub fn parse_changeset(text: &str, path: &Path) -> Result<Option<ChangesetInfo>> {
     let file_name = path
@@ -34,15 +34,20 @@ pub fn parse_changeset(text: &str, path: &Path) -> Result<Option<ChangesetInfo>>
         .map_err(|err| SampoError::Changeset(format!("Failed to parse changeset: {}", err)))?;
 
     // Convert Change.versioning -> Vec<(String, Bump)>, rejecting non-semver change types.
-    let mut entries: Vec<(String, Bump)> = Vec::new();
+    let mut entries: Vec<(PackageSpecifier, Bump)> = Vec::new();
     for (package_name, change_type) in change.versioning.iter() {
         let bump = change_type.clone().try_into()
             .map_err(|_| SampoError::Changeset(format!(
                 "Unsupported change type '{:?}' for package '{}'. Only 'patch', 'minor', and 'major' are supported.",
                 change_type, package_name
             )))?;
-        let normalized = normalize_package_name(package_name);
-        entries.push((normalized.into_owned(), bump));
+        let spec = PackageSpecifier::parse(package_name).map_err(|reason| {
+            SampoError::Changeset(format!(
+                "Invalid package reference '{}': {reason}",
+                package_name
+            ))
+        })?;
+        entries.push((spec, bump));
     }
     if entries.is_empty() {
         return Ok(None);
@@ -85,31 +90,23 @@ pub fn load_changesets(dir: &Path) -> Result<Vec<ChangesetInfo>> {
 }
 
 /// Render a changeset as markdown with YAML mapping frontmatter
-pub fn render_changeset_markdown(entries: &[(String, Bump)], message: &str) -> String {
+pub fn render_changeset_markdown(entries: &[(PackageSpecifier, Bump)], message: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     out.push_str("---\n");
     for (package, bump) in entries {
-        let package = normalize_package_name(package);
-        let _ = writeln!(out, "{}: {}", package, bump);
+        let canonical = package.to_canonical_string();
+        let key = if canonical.contains(':') {
+            format!("\"{}\"", canonical)
+        } else {
+            canonical
+        };
+        let _ = writeln!(out, "{}: {}", key, bump);
     }
     out.push_str("---\n\n");
     out.push_str(message);
     out.push('\n');
     out
-}
-
-fn normalize_package_name(raw: &str) -> Cow<'_, str> {
-    let trimmed = raw.trim();
-    if trimmed.len() >= 2 {
-        let bytes = trimmed.as_bytes();
-        let first = bytes[0];
-        let last = bytes[trimmed.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return Cow::Owned(trimmed[1..trimmed.len() - 1].to_string());
-        }
-    }
-    Cow::Borrowed(trimmed)
 }
 
 #[cfg(test)]
@@ -122,9 +119,17 @@ mod tests {
         let path = Path::new("/tmp/x.md");
         let changeset = parse_changeset(text, path).unwrap().unwrap();
         let mut entries = changeset.entries.clone();
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries.sort_by(|left, right| {
+            left.0
+                .to_canonical_string()
+                .cmp(&right.0.to_canonical_string())
+        });
+        let collected: Vec<(String, Bump)> = entries
+            .into_iter()
+            .map(|(spec, bump)| (spec.to_canonical_string(), bump))
+            .collect();
         assert_eq!(
-            entries,
+            collected,
             vec![("a".into(), Bump::Minor), ("b".into(), Bump::Minor)]
         );
         assert_eq!(changeset.message, "feat: message");
@@ -136,9 +141,17 @@ mod tests {
         let path = Path::new("/tmp/quotes.md");
         let changeset = parse_changeset(text, path).unwrap().unwrap();
         let mut entries = changeset.entries;
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        entries.sort_by(|left, right| {
+            left.0
+                .to_canonical_string()
+                .cmp(&right.0.to_canonical_string())
+        });
+        let collected: Vec<(String, Bump)> = entries
+            .into_iter()
+            .map(|(spec, bump)| (spec.to_canonical_string(), bump))
+            .collect();
         assert_eq!(
-            entries,
+            collected,
             vec![
                 ("sampo-cli".into(), Bump::Patch),
                 ("sampo-core".into(), Bump::Minor)
@@ -149,7 +162,10 @@ mod tests {
     #[test]
     fn render_changeset_markdown_test() {
         let markdown = render_changeset_markdown(
-            &[("a".into(), Bump::Minor), ("b".into(), Bump::Minor)],
+            &[
+                (PackageSpecifier::parse("a").unwrap(), Bump::Minor),
+                (PackageSpecifier::parse("b").unwrap(), Bump::Minor),
+            ],
             "feat: x",
         );
         assert!(markdown.starts_with("---\n"));
@@ -162,7 +178,10 @@ mod tests {
     #[test]
     fn render_changeset_markdown_compatibility() {
         let markdown = render_changeset_markdown(
-            &[("a".into(), Bump::Minor), ("b".into(), Bump::Minor)],
+            &[
+                (PackageSpecifier::parse("a").unwrap(), Bump::Minor),
+                (PackageSpecifier::parse("b").unwrap(), Bump::Minor),
+            ],
             "feat: x",
         );
         assert!(markdown.starts_with("---\n"));
@@ -173,8 +192,13 @@ mod tests {
 
     #[test]
     fn render_changeset_markdown_strips_quoted_names() {
-        let markdown =
-            render_changeset_markdown(&[("\"sampo-core\"".into(), Bump::Minor)], "feat: sanitized");
+        let markdown = render_changeset_markdown(
+            &[(
+                PackageSpecifier::parse("\"sampo-core\"").unwrap(),
+                Bump::Minor,
+            )],
+            "feat: sanitized",
+        );
         assert!(markdown.contains("sampo-core: minor\n"));
         assert!(!markdown.contains("\"sampo-core\""));
     }
@@ -184,7 +208,12 @@ mod tests {
         let text = "---\nmypackage: major\n---\n\nBREAKING: API change\n";
         let path = Path::new("/tmp/major.md");
         let changeset = parse_changeset(text, path).unwrap().unwrap();
-        assert_eq!(changeset.entries, vec![("mypackage".into(), Bump::Major)]);
+        let collected: Vec<(String, Bump)> = changeset
+            .entries
+            .iter()
+            .map(|(spec, bump)| (spec.to_canonical_string(), *bump))
+            .collect();
+        assert_eq!(collected, vec![("mypackage".into(), Bump::Major)]);
         assert_eq!(changeset.message, "BREAKING: API change");
     }
 
@@ -218,7 +247,9 @@ mod tests {
 
         let changesets = load_changesets(&changeset_dir).unwrap();
         assert_eq!(changesets.len(), 1);
-        assert_eq!(changesets[0].entries, vec![("test".into(), Bump::Patch)]);
+        let entry = &changesets[0].entries[0];
+        assert_eq!(entry.0.to_canonical_string(), "test");
+        assert_eq!(entry.1, Bump::Patch);
     }
 
     #[test]

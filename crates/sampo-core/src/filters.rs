@@ -14,7 +14,9 @@ use std::collections::BTreeSet;
 pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -> Result<bool> {
     // 1) ignore_unpublished
     if cfg.ignore_unpublished {
-        let adapter = PackageAdapter::Cargo;
+        let adapter = match info.kind {
+            crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
+        };
         let manifest = adapter.manifest_path(&info.path);
         if !adapter.is_publishable(&manifest)? {
             return Ok(true);
@@ -30,7 +32,10 @@ pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -
             .to_string_lossy()
             .replace('\\', "/");
         for pat in &cfg.ignore {
-            if wildcard_match(pat, &info.name) || wildcard_match(pat, &rel) {
+            if wildcard_match(pat, info.canonical_identifier())
+                || wildcard_match(pat, &info.name)
+                || wildcard_match(pat, &rel)
+            {
                 return Ok(true);
             }
         }
@@ -50,11 +55,11 @@ pub fn filter_members<'a>(ws: &'a Workspace, cfg: &Config) -> Result<Vec<&'a Pac
     Ok(out)
 }
 
-/// Returns the list of visible package names according to the configuration.
+/// Returns the list of visible package identifiers according to the configuration.
 pub fn list_visible_packages(ws: &Workspace, cfg: &Config) -> Result<Vec<String>> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for c in filter_members(ws, cfg)? {
-        names.insert(c.name.clone());
+        names.insert(c.canonical_identifier().to_string());
     }
     Ok(names.into_iter().collect())
 }
@@ -116,6 +121,7 @@ mod tests {
             members: vec![
                 PackageInfo {
                     name: "internal-tool".into(),
+                    identifier: "cargo:internal-tool".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/tools/internal-tool"),
                     internal_deps: Default::default(),
@@ -123,6 +129,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "examples-lib".into(),
+                    identifier: "cargo:examples-lib".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/examples/lib"),
                     internal_deps: Default::default(),
@@ -130,6 +137,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "normal".into(),
+                    identifier: "cargo:normal".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/crates/normal"),
                     internal_deps: Default::default(),
@@ -156,7 +164,7 @@ mod tests {
         };
 
         let names = list_visible_packages(&ws, &cfg).unwrap();
-        assert_eq!(names, vec!["normal".to_string()]);
+        assert_eq!(names, vec!["cargo:normal".to_string()]);
     }
 
     #[test]

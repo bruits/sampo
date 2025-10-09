@@ -602,7 +602,7 @@ tempfile = "3.0"
         // Changelog for a exists with 0.1.1 section and dependency update message
         workspace.assert_changelog_contains("a", "# a");
         workspace.assert_changelog_contains("a", "## 0.1.1");
-        workspace.assert_changelog_contains("a", "Updated dependencies: b@0.2.0");
+        workspace.assert_changelog_contains("a", "Updated dependencies: cargo:b@0.2.0");
     }
 
     #[test]
@@ -628,7 +628,7 @@ tempfile = "3.0"
         workspace.assert_changelog_contains("b", "# b");
         workspace.assert_changelog_contains("b", "## 2.0.0");
         // Check that the automatically bumped package 'a' has dependency update message
-        workspace.assert_changelog_contains("a", "Updated dependencies: b@2.0.0");
+        workspace.assert_changelog_contains("a", "Updated dependencies: cargo:b@2.0.0");
     }
 
     #[test]
@@ -687,8 +687,8 @@ tempfile = "3.0"
         let result = workspace.run_release(false);
         assert!(result.is_err());
         let error_msg = format!("{}", result.unwrap_err());
-        assert!(error_msg.contains("Package 'nonexistent' in fixed dependency group"));
-        assert!(error_msg.contains("does not exist in the workspace"));
+        assert!(error_msg.contains("packages.fixed group 1"));
+        assert!(error_msg.contains("package 'nonexistent' not found in the workspace"));
     }
 
     #[test]
@@ -730,7 +730,7 @@ tempfile = "3.0"
         workspace.assert_crate_version("c", "1.1.0");
 
         // Check that auto-bumped package 'a' has dependency update message
-        workspace.assert_changelog_contains("a", "Updated dependencies: b@1.1.0");
+        workspace.assert_changelog_contains("a", "Updated dependencies: cargo:b@1.1.0");
     }
 
     #[test]
@@ -787,7 +787,7 @@ tempfile = "3.0"
         workspace.assert_changelog_contains("affected_directly", "feat: new feature");
         workspace.assert_changelog_contains(
             "affected_by_cascade",
-            "Updated dependencies: affected_directly@1.1.0",
+            "Updated dependencies: cargo:affected_directly@1.1.0",
         );
 
         // unaffected_in_group should have no changelog (not bumped)
@@ -830,7 +830,7 @@ tempfile = "3.0"
         // Verify changelog messages
         workspace.assert_changelog_contains("pkg_a", "breaking: major change in a");
         workspace.assert_changelog_contains("pkg_b", "feat: minor change in b");
-        workspace.assert_changelog_contains("pkg_d", "Updated dependencies: pkg_a@2.0.0");
+        workspace.assert_changelog_contains("pkg_d", "Updated dependencies: cargo:pkg_a@2.0.0");
 
         // pkg_c should have no changelog
         let changelog = workspace.read_changelog("pkg_c");
@@ -905,7 +905,7 @@ tempfile = "3.0"
         // Check changelog messages
         workspace.assert_changelog_contains("pkg_a", "Bumped due to fixed dependency group policy");
         workspace.assert_changelog_contains("pkg_b", "feat: pkg_b new feature");
-        workspace.assert_changelog_contains("pkg_c", "Updated dependencies: pkg_d@1.0.1");
+        workspace.assert_changelog_contains("pkg_c", "Updated dependencies: cargo:pkg_d@1.0.1");
         workspace.assert_changelog_contains("pkg_d", "fix: pkg_d bug fix");
     }
 
@@ -931,7 +931,7 @@ tempfile = "3.0"
         workspace.assert_changelog_contains("a", "# a");
         workspace.assert_changelog_contains("a", "## 0.2.0");
         workspace.assert_changelog_contains("a", "feat: a adds new feature");
-        workspace.assert_changelog_contains("a", "Updated dependencies: b@0.1.1");
+        workspace.assert_changelog_contains("a", "Updated dependencies: cargo:b@0.1.1");
     }
 
     /// Test the complete README scenario: multiple releases in sequence
@@ -980,27 +980,30 @@ tempfile = "3.0"
     #[test]
     fn formats_single_dependency_update() {
         let updates = vec![DependencyUpdate {
-            name: "pkg1".to_string(),
+            name: "cargo:pkg1".to_string(),
             new_version: "1.2.0".to_string(),
         }];
         let msg = format_dependency_updates_message(&updates).unwrap();
-        assert_eq!(msg, "Updated dependencies: pkg1@1.2.0");
+        assert_eq!(msg, "Updated dependencies: cargo:pkg1@1.2.0");
     }
 
     #[test]
     fn formats_multiple_dependency_updates() {
         let updates = vec![
             DependencyUpdate {
-                name: "pkg1".to_string(),
+                name: "cargo:pkg1".to_string(),
                 new_version: "1.2.0".to_string(),
             },
             DependencyUpdate {
-                name: "pkg2".to_string(),
+                name: "cargo:pkg2".to_string(),
                 new_version: "2.0.0".to_string(),
             },
         ];
         let msg = format_dependency_updates_message(&updates).unwrap();
-        assert_eq!(msg, "Updated dependencies: pkg1@1.2.0, pkg2@2.0.0");
+        assert_eq!(
+            msg,
+            "Updated dependencies: cargo:pkg1@1.2.0, cargo:pkg2@2.0.0"
+        );
     }
 
     #[test]
@@ -1013,25 +1016,25 @@ tempfile = "3.0"
     #[test]
     fn builds_dependency_updates_from_tuples() {
         let tuples = vec![
-            ("pkg1".to_string(), "1.2.0".to_string()),
-            ("pkg2".to_string(), "2.0.0".to_string()),
+            ("cargo:pkg1".to_string(), "1.2.0".to_string()),
+            ("cargo:pkg2".to_string(), "2.0.0".to_string()),
         ];
         let updates = build_dependency_updates(&tuples);
         assert_eq!(updates.len(), 2);
-        assert_eq!(updates[0].name, "pkg1");
+        assert_eq!(updates[0].name, "cargo:pkg1");
         assert_eq!(updates[0].new_version, "1.2.0");
-        assert_eq!(updates[1].name, "pkg2");
+        assert_eq!(updates[1].name, "cargo:pkg2");
         assert_eq!(updates[1].new_version, "2.0.0");
     }
 
     #[test]
     fn creates_dependency_update_entry() {
         let updates = vec![DependencyUpdate {
-            name: "pkg1".to_string(),
+            name: "cargo:pkg1".to_string(),
             new_version: "1.2.0".to_string(),
         }];
         let (msg, bump) = create_dependency_update_entry(&updates).unwrap();
-        assert_eq!(msg, "Updated dependencies: pkg1@1.2.0");
+        assert_eq!(msg, "Updated dependencies: cargo:pkg1@1.2.0");
         assert_eq!(bump, Bump::Patch);
     }
 
@@ -1169,13 +1172,15 @@ tempfile = "3.0"
             members: vec![
                 PackageInfo {
                     name: "pkg-a".to_string(),
+                    identifier: "cargo:pkg-a".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-a"),
-                    internal_deps: BTreeSet::from(["pkg-b".to_string()]),
+                    internal_deps: BTreeSet::from(["cargo:pkg-b".to_string()]),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
                     name: "pkg-b".to_string(),
+                    identifier: "cargo:pkg-b".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-b"),
                     internal_deps: BTreeSet::new(),
@@ -1183,6 +1188,7 @@ tempfile = "3.0"
                 },
                 PackageInfo {
                     name: "pkg-c".to_string(),
+                    identifier: "cargo:pkg-c".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-c"),
                     internal_deps: BTreeSet::new(),
@@ -1210,7 +1216,10 @@ tempfile = "3.0"
 
         // Create changeset that affects pkg-b only
         let changesets = vec![ChangesetInfo {
-            entries: vec![("pkg-b".to_string(), Bump::Minor)],
+            entries: vec![(
+                crate::types::PackageSpecifier::parse("pkg-b").unwrap(),
+                Bump::Minor,
+            )],
             message: "feat: new feature".to_string(),
             path: PathBuf::from("/test/.sampo/changesets/test.md"),
         }];
@@ -1218,32 +1227,33 @@ tempfile = "3.0"
         // Simulate releases: pkg-a and pkg-c get fixed bump, pkg-b gets direct bump
         let mut releases = BTreeMap::new();
         releases.insert(
-            "pkg-a".to_string(),
+            "cargo:pkg-a".to_string(),
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
         releases.insert(
-            "pkg-b".to_string(),
+            "cargo:pkg-b".to_string(),
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
         releases.insert(
-            "pkg-c".to_string(),
+            "cargo:pkg-c".to_string(),
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
 
-        let explanations = detect_all_dependency_explanations(&changesets, &ws, &config, &releases);
+        let explanations =
+            detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
 
         // pkg-a should have dependency update message (depends on pkg-b)
-        let pkg_a_messages = explanations.get("pkg-a").unwrap();
+        let pkg_a_messages = explanations.get("cargo:pkg-a").unwrap();
         assert_eq!(pkg_a_messages.len(), 1);
         assert!(
             pkg_a_messages[0]
                 .0
-                .contains("Updated dependencies: pkg-b@1.1.0")
+                .contains("Updated dependencies: cargo:pkg-b@1.1.0")
         );
         assert_eq!(pkg_a_messages[0].1, Bump::Patch);
 
         // pkg-c should have fixed dependency policy message (no deps but in fixed group)
-        let pkg_c_messages = explanations.get("pkg-c").unwrap();
+        let pkg_c_messages = explanations.get("cargo:pkg-c").unwrap();
         assert_eq!(pkg_c_messages.len(), 1);
         assert_eq!(
             pkg_c_messages[0].0,
@@ -1252,7 +1262,7 @@ tempfile = "3.0"
         assert_eq!(pkg_c_messages[0].1, Bump::Minor); // Inferred from version change
 
         // pkg-b should have no messages (explicit changeset)
-        assert!(!explanations.contains_key("pkg-b"));
+        assert!(!explanations.contains_key("cargo:pkg-b"));
     }
 
     #[test]
@@ -1261,6 +1271,7 @@ tempfile = "3.0"
             root: PathBuf::from("/test"),
             members: vec![PackageInfo {
                 name: "pkg-a".to_string(),
+                identifier: "cargo:pkg-a".to_string(),
                 version: "1.0.0".to_string(),
                 path: PathBuf::from("/test/pkg-a"),
                 internal_deps: BTreeSet::new(),
@@ -1272,7 +1283,8 @@ tempfile = "3.0"
         let changesets = vec![];
         let releases = BTreeMap::new();
 
-        let explanations = detect_all_dependency_explanations(&changesets, &ws, &config, &releases);
+        let explanations =
+            detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
         assert!(explanations.is_empty());
     }
 }

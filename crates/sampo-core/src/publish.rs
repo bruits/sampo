@@ -45,7 +45,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     }
 
     // Determine which packages are publishable to crates.io and not ignored
-    let mut name_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+    let mut id_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     for c in &ws.members {
         // Skip non-Cargo packages (only Cargo publishing is currently supported)
@@ -61,8 +61,9 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         let adapter = PackageAdapter::Cargo;
         let manifest = adapter.manifest_path(&c.path);
         if adapter.is_publishable(&manifest)? {
-            publishable.insert(c.name.clone());
-            name_to_package.insert(c.name.clone(), c);
+            let identifier = c.canonical_identifier().to_string();
+            publishable.insert(identifier.clone());
+            id_to_package.insert(identifier, c);
         }
     }
 
@@ -73,18 +74,18 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
 
     // Validate internal deps do not include non-publishable crates
     let mut errors: Vec<String> = Vec::new();
-    for name in &publishable {
-        let c = name_to_package.get(name).ok_or_else(|| {
+    for identifier in &publishable {
+        let c = id_to_package.get(identifier).ok_or_else(|| {
             SampoError::Publish(format!(
                 "internal error: crate '{}' not found in workspace",
-                name
+                identifier
             ))
         })?;
         for dep in &c.internal_deps {
             if !publishable.contains(dep) {
                 errors.push(format!(
                     "crate '{}' depends on internal crate '{}' which is not publishable",
-                    name, dep
+                    c.name, dep
                 ));
             }
         }
@@ -99,20 +100,24 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     }
 
     // Compute publish order (topological: deps first) for all publishable crates.
-    let order = topo_order(&name_to_package, &publishable)?;
+    let order = topo_order(&id_to_package, &publishable)?;
 
     println!("Publish plan (crates.io):");
-    for name in &order {
-        println!("  - {name}");
+    for identifier in &order {
+        if let Some(info) = id_to_package.get(identifier) {
+            println!("  - {}", info.name);
+        } else {
+            println!("  - {identifier}");
+        }
     }
 
     // Execute cargo publish in order using the adapter
     let adapter = PackageAdapter::Cargo;
-    for name in &order {
-        let c = name_to_package.get(name).ok_or_else(|| {
+    for identifier in &order {
+        let c = id_to_package.get(identifier).ok_or_else(|| {
             SampoError::Publish(format!(
                 "internal error: crate '{}' not found in workspace",
-                name
+                identifier
             ))
         })?;
         let manifest = adapter.manifest_path(&c.path);
@@ -501,24 +506,27 @@ mod tests {
         // Build a small fake graph using PackageInfo structures
         let a = PackageInfo {
             name: "a".into(),
+            identifier: "cargo:a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
         let mut deps_b = BTreeSet::new();
-        deps_b.insert("a".into());
+        deps_b.insert("cargo:a".into());
         let b = PackageInfo {
             name: "b".into(),
+            identifier: "cargo:b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
             kind: PackageKind::Cargo,
         };
         let mut deps_c = BTreeSet::new();
-        deps_c.insert("b".into());
+        deps_c.insert("cargo:b".into());
         let c = PackageInfo {
             name: "c".into(),
+            identifier: "cargo:c".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/c"),
             internal_deps: deps_c,
@@ -526,26 +534,27 @@ mod tests {
         };
 
         let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
-        map.insert("a".into(), &a);
-        map.insert("b".into(), &b);
-        map.insert("c".into(), &c);
+        map.insert("cargo:a".into(), &a);
+        map.insert("cargo:b".into(), &b);
+        map.insert("cargo:c".into(), &c);
 
         let mut include = BTreeSet::new();
-        include.insert("a".into());
-        include.insert("b".into());
-        include.insert("c".into());
+        include.insert("cargo:a".into());
+        include.insert("cargo:b".into());
+        include.insert("cargo:c".into());
 
         let order = topo_order(&map, &include).unwrap();
-        assert_eq!(order, vec!["a", "b", "c"]);
+        assert_eq!(order, vec!["cargo:a", "cargo:b", "cargo:c"]);
     }
 
     #[test]
     fn detects_dependency_cycle() {
         // Create a circular dependency: a -> b -> a
         let mut deps_a = BTreeSet::new();
-        deps_a.insert("b".into());
+        deps_a.insert("cargo:b".into());
         let a = PackageInfo {
             name: "a".into(),
+            identifier: "cargo:a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: deps_a,
@@ -553,9 +562,10 @@ mod tests {
         };
 
         let mut deps_b = BTreeSet::new();
-        deps_b.insert("a".into());
+        deps_b.insert("cargo:a".into());
         let b = PackageInfo {
             name: "b".into(),
+            identifier: "cargo:b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
@@ -563,12 +573,12 @@ mod tests {
         };
 
         let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
-        map.insert("a".into(), &a);
-        map.insert("b".into(), &b);
+        map.insert("cargo:a".into(), &a);
+        map.insert("cargo:b".into(), &b);
 
         let mut include = BTreeSet::new();
-        include.insert("a".into());
-        include.insert("b".into());
+        include.insert("cargo:a".into());
+        include.insert("cargo:b".into());
 
         let result = topo_order(&map, &include);
         assert!(result.is_err());
@@ -736,6 +746,10 @@ edition = "2021"
             members: vec![
                 PackageInfo {
                     name: "main-package".to_string(),
+                    identifier: PackageInfo::dependency_identifier(
+                        PackageKind::Cargo,
+                        "main-package",
+                    ),
                     version: "1.0.0".to_string(),
                     path: main_pkg,
                     internal_deps: BTreeSet::new(),
@@ -743,6 +757,10 @@ edition = "2021"
                 },
                 PackageInfo {
                     name: "examples-demo".to_string(),
+                    identifier: PackageInfo::dependency_identifier(
+                        PackageKind::Cargo,
+                        "examples-demo",
+                    ),
                     version: "1.0.0".to_string(),
                     path: examples_pkg,
                     internal_deps: BTreeSet::new(),
