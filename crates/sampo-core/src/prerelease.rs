@@ -2,7 +2,9 @@ use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
-use crate::types::{PackageInfo, Workspace};
+use crate::types::{
+    PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
+};
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -93,28 +95,36 @@ fn resolve_targets<'a>(
         ));
     }
 
-    let mut lookup: BTreeMap<&str, &PackageInfo> = BTreeMap::new();
-    for info in &workspace.members {
-        lookup.insert(info.name.as_str(), info);
-    }
-
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut targets = Vec::new();
 
-    for name in packages {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(SampoError::Prerelease(
-                "Package names cannot be empty.".to_string(),
-            ));
-        }
-        if !seen.insert(trimmed) {
-            continue;
-        }
-        let info = lookup.get(trimmed).ok_or_else(|| {
-            SampoError::NotFound(format!("Package '{}' not found in workspace", trimmed))
+    for raw in packages {
+        let spec = PackageSpecifier::parse(raw).map_err(|reason| {
+            SampoError::Prerelease(format!("Invalid package reference '{}': {}", raw, reason))
         })?;
-        targets.push(*info);
+
+        let info = match workspace.resolve_specifier(&spec) {
+            SpecResolution::Match(info) => info,
+            SpecResolution::NotFound { query } => {
+                return Err(SampoError::NotFound(format!(
+                    "Package '{}' not found in workspace",
+                    query.display()
+                )));
+            }
+            SpecResolution::Ambiguous { query, matches } => {
+                let options = format_ambiguity_options(&matches);
+                return Err(SampoError::Prerelease(format!(
+                    "Package '{}' is ambiguous. Disambiguate using one of: {}.",
+                    query.base_name(),
+                    options
+                )));
+            }
+        };
+
+        let identifier = info.canonical_identifier().to_string();
+        if seen.insert(identifier) {
+            targets.push(info);
+        }
     }
 
     targets.sort_by(|a, b| a.name.cmp(&b.name));

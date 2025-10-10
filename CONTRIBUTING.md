@@ -8,9 +8,9 @@ First, a huge **thank you** for dedicating your time to helping us improve Sampo
 
 ## Philosophy
 
-Sampo tries to be an helpful, reliable tool that users can trust to manage changelogs, versioning, and publishing.
+Sampo is designed to be an helpful, reliable, and flexible tool that users can trust to manage changelogs, versioning, and publishing.
 
-We want to make it easy to get started, with minimal configuration, sensible defaults, and automated workflows. At the same time, we want to provide rich configuration options (at least to disable defaults) and flexible workflows to cover more advanced use cases. Reliability, predictability, and transparency are key values.
+We want to make it easy to get started, with minimal configuration, sensible defaults, and automated workflows. At the same time, we want to provide rich configuration options, and flexible workflows to cover more advanced use cases. Finally, Sampo should be easy to opt in and opt out, with little to none assumptions, conventions to follow, or lock-ins.
 
 We’re also committed to fostering a welcoming and respectful community. Any issue, PR, or discussion that violates our [code of conduct](https://github.com/bruits/sampo/blob/main/CODE_OF_CONDUCT.md) will be deleted, and the authors will be **banned**.
 

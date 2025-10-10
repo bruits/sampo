@@ -595,8 +595,8 @@ fn sanitized_branch_name(branch: &str) -> String {
     branch.replace('/', "-")
 }
 
-fn plan_includes_prerelease(releases: &BTreeMap<String, (String, String)>) -> bool {
-    releases.values().any(|(_, new_version)| {
+fn plan_includes_prerelease(releases: &BTreeMap<String, (String, String, String)>) -> bool {
+    releases.values().any(|(_, _, new_version)| {
         Version::parse(new_version)
             .map(|version| !version.pre.is_empty())
             .unwrap_or(false)

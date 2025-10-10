@@ -1,5 +1,6 @@
 use crate::error::{ActionError, Result};
 use sampo_core::format_markdown_list_item;
+use sampo_core::types::{PackageSpecifier, SpecResolution, format_ambiguity_options};
 use sampo_core::{
     Bump, Config, VersionChange, detect_all_dependency_explanations,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
@@ -18,7 +19,8 @@ fn set_cargo_env_var(value: &str) {
 #[derive(Debug)]
 pub struct ReleasePlan {
     pub has_changes: bool,
-    pub releases: BTreeMap<String, (String, String)>,
+    /// key: canonical identifier, value: (display name, old version, new version)
+    pub releases: BTreeMap<String, (String, String, String)>,
 }
 
 /// Run sampo release and capture the plan
@@ -30,10 +32,10 @@ pub fn capture_release_plan(workspace: &Path) -> Result<ReleasePlan> {
         })?;
 
     let has_changes = !release_output.released_packages.is_empty();
-    let mut releases: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut releases: BTreeMap<String, (String, String, String)> = BTreeMap::new();
     if has_changes {
         for pkg in release_output.released_packages {
-            releases.insert(pkg.name, (pkg.old_version, pkg.new_version));
+            releases.insert(pkg.identifier, (pkg.name, pkg.old_version, pkg.new_version));
         }
     }
 
@@ -108,7 +110,7 @@ pub fn exit_prerelease(workspace: &Path, packages: &[String]) -> Result<Vec<Vers
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
 pub fn build_release_pr_body(
     workspace: &Path,
-    releases: &BTreeMap<String, (String, String)>,
+    releases: &BTreeMap<String, (String, String, String)>,
     config: &Config,
 ) -> Result<String> {
     if releases.is_empty() {
@@ -123,8 +125,9 @@ pub fn build_release_pr_body(
         operation: "workspace-discovery".into(),
         message: e.to_string(),
     })?;
+    let include_kind = ws.has_multiple_package_kinds();
 
-    // Group messages per crate by bump
+    // Group messages per canonical package id by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
 
     // Resolve GitHub slug and token for commit links and acknowledgments
@@ -135,8 +138,9 @@ pub fn build_release_pr_body(
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
     for cs in &changesets {
-        for (pkg, bump) in &cs.entries {
-            if releases.contains_key(pkg) {
+        for (pkg_spec, bump) in &cs.entries {
+            let identifier = resolve_specifier_identifier(&ws, pkg_spec)?;
+            if releases.contains_key(&identifier) {
                 let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
                 let enriched = if let Some(hash) = commit_hash {
                     enrich_changeset_message(
@@ -152,7 +156,7 @@ pub fn build_release_pr_body(
                     cs.message.clone()
                 };
                 messages_by_pkg
-                    .entry(pkg.clone())
+                    .entry(identifier)
                     .or_default()
                     .push((enriched, *bump));
             }
@@ -160,7 +164,17 @@ pub fn build_release_pr_body(
     }
 
     // Add automatic dependency explanations using unified function
-    let explanations = detect_all_dependency_explanations(&changesets, &ws, config, releases);
+    let release_lookup: BTreeMap<String, (String, String)> = releases
+        .iter()
+        .map(|(identifier, (_display, old_version, new_version))| {
+            (
+                identifier.clone(),
+                (old_version.clone(), new_version.clone()),
+            )
+        })
+        .collect();
+    let explanations =
+        detect_all_dependency_explanations(&changesets, &ws, config, &release_lookup)?;
 
     // Merge explanations into messages_by_pkg
     for (pkg_name, explanations) in explanations {
@@ -178,20 +192,21 @@ pub fn build_release_pr_body(
     output.push_str("Not ready yet? Just keep adding changesets to the default branch, and this PR will stay up to date.\n\n");
 
     // Deterministic crate order by name
-    let mut crate_names: Vec<_> = releases.keys().cloned().collect();
-    crate_names.sort();
-    for name in crate_names {
-        let (old_version, new_version) = &releases[&name];
+    let mut crate_ids: Vec<_> = releases.keys().cloned().collect();
+    crate_ids.sort();
+    for identifier in crate_ids {
+        let (fallback_name, old_version, new_version) = &releases[&identifier];
+        let pretty_name = display_label_for_release(&ws, &identifier, include_kind, fallback_name);
         output.push_str(&format!(
             "## {} {} -> {}\n\n",
-            name, old_version, new_version
+            pretty_name, old_version, new_version
         ));
 
         let mut major_changes = Vec::new();
         let mut minor_changes = Vec::new();
         let mut patch_changes = Vec::new();
 
-        if let Some(changeset_list) = messages_by_pkg.get(&name) {
+        if let Some(changeset_list) = messages_by_pkg.get(&identifier) {
             // Helper to push without duplicates (preserve append order)
             let push_unique = |list: &mut Vec<String>, msg: &str| {
                 if !list.iter().any(|m| m == msg) {
@@ -214,6 +229,53 @@ pub fn build_release_pr_body(
     }
 
     Ok(output)
+}
+
+fn resolve_specifier_identifier(
+    workspace: &sampo_core::Workspace,
+    spec: &PackageSpecifier,
+) -> Result<String> {
+    match workspace.resolve_specifier(spec) {
+        SpecResolution::Match(info) => Ok(info.canonical_identifier().to_string()),
+        SpecResolution::NotFound { query } => {
+            let error = if let Some(identifier) = query.identifier() {
+                sampo_core::errors::SampoError::Changeset(format!(
+                    "Changeset references '{}', but it was not found in the workspace.",
+                    identifier
+                ))
+            } else {
+                sampo_core::errors::SampoError::Changeset(format!(
+                    "Changeset references '{}', but no matching package exists in the workspace.",
+                    query.base_name()
+                ))
+            };
+            Err(error.into())
+        }
+        SpecResolution::Ambiguous { query, matches } => {
+            let options = format_ambiguity_options(&matches);
+            Err(sampo_core::errors::SampoError::Changeset(format!(
+                "Changeset references '{}', which matches multiple packages. Disambiguate using one of: {}.",
+                query.base_name(),
+                options
+            ))
+            .into())
+        }
+    }
+}
+
+fn display_label_for_release(
+    workspace: &sampo_core::Workspace,
+    identifier: &str,
+    include_kind: bool,
+    fallback: &str,
+) -> String {
+    if let Some(info) = workspace.find_by_identifier(identifier) {
+        return info.display_name(include_kind);
+    }
+    if let Ok(spec) = PackageSpecifier::parse(identifier) {
+        return spec.display_name(include_kind);
+    }
+    fallback.to_string()
 }
 
 /// Append a changes section to the output if the changes list is not empty
@@ -550,8 +612,12 @@ mod tests {
         let plan = capture_release_plan(root).expect("plan should succeed");
         assert!(plan.has_changes);
         assert_eq!(
-            plan.releases.get("example"),
-            Some(&("0.1.0".to_string(), "0.2.0".to_string()))
+            plan.releases.get("cargo:example"),
+            Some(&(
+                "example".to_string(),
+                "0.1.0".to_string(),
+                "0.2.0".to_string()
+            ))
         );
 
         // Build PR body from the structured plan

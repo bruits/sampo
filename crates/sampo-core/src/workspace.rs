@@ -125,8 +125,8 @@ mod tests {
 
         let ws = discover_workspace(root).unwrap();
         let x = ws.members.iter().find(|c| c.name == "x").unwrap();
-        assert!(x.internal_deps.contains("y"));
-        assert!(x.internal_deps.contains("z"));
+        assert!(x.internal_deps.contains("cargo:y"));
+        assert!(x.internal_deps.contains("cargo:z"));
     }
 
     #[test]

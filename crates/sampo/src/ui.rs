@@ -1,5 +1,8 @@
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
-use sampo_core::errors::{Result, SampoError};
+use sampo_core::{
+    errors::{Result, SampoError},
+    types::PackageKind,
+};
 use std::io;
 
 pub fn select_packages(available: &[String], prompt: &str) -> Result<Vec<String>> {
@@ -55,6 +58,10 @@ pub fn prompt_io_error(error: dialoguer::Error) -> io::Error {
     match error {
         dialoguer::Error::IO(err) => err,
     }
+}
+
+pub fn format_package_label(name: &str, kind: PackageKind, include_kind: bool) -> String {
+    kind.format_name(name, include_kind)
 }
 
 #[cfg(test)]

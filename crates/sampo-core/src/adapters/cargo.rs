@@ -295,7 +295,10 @@ fn collect_cargo_internal_deps(
         if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
             for (dep_name, dep_val) in tbl {
                 if is_cargo_internal_dep(crate_dir, name_to_path, dep_name, dep_val) {
-                    internal.insert(dep_name.clone());
+                    internal.insert(PackageInfo::dependency_identifier(
+                        PackageKind::Cargo,
+                        dep_name,
+                    ));
                 }
             }
         }
@@ -375,9 +378,11 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
     // Second pass: compute internal dependencies
     let mut out: Vec<PackageInfo> = Vec::new();
     for (name, version, path, manifest) in crates {
+        let identifier = PackageInfo::dependency_identifier(PackageKind::Cargo, &name);
         let internal_deps = collect_cargo_internal_deps(&path, &name_to_path, &manifest);
         out.push(PackageInfo {
             name,
+            identifier,
             version,
             path,
             internal_deps,
@@ -513,6 +518,7 @@ mod tests {
         let packages = discover_cargo(root).unwrap();
         let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
 
-        assert!(pkg_a.internal_deps.contains("pkg-b"));
+        assert_eq!(pkg_a.identifier, "cargo:pkg-a");
+        assert!(pkg_a.internal_deps.contains("cargo:pkg-b"));
     }
 }

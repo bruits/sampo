@@ -3,7 +3,8 @@ use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::types::{
-    Bump, DependencyUpdate, PackageInfo, ReleaseOutput, ReleasedPackage, Workspace,
+    Bump, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier, ReleaseOutput,
+    ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
 };
 use crate::{
     changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
@@ -11,7 +12,6 @@ use crate::{
 };
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
-use rustc_hash::FxHashSet;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -27,9 +27,76 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
         return None;
     }
 
-    let dep_list = updates
+    let mut parsed_updates: Vec<(
+        Option<PackageSpecifier>,
+        Option<String>,
+        String,
+        &DependencyUpdate,
+    )> = Vec::with_capacity(updates.len());
+    let mut labels_by_name: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for dep in updates {
+        if let Ok(spec) = PackageSpecifier::parse(&dep.name) {
+            let base_name = spec.name.clone();
+            if let Some(kind) = spec.kind {
+                labels_by_name
+                    .entry(base_name.clone())
+                    .or_default()
+                    .insert(kind.as_str().to_string());
+            } else {
+                labels_by_name.entry(base_name.clone()).or_default();
+            }
+            parsed_updates.push((Some(spec), None, base_name, dep));
+        } else if let Some((prefix, name)) = dep.name.split_once(':') {
+            let base_name = name.to_string();
+            labels_by_name
+                .entry(base_name.clone())
+                .or_default()
+                .insert(prefix.to_ascii_lowercase());
+            parsed_updates.push((None, Some(prefix.to_string()), base_name, dep));
+        } else {
+            let base_name = dep.name.clone();
+            labels_by_name.entry(base_name.clone()).or_default();
+            parsed_updates.push((None, None, base_name, dep));
+        }
+    }
+
+    let ambiguous_names: BTreeSet<String> = labels_by_name
         .iter()
-        .map(|dep| format!("{}@{}", dep.name, dep.new_version))
+        .filter_map(|(name, labels)| {
+            if labels.len() > 1 {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let dep_list = parsed_updates
+        .into_iter()
+        .map(|(spec_opt, raw_prefix, base_name, dep)| {
+            let is_ambiguous = ambiguous_names.contains(&base_name);
+            let display_label = if let Some(spec) = spec_opt.as_ref() {
+                if let Some(kind) = spec.kind {
+                    if is_ambiguous {
+                        format!("{}:{}", kind.as_str(), spec.name)
+                    } else {
+                        spec.display_name(false)
+                    }
+                } else {
+                    spec.display_name(false)
+                }
+            } else if let Some(prefix) = raw_prefix.as_ref() {
+                if is_ambiguous {
+                    format!("{}:{}", prefix.to_ascii_lowercase(), base_name)
+                } else {
+                    base_name.clone()
+                }
+            } else {
+                base_name.clone()
+            };
+            format!("{display_label}@{}", dep.new_version)
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -45,6 +112,79 @@ pub fn build_dependency_updates(updates: &[(String, String)]) -> Vec<DependencyU
             new_version: version.clone(),
         })
         .collect()
+}
+
+fn resolve_package_spec<'a>(
+    workspace: &'a Workspace,
+    spec: &PackageSpecifier,
+) -> Result<&'a PackageInfo> {
+    match workspace.resolve_specifier(spec) {
+        SpecResolution::Match(info) => Ok(info),
+        SpecResolution::NotFound { query } => match query.identifier() {
+            Some(identifier) => Err(SampoError::Changeset(format!(
+                "Changeset references '{}', but it was not found in the workspace.",
+                identifier
+            ))),
+            None => Err(SampoError::Changeset(format!(
+                "Changeset references '{}', but no matching package exists in the workspace.",
+                query.base_name()
+            ))),
+        },
+        SpecResolution::Ambiguous { query, matches } => {
+            let options = format_ambiguity_options(&matches);
+            Err(SampoError::Changeset(format!(
+                "Changeset references '{}', which matches multiple packages. \
+                 Disambiguate using one of: {}.",
+                query.base_name(),
+                options
+            )))
+        }
+    }
+}
+
+fn resolve_config_value(workspace: &Workspace, value: &str, context: &str) -> Result<String> {
+    let spec = PackageSpecifier::parse(value).map_err(|reason| {
+        SampoError::Config(format!(
+            "{}: invalid package reference '{}': {}",
+            context, value, reason
+        ))
+    })?;
+
+    match workspace.resolve_specifier(&spec) {
+        SpecResolution::Match(info) => Ok(info.canonical_identifier().to_string()),
+        SpecResolution::NotFound { query } => Err(SampoError::Config(format!(
+            "{}: package '{}' not found in the workspace.",
+            context,
+            query.display()
+        ))),
+        SpecResolution::Ambiguous { query, matches } => {
+            let options = format_ambiguity_options(&matches);
+            Err(SampoError::Config(format!(
+                "{}: package '{}' is ambiguous. Use one of: {}.",
+                context,
+                query.base_name(),
+                options
+            )))
+        }
+    }
+}
+
+fn resolve_config_groups(
+    workspace: &Workspace,
+    groups: &[Vec<String>],
+    section: &str,
+) -> Result<Vec<Vec<String>>> {
+    let mut resolved = Vec::with_capacity(groups.len());
+    for (idx, group) in groups.iter().enumerate() {
+        let mut resolved_group = Vec::with_capacity(group.len());
+        let context = format!("{} group {}", section, idx + 1);
+        for value in group {
+            let identifier = resolve_config_value(workspace, value, &context)?;
+            resolved_group.push(identifier);
+        }
+        resolved.push(resolved_group);
+    }
+    Ok(resolved)
 }
 
 /// Create a changelog entry for dependency updates
@@ -105,13 +245,14 @@ pub fn detect_all_dependency_explanations(
     workspace: &Workspace,
     config: &Config,
     releases: &BTreeMap<String, (String, String)>,
-) -> BTreeMap<String, Vec<(String, Bump)>> {
+) -> Result<BTreeMap<String, Vec<(String, Bump)>>> {
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+    let include_kind = workspace.has_multiple_package_kinds();
 
     // 1. Detect packages bumped due to fixed dependency group policy
     let bumped_packages: BTreeSet<String> = releases.keys().cloned().collect();
     let policy_packages =
-        detect_fixed_dependency_policy_packages(changesets, workspace, config, &bumped_packages);
+        detect_fixed_dependency_policy_packages(changesets, workspace, config, &bumped_packages)?;
 
     for (pkg_name, policy_bump) in policy_packages {
         // For accurate bump detection, infer from actual version changes
@@ -138,22 +279,31 @@ pub fn detect_all_dependency_explanations(
         .collect();
 
     // Build map of package name -> PackageInfo for quick lookup (only non-ignored packages)
-    let by_name: BTreeMap<String, &PackageInfo> = workspace
+    let by_id: BTreeMap<String, &PackageInfo> = workspace
         .members
         .iter()
         .filter(|c| !should_ignore_package(config, workspace, c).unwrap_or(false))
-        .map(|c| (c.name.clone(), c))
+        .map(|c| (c.canonical_identifier().to_string(), c))
         .collect();
 
     // For each released crate, check if it has internal dependencies that were updated
-    for crate_name in releases.keys() {
-        if let Some(crate_info) = by_name.get(crate_name) {
+    for crate_id in releases.keys() {
+        if let Some(crate_info) = by_id.get(crate_id) {
             // Find which internal dependencies were updated
             let mut updated_deps = Vec::new();
             for dep_name in &crate_info.internal_deps {
                 if let Some(new_version) = new_version_by_name.get(dep_name as &str) {
                     // This internal dependency was updated
-                    updated_deps.push((dep_name.clone(), new_version.clone()));
+                    let display_dep = by_id
+                        .get(dep_name)
+                        .map(|info| info.display_name(include_kind))
+                        .or_else(|| {
+                            PackageSpecifier::parse(dep_name)
+                                .ok()
+                                .map(|spec| spec.display_name(include_kind))
+                        })
+                        .unwrap_or_else(|| dep_name.clone());
+                    updated_deps.push((display_dep, new_version.clone()));
                 }
             }
 
@@ -162,7 +312,7 @@ pub fn detect_all_dependency_explanations(
                 let updates = build_dependency_updates(&updated_deps);
                 if let Some((msg, bump)) = create_dependency_update_entry(&updates) {
                     messages_by_pkg
-                        .entry(crate_name.clone())
+                        .entry(crate_id.clone())
                         .or_default()
                         .push((msg, bump));
                 }
@@ -170,7 +320,7 @@ pub fn detect_all_dependency_explanations(
         }
     }
 
-    messages_by_pkg
+    Ok(messages_by_pkg)
 }
 
 /// Detect packages that need fixed dependency group policy messages
@@ -183,12 +333,18 @@ pub fn detect_fixed_dependency_policy_packages(
     workspace: &Workspace,
     config: &Config,
     bumped_packages: &BTreeSet<String>,
-) -> BTreeMap<String, Bump> {
+) -> Result<BTreeMap<String, Bump>> {
     // Build set of packages with direct changesets
-    let packages_with_changesets: BTreeSet<String> = changesets
-        .iter()
-        .flat_map(|cs| cs.entries.iter().map(|(name, _)| name.clone()))
-        .collect();
+    let mut packages_with_changesets: BTreeSet<String> = BTreeSet::new();
+    for cs in changesets {
+        for (spec, _) in &cs.entries {
+            let info = resolve_package_spec(workspace, spec)?;
+            packages_with_changesets.insert(info.canonical_identifier().to_string());
+        }
+    }
+
+    let resolved_groups =
+        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
 
     // Build dependency graph (dependent -> set of dependencies) - only non-ignored packages
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -202,7 +358,7 @@ pub fn detect_fixed_dependency_policy_packages(
             dependents
                 .entry(dep_name.clone())
                 .or_default()
-                .insert(crate_info.name.clone());
+                .insert(crate_info.canonical_identifier().to_string());
         }
     }
 
@@ -242,46 +398,51 @@ pub fn detect_fixed_dependency_policy_packages(
         }
 
         // Check if this package is in a fixed dependency group with an affected package
-        for group in &config.fixed_dependencies {
-            if group.contains(&pkg_name.to_string()) {
-                // Check if any other package in this group has changes
-                let has_affected_group_member = group.iter().any(|group_member| {
-                    group_member != pkg_name
-                        && (packages_with_changesets.contains(group_member)
-                            || packages_affected_by_cascade.contains(group_member))
-                });
+        for group in &resolved_groups {
+            if !group.contains(pkg_name) {
+                continue;
+            }
 
-                if has_affected_group_member {
-                    // Find the highest bump level in the group to determine the policy bump
-                    let group_bump = group
+            let has_affected_group_member = group.iter().any(|member_id| {
+                member_id != pkg_name
+                    && (packages_with_changesets.contains(member_id)
+                        || packages_affected_by_cascade.contains(member_id))
+            });
+
+            if !has_affected_group_member {
+                continue;
+            }
+
+            // Find the highest bump level in the group to determine the policy bump
+            let group_bump = group
+                .iter()
+                .filter_map(|member_id| {
+                    if !packages_with_changesets.contains(member_id) {
+                        return None;
+                    }
+                    changesets
                         .iter()
-                        .filter_map(|member| {
-                            if packages_with_changesets.contains(member) {
-                                // Find the highest bump from changesets affecting this member
-                                changesets
-                                    .iter()
-                                    .filter_map(|cs| {
-                                        cs.entries
-                                            .iter()
-                                            .find(|(name, _)| name == member)
-                                            .map(|(_, b)| *b)
-                                    })
-                                    .max()
-                            } else {
-                                None
-                            }
+                        .filter_map(|cs| {
+                            cs.entries.iter().find_map(|(spec, bump)| {
+                                let info = resolve_package_spec(workspace, spec).ok()?;
+                                if info.canonical_identifier() == member_id.as_str() {
+                                    Some(*bump)
+                                } else {
+                                    None
+                                }
+                            })
                         })
                         .max()
-                        .unwrap_or(Bump::Patch);
+                })
+                .max()
+                .unwrap_or(Bump::Patch);
 
-                    result.insert(pkg_name.clone(), group_bump);
-                    break;
-                }
-            }
+            result.insert(pkg_name.clone(), group_bump);
+            break;
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Type alias for initial bumps computation result
@@ -438,7 +599,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         released_packages,
     } = plan_state;
 
-    print_release_plan(&releases);
+    print_release_plan(&workspace, &releases);
 
     let is_prerelease_release = releases_include_prerelease(&releases);
 
@@ -491,8 +652,8 @@ fn compute_plan_state(
     }
 
     let dependents = build_dependency_graph(workspace, config);
-    apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace);
-    apply_linked_dependencies(&mut bump_by_pkg, config);
+    apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
+    apply_linked_dependencies(&mut bump_by_pkg, config, workspace)?;
 
     let releases = prepare_release_plan(&bump_by_pkg, workspace)?;
     if releases.is_empty() {
@@ -503,8 +664,13 @@ fn compute_plan_state(
         .iter()
         .map(|(name, old_version, new_version)| {
             let bump = bump_by_pkg.get(name).copied().unwrap_or(Bump::Patch);
+            let display_name = workspace
+                .find_by_identifier(name)
+                .map(|info| info.name.clone())
+                .unwrap_or_else(|| name.clone());
             ReleasedPackage {
-                name: name.clone(),
+                name: display_name,
+                identifier: name.clone(),
                 old_version: old_version.clone(),
                 new_version: new_version.clone(),
                 bump,
@@ -656,29 +822,21 @@ fn compute_initial_bumps(
         .ok()
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
-    // Build quick lookup for package info (only Cargo packages for now)
-    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
-    for c in &ws.members {
-        // Only process Cargo packages in release planning
-        if c.kind == crate::types::PackageKind::Cargo {
-            by_name.insert(c.name.clone(), c);
-        }
-    }
-
     for cs in changesets {
         let mut consumed_changeset = false;
-        for (pkg, bump) in &cs.entries {
-            if let Some(info) = by_name.get(pkg)
-                && should_ignore_package(cfg, ws, info)?
-            {
+        for (spec, bump) in &cs.entries {
+            let info = resolve_package_spec(ws, spec)?;
+            if should_ignore_package(cfg, ws, info)? {
                 continue;
             }
 
             // Mark this changeset as consumed since at least one package is applicable
             consumed_changeset = true;
 
+            let identifier = info.canonical_identifier().to_string();
+
             bump_by_pkg
-                .entry(pkg.clone())
+                .entry(identifier.clone())
                 .and_modify(|b| {
                     if *bump > *b {
                         *b = *bump;
@@ -703,7 +861,7 @@ fn compute_initial_bumps(
             };
 
             messages_by_pkg
-                .entry(pkg.clone())
+                .entry(identifier)
                 .or_default()
                 .push((enriched, *bump));
         }
@@ -725,17 +883,18 @@ fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTre
         .members
         .iter()
         .filter(|c| should_ignore_package(cfg, ws, c).unwrap_or(false))
-        .map(|c| c.name.clone())
+        .map(|c| c.canonical_identifier().to_string())
         .collect();
 
     for c in &ws.members {
         // Skip non-Cargo packages (only Cargo is currently supported for releases)
-        if c.kind != crate::types::PackageKind::Cargo {
+        if c.kind != PackageKind::Cargo {
             continue;
         }
 
         // Skip ignored packages when building the dependency graph
-        if ignored_packages.contains(&c.name) {
+        let identifier = c.canonical_identifier();
+        if ignored_packages.contains(identifier) {
             continue;
         }
 
@@ -748,7 +907,7 @@ fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTre
             dependents
                 .entry(dep.clone())
                 .or_default()
-                .insert(c.name.clone());
+                .insert(identifier.to_string());
         }
     }
     dependents
@@ -760,19 +919,22 @@ fn apply_dependency_cascade(
     dependents: &BTreeMap<String, BTreeSet<String>>,
     cfg: &Config,
     ws: &Workspace,
-) {
+) -> Result<()> {
+    let resolved_fixed_groups =
+        resolve_config_groups(ws, &cfg.fixed_dependencies, "packages.fixed")?;
+
     // Helper function to find which fixed group a package belongs to, if any
-    let find_fixed_group = |pkg_name: &str| -> Option<usize> {
-        cfg.fixed_dependencies
+    let find_fixed_group = |pkg_id: &str| -> Option<usize> {
+        resolved_fixed_groups
             .iter()
-            .position(|group| group.contains(&pkg_name.to_string()))
+            .position(|group| group.contains(&pkg_id.to_string()))
     };
 
     // Build a quick lookup map for package info (only Cargo packages)
-    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+    let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        if c.kind == crate::types::PackageKind::Cargo {
-            by_name.insert(c.name.clone(), c);
+        if c.kind == PackageKind::Cargo {
+            by_id.insert(c.canonical_identifier().to_string(), c);
         }
     }
 
@@ -786,7 +948,7 @@ fn apply_dependency_cascade(
         if let Some(deps) = dependents.get(&changed) {
             for dep_name in deps {
                 // Check if this dependent package should be ignored
-                if let Some(info) = by_name.get(dep_name) {
+                if let Some(info) = by_id.get(dep_name) {
                     match should_ignore_package(cfg, ws, info) {
                         Ok(true) => continue,
                         Ok(false) => {} // Continue processing
@@ -823,40 +985,50 @@ fn apply_dependency_cascade(
         // 2. Handle fixed dependency groups (bidirectional)
         if let Some(group_idx) = find_fixed_group(&changed) {
             // All packages in the same fixed group should bump together
-            for group_member in &cfg.fixed_dependencies[group_idx] {
-                if group_member != &changed {
-                    // Check if this group member should be ignored
-                    if let Some(info) = by_name.get(group_member) {
-                        match should_ignore_package(cfg, ws, info) {
-                            Ok(true) => continue,
-                            Ok(false) => {} // Continue processing
-                            Err(_) => {
-                                // On I/O error reading manifest, err on the side of not ignoring
-                                // This maintains backwards compatibility and avoids silent failures
-                            }
+            for group_member in &resolved_fixed_groups[group_idx] {
+                if group_member == &changed {
+                    continue;
+                }
+
+                // Check if this group member should be ignored
+                if let Some(info) = by_id.get(group_member) {
+                    match should_ignore_package(cfg, ws, info) {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(_) => {
+                            // On I/O error reading manifest, err on the side of not ignoring
+                            // This maintains backwards compatibility and avoids silent failures
                         }
                     }
+                }
 
-                    let entry = bump_by_pkg
-                        .entry(group_member.clone())
-                        .or_insert(changed_bump);
-                    // If already present, keep the higher bump
-                    if *entry < changed_bump {
-                        *entry = changed_bump;
-                    }
-                    if !seen.contains(group_member) {
-                        queue.push(group_member.clone());
-                        seen.insert(group_member.clone());
-                    }
+                let entry = bump_by_pkg
+                    .entry(group_member.clone())
+                    .or_insert(changed_bump);
+                // If already present, keep the higher bump
+                if *entry < changed_bump {
+                    *entry = changed_bump;
+                }
+                if !seen.contains(group_member) {
+                    queue.push(group_member.clone());
+                    seen.insert(group_member.clone());
                 }
             }
         }
     }
+
+    Ok(())
 }
 
 /// Apply linked dependencies logic: highest bump level to affected packages only
-fn apply_linked_dependencies(bump_by_pkg: &mut BTreeMap<String, Bump>, cfg: &Config) {
-    for group in &cfg.linked_dependencies {
+fn apply_linked_dependencies(
+    bump_by_pkg: &mut BTreeMap<String, Bump>,
+    cfg: &Config,
+    ws: &Workspace,
+) -> Result<()> {
+    let resolved_groups = resolve_config_groups(ws, &cfg.linked_dependencies, "packages.linked")?;
+
+    for group in &resolved_groups {
         // Check if any package in this group has been bumped
         let mut group_has_bumps = false;
         let mut highest_bump = Bump::Patch;
@@ -889,6 +1061,8 @@ fn apply_linked_dependencies(bump_by_pkg: &mut BTreeMap<String, Bump>, cfg: &Con
             }
         }
     }
+
+    Ok(())
 }
 
 /// Prepare the release plan by matching bumps to workspace members
@@ -897,16 +1071,16 @@ fn prepare_release_plan(
     ws: &Workspace,
 ) -> Result<ReleasePlan> {
     // Map package name -> PackageInfo for quick lookup (only Cargo packages)
-    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+    let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        if c.kind == crate::types::PackageKind::Cargo {
-            by_name.insert(c.name.clone(), c);
+        if c.kind == PackageKind::Cargo {
+            by_id.insert(c.canonical_identifier().to_string(), c);
         }
     }
 
     let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
-    for (name, bump) in bump_by_pkg {
-        if let Some(info) = by_name.get(name) {
+    for (identifier, bump) in bump_by_pkg {
+        if let Some(info) = by_id.get(identifier) {
             let old = if info.version.is_empty() {
                 "0.0.0".to_string()
             } else {
@@ -915,7 +1089,7 @@ fn prepare_release_plan(
 
             let newv = bump_version(&old, *bump).unwrap_or_else(|_| old.clone());
 
-            releases.push((name.clone(), old, newv));
+            releases.push((identifier.clone(), old, newv));
         }
     }
 
@@ -923,10 +1097,20 @@ fn prepare_release_plan(
 }
 
 /// Print the planned releases
-fn print_release_plan(releases: &ReleasePlan) {
+fn print_release_plan(workspace: &Workspace, releases: &ReleasePlan) {
+    let include_kind = workspace.has_multiple_package_kinds();
     println!("Planned releases:");
-    for (name, old, newv) in releases {
-        println!("  {name}: {old} -> {newv}");
+    for (identifier, old, newv) in releases {
+        let display = workspace
+            .find_by_identifier(identifier)
+            .map(|info| info.display_name(include_kind))
+            .or_else(|| {
+                PackageSpecifier::parse(identifier)
+                    .ok()
+                    .map(|spec| spec.display_name(include_kind))
+            })
+            .unwrap_or_else(|| identifier.clone());
+        println!("  {display}: {old} -> {newv}");
     }
 }
 
@@ -1063,16 +1247,11 @@ fn apply_releases(
     cfg: &Config,
 ) -> Result<()> {
     // Build lookup maps (only Cargo packages)
-    let mut by_name: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+    let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        if c.kind == crate::types::PackageKind::Cargo {
-            by_name.insert(c.name.clone(), c);
+        if c.kind == PackageKind::Cargo {
+            by_id.insert(c.canonical_identifier().to_string(), c);
         }
-    }
-
-    let mut new_version_by_name: BTreeMap<String, String> = BTreeMap::new();
-    for (name, _old, newv) in releases {
-        new_version_by_name.insert(name.clone(), newv.clone());
     }
 
     let manifest_metadata = ManifestMetadata::load(ws)?;
@@ -1083,9 +1262,16 @@ fn apply_releases(
         .map(|(name, old, new)| (name.clone(), (old.clone(), new.clone())))
         .collect();
 
+    let mut new_version_by_name: BTreeMap<String, String> = BTreeMap::new();
+    for (identifier, _old, newv) in releases {
+        if let Some(info) = by_id.get(identifier) {
+            new_version_by_name.insert(info.name.clone(), newv.clone());
+        }
+    }
+
     // Use unified function to detect all dependency explanations
     let dependency_explanations =
-        detect_all_dependency_explanations(changesets, ws, cfg, &releases_map);
+        detect_all_dependency_explanations(changesets, ws, cfg, &releases_map)?;
 
     // Merge dependency explanations into existing messages
     for (pkg_name, explanations) in dependency_explanations {
@@ -1100,7 +1286,7 @@ fn apply_releases(
     // Apply updates for each release
     let adapter = crate::adapters::PackageAdapter::Cargo;
     for (name, old, newv) in releases {
-        let info = by_name.get(name.as_str()).unwrap();
+        let info = by_id.get(name.as_str()).unwrap();
         let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
 
@@ -1117,7 +1303,7 @@ fn apply_releases(
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
         update_changelog(
             &info.path,
-            name,
+            &info.name,
             old,
             newv,
             &messages,
@@ -1492,22 +1678,7 @@ fn update_changelog(
 
 /// Validate fixed dependencies configuration against the workspace
 fn validate_fixed_dependencies(config: &Config, workspace: &Workspace) -> Result<()> {
-    let workspace_packages: FxHashSet<String> =
-        workspace.members.iter().map(|c| c.name.clone()).collect();
-
-    for (group_idx, group) in config.fixed_dependencies.iter().enumerate() {
-        for package in group {
-            if !workspace_packages.contains(package) {
-                let available_packages: Vec<String> = workspace_packages.iter().cloned().collect();
-                return Err(SampoError::Release(format!(
-                    "Package '{}' in fixed dependency group {} does not exist in the workspace. Available packages: [{}]",
-                    package,
-                    group_idx + 1,
-                    available_packages.join(", ")
-                )));
-            }
-        }
-    }
+    resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
     Ok(())
 }
 
@@ -1699,6 +1870,7 @@ mod tests {
             members: vec![
                 PackageInfo {
                     name: "main-package".to_string(),
+                    identifier: "cargo:main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("main-package"),
                     internal_deps: BTreeSet::new(),
@@ -1706,6 +1878,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "examples-package".to_string(),
+                    identifier: "cargo:examples-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("examples/package"),
                     internal_deps: BTreeSet::new(),
@@ -1713,6 +1886,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "benchmarks-utils".to_string(),
+                    identifier: "cargo:benchmarks-utils".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("benchmarks/utils"),
                     internal_deps: BTreeSet::new(),
@@ -1730,8 +1904,8 @@ mod tests {
         // Create a dependency graph where main-package depends on the ignored packages
         let mut dependents = BTreeMap::new();
         dependents.insert(
-            "main-package".to_string(),
-            ["examples-package", "benchmarks-utils"]
+            "cargo:main-package".to_string(),
+            ["cargo:examples-package", "cargo:benchmarks-utils"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -1739,16 +1913,16 @@ mod tests {
 
         // Start with main-package being bumped
         let mut bump_by_pkg = BTreeMap::new();
-        bump_by_pkg.insert("main-package".to_string(), Bump::Minor);
+        bump_by_pkg.insert("cargo:main-package".to_string(), Bump::Minor);
 
         // Apply dependency cascade
-        apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace);
+        apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace).unwrap();
 
         // The ignored packages should NOT be added to bump_by_pkg
         assert_eq!(bump_by_pkg.len(), 1);
-        assert!(bump_by_pkg.contains_key("main-package"));
-        assert!(!bump_by_pkg.contains_key("examples-package"));
-        assert!(!bump_by_pkg.contains_key("benchmarks-utils"));
+        assert!(bump_by_pkg.contains_key("cargo:main-package"));
+        assert!(!bump_by_pkg.contains_key("cargo:examples-package"));
+        assert!(!bump_by_pkg.contains_key("cargo:benchmarks-utils"));
     }
 
     #[test]
@@ -1763,13 +1937,15 @@ mod tests {
             members: vec![
                 PackageInfo {
                     name: "main-package".to_string(),
+                    identifier: "cargo:main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("main-package"),
-                    internal_deps: ["examples-package".to_string()].into_iter().collect(),
+                    internal_deps: ["cargo:examples-package".to_string()].into_iter().collect(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
                     name: "examples-package".to_string(),
+                    identifier: "cargo:examples-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("examples/package"),
                     internal_deps: BTreeSet::new(),
@@ -1789,7 +1965,7 @@ mod tests {
 
         // examples-package should not appear in the dependency graph because it's ignored
         // So main-package should not appear as a dependent of examples-package
-        assert!(!dependents.contains_key("examples-package"));
+        assert!(!dependents.contains_key("cargo:examples-package"));
 
         // The dependency graph should be empty since examples-package is ignored
         // and main-package depends on it
