@@ -287,17 +287,15 @@ pub fn format_ambiguity_options(matches: &[&PackageInfo]) -> String {
 
 /// Strip wrapping single or double quotes from a string.
 pub fn strip_wrapping_quotes(value: &str) -> &str {
-    if value.len() < 2 {
-        return value;
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|s| s.strip_suffix(quote))
+        {
+            return inner;
+        }
     }
-    let bytes = value.as_bytes();
-    let first = bytes[0];
-    let last = bytes[value.len() - 1];
-    if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-        &value[1..value.len() - 1]
-    } else {
-        value
-    }
+    value
 }
 
 /// Semantic version bump types, ordered by impact
