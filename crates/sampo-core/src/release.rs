@@ -4,7 +4,7 @@ use crate::filters::should_ignore_package;
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::types::{
     Bump, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier, ReleaseOutput,
-    ReleasedPackage, Workspace,
+    ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
 };
 use crate::{
     changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
@@ -63,7 +63,13 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
 
     let ambiguous_names: BTreeSet<String> = labels_by_name
         .iter()
-        .filter_map(|(name, labels)| (labels.len() > 1).then(|| name.clone()))
+        .filter_map(|(name, labels)| {
+            if labels.len() > 1 {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
         .collect();
 
     let dep_list = parsed_updates
@@ -112,34 +118,26 @@ fn resolve_package_spec<'a>(
     workspace: &'a Workspace,
     spec: &PackageSpecifier,
 ) -> Result<&'a PackageInfo> {
-    if let Some(kind) = spec.kind {
-        let identifier = PackageInfo::dependency_identifier(kind, &spec.name);
-        workspace.find_by_identifier(&identifier).ok_or_else(|| {
-            SampoError::Changeset(format!(
+    match workspace.resolve_specifier(spec) {
+        SpecResolution::Match(info) => Ok(info),
+        SpecResolution::NotFound { query } => match query.identifier() {
+            Some(identifier) => Err(SampoError::Changeset(format!(
                 "Changeset references '{}', but it was not found in the workspace.",
                 identifier
-            ))
-        })
-    } else {
-        let matches = workspace.match_specifier(spec);
-        match matches.len() {
-            0 => Err(SampoError::Changeset(format!(
-                "Changeset references '{}', but no matching package exists in the workspace.",
-                spec.name
             ))),
-            1 => Ok(matches[0]),
-            _ => {
-                let options = matches
-                    .iter()
-                    .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(SampoError::Changeset(format!(
-                    "Changeset references '{}', which matches multiple packages. \
-                     Disambiguate using one of: {}.",
-                    spec.name, options
-                )))
-            }
+            None => Err(SampoError::Changeset(format!(
+                "Changeset references '{}', but no matching package exists in the workspace.",
+                query.base_name()
+            ))),
+        },
+        SpecResolution::Ambiguous { query, matches } => {
+            let options = format_ambiguity_options(&matches);
+            Err(SampoError::Changeset(format!(
+                "Changeset references '{}', which matches multiple packages. \
+                 Disambiguate using one of: {}.",
+                query.base_name(),
+                options
+            )))
         }
     }
 }
@@ -152,36 +150,21 @@ fn resolve_config_value(workspace: &Workspace, value: &str, context: &str) -> Re
         ))
     })?;
 
-    if let Some(kind) = spec.kind {
-        let identifier = PackageInfo::dependency_identifier(kind, &spec.name);
-        workspace
-            .find_by_identifier(&identifier)
-            .map(|info| info.canonical_identifier().to_string())
-            .ok_or_else(|| {
-                SampoError::Config(format!(
-                    "{}: package '{}' not found in the workspace.",
-                    context, identifier
-                ))
-            })
-    } else {
-        let matches = workspace.match_specifier(&spec);
-        match matches.len() {
-            0 => Err(SampoError::Config(format!(
-                "{}: package '{}' not found in the workspace.",
-                context, spec.name
-            ))),
-            1 => Ok(matches[0].canonical_identifier().to_string()),
-            _ => {
-                let options = matches
-                    .iter()
-                    .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(SampoError::Config(format!(
-                    "{}: package '{}' is ambiguous. Use one of: {}.",
-                    context, spec.name, options
-                )))
-            }
+    match workspace.resolve_specifier(&spec) {
+        SpecResolution::Match(info) => Ok(info.canonical_identifier().to_string()),
+        SpecResolution::NotFound { query } => Err(SampoError::Config(format!(
+            "{}: package '{}' not found in the workspace.",
+            context,
+            query.display()
+        ))),
+        SpecResolution::Ambiguous { query, matches } => {
+            let options = format_ambiguity_options(&matches);
+            Err(SampoError::Config(format!(
+                "{}: package '{}' is ambiguous. Use one of: {}.",
+                context,
+                query.base_name(),
+                options
+            )))
         }
     }
 }

@@ -7,7 +7,7 @@ use sampo_core::{
     errors::{Result, SampoError},
     filters::filter_members,
     render_changeset_markdown,
-    types::PackageSpecifier,
+    types::{PackageSpecifier, SpecResolution, format_ambiguity_options},
 };
 use std::collections::HashMap;
 use std::fs;
@@ -245,46 +245,26 @@ fn resolve_cli_packages(
         })?;
 
         if let Some(ws) = workspace {
-            if let Some(kind) = spec.kind {
-                let identifier = format!("{}:{}", kind.as_str(), spec.name);
-                if let Some(info) = ws.find_by_identifier(&identifier) {
+            match ws.resolve_specifier(&spec) {
+                SpecResolution::Match(info) => {
                     resolved.push(PackageSpecifier {
                         kind: Some(info.kind),
                         name: info.name.clone(),
                     });
-                } else {
+                }
+                SpecResolution::NotFound { query } => {
                     return Err(SampoError::InvalidData(format!(
                         "Package '{}' not found in the workspace.",
-                        spec.to_canonical_string()
+                        query.display()
                     )));
                 }
-            } else {
-                let matches = ws.match_specifier(&spec);
-                match matches.len() {
-                    0 => {
-                        return Err(SampoError::InvalidData(format!(
-                            "Package '{}' not found in the workspace.",
-                            spec.name
-                        )));
-                    }
-                    1 => {
-                        let info = matches[0];
-                        resolved.push(PackageSpecifier {
-                            kind: Some(info.kind),
-                            name: info.name.clone(),
-                        });
-                    }
-                    _ => {
-                        let options = matches
-                            .iter()
-                            .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        return Err(SampoError::InvalidData(format!(
-                            "Package '{}' is ambiguous. Disambiguate using one of: {}.",
-                            spec.name, options
-                        )));
-                    }
+                SpecResolution::Ambiguous { query, matches } => {
+                    let options = format_ambiguity_options(&matches);
+                    return Err(SampoError::InvalidData(format!(
+                        "Package '{}' is ambiguous. Disambiguate using one of: {}.",
+                        query.base_name(),
+                        options
+                    )));
                 }
             }
         } else {

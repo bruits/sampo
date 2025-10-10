@@ -7,7 +7,7 @@ use sampo_core::{
     exit_prerelease,
     filters::filter_members,
     restore_preserved_changesets,
-    types::PackageSpecifier,
+    types::{PackageSpecifier, SpecResolution, format_ambiguity_options},
 };
 use semver::Version;
 use std::collections::{BTreeSet, HashMap};
@@ -309,32 +309,21 @@ fn resolve_cli_specifiers(
             SampoError::Prerelease(format!("Invalid package reference '{}': {}", raw, reason))
         })?;
 
-        let info = if let Some(kind) = spec.kind {
-            let identifier = format!("{}:{}", kind.as_str(), spec.name);
-            workspace.find_by_identifier(&identifier).ok_or_else(|| {
-                SampoError::Prerelease(format!("Package '{}' not found in workspace", identifier))
-            })?
-        } else {
-            let matches = workspace.match_specifier(&spec);
-            match matches.len() {
-                0 => {
-                    return Err(SampoError::Prerelease(format!(
-                        "Package '{}' not found in workspace",
-                        spec.name
-                    )));
-                }
-                1 => matches[0],
-                _ => {
-                    let options = matches
-                        .iter()
-                        .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(SampoError::Prerelease(format!(
-                        "Package '{}' is ambiguous. Disambiguate using one of: {}.",
-                        spec.name, options
-                    )));
-                }
+        let info = match workspace.resolve_specifier(&spec) {
+            SpecResolution::Match(info) => info,
+            SpecResolution::NotFound { query } => {
+                return Err(SampoError::Prerelease(format!(
+                    "Package '{}' not found in workspace",
+                    query.display()
+                )));
+            }
+            SpecResolution::Ambiguous { query, matches } => {
+                let options = format_ambiguity_options(&matches);
+                return Err(SampoError::Prerelease(format!(
+                    "Package '{}' is ambiguous. Disambiguate using one of: {}.",
+                    query.base_name(),
+                    options
+                )));
             }
         };
 

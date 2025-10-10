@@ -175,6 +175,47 @@ pub struct Workspace {
     pub members: Vec<PackageInfo>,
 }
 
+/// Information describing a user-provided package reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecQuery {
+    pub name: String,
+    pub identifier: Option<String>,
+}
+
+impl SpecQuery {
+    pub fn new(name: String, identifier: Option<String>) -> Self {
+        Self { name, identifier }
+    }
+
+    /// Preferred display value for diagnostics.
+    pub fn display(&self) -> &str {
+        self.identifier.as_deref().unwrap_or(self.name.as_str())
+    }
+
+    /// Returns the raw package name without ecosystem prefix.
+    pub fn base_name(&self) -> &str {
+        &self.name
+    }
+
+    /// Optional canonical identifier supplied with the query.
+    pub fn identifier(&self) -> Option<&str> {
+        self.identifier.as_deref()
+    }
+}
+
+/// Classification of how a specifier matches workspace packages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpecResolution<'a> {
+    Match(&'a PackageInfo),
+    NotFound {
+        query: SpecQuery,
+    },
+    Ambiguous {
+        query: SpecQuery,
+        matches: Vec<&'a PackageInfo>,
+    },
+}
+
 impl Workspace {
     /// Returns the package matching the given canonical identifier, if any.
     pub fn find_by_identifier(&self, identifier: &str) -> Option<&PackageInfo> {
@@ -199,6 +240,31 @@ impl Workspace {
         }
     }
 
+    /// Resolves a specifier to a single package or classifies the failure.
+    pub fn resolve_specifier<'a>(&'a self, spec: &PackageSpecifier) -> SpecResolution<'a> {
+        if let Some(kind) = spec.kind {
+            let identifier = PackageInfo::dependency_identifier(kind, &spec.name);
+            match self.find_by_identifier(&identifier) {
+                Some(info) => SpecResolution::Match(info),
+                None => SpecResolution::NotFound {
+                    query: SpecQuery::new(spec.name.clone(), Some(identifier)),
+                },
+            }
+        } else {
+            let matches = self.match_specifier(spec);
+            match matches.len() {
+                0 => SpecResolution::NotFound {
+                    query: SpecQuery::new(spec.name.clone(), None),
+                },
+                1 => SpecResolution::Match(matches[0]),
+                _ => SpecResolution::Ambiguous {
+                    query: SpecQuery::new(spec.name.clone(), None),
+                    matches,
+                },
+            }
+        }
+    }
+
     /// Returns true when the workspace contains packages from multiple ecosystems.
     pub fn has_multiple_package_kinds(&self) -> bool {
         let mut kinds = self.members.iter().map(|info| info.kind);
@@ -208,6 +274,15 @@ impl Workspace {
             false
         }
     }
+}
+
+/// Formats ambiguous matches for error messaging.
+pub fn format_ambiguity_options(matches: &[&PackageInfo]) -> String {
+    matches
+        .iter()
+        .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Strip wrapping single or double quotes from a string.
@@ -277,6 +352,74 @@ impl TryFrom<changesets::ChangeType> for Bump {
             changesets::ChangeType::Minor => Ok(Self::Minor),
             changesets::ChangeType::Major => Ok(Self::Major),
             changesets::ChangeType::Custom(_) => Err(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    fn make_package(name: &str) -> PackageInfo {
+        PackageInfo {
+            name: name.to_string(),
+            identifier: PackageInfo::dependency_identifier(PackageKind::Cargo, name),
+            version: "0.1.0".to_string(),
+            path: PathBuf::from(format!("crates/{name}")),
+            internal_deps: BTreeSet::new(),
+            kind: PackageKind::Cargo,
+        }
+    }
+
+    #[test]
+    fn resolve_specifier_matches_prefixed_identifier() {
+        let workspace = Workspace {
+            root: PathBuf::new(),
+            members: vec![make_package("core")],
+        };
+        let spec = PackageSpecifier::parse("cargo:core").unwrap();
+        let outcome = workspace.resolve_specifier(&spec);
+        assert!(matches!(outcome, SpecResolution::Match(info) if info.name == "core"));
+    }
+
+    #[test]
+    fn resolve_specifier_not_found_reports_identifier() {
+        let workspace = Workspace {
+            root: PathBuf::new(),
+            members: vec![make_package("core")],
+        };
+        let spec = PackageSpecifier::parse("cargo:missing").unwrap();
+        let outcome = workspace.resolve_specifier(&spec);
+        match outcome {
+            SpecResolution::NotFound { query } => {
+                assert_eq!(query.identifier(), Some("cargo:missing"));
+                assert_eq!(query.display(), "cargo:missing");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_specifier_detects_ambiguity() {
+        let pkg_a = make_package("shared");
+        let mut pkg_b = make_package("shared");
+        pkg_b.identifier = "cargo:shared-alt".to_string();
+        let workspace = Workspace {
+            root: PathBuf::new(),
+            members: vec![pkg_a, pkg_b],
+        };
+        let spec = PackageSpecifier::parse("shared").unwrap();
+        let outcome = workspace.resolve_specifier(&spec);
+        match outcome {
+            SpecResolution::Ambiguous { query, matches } => {
+                assert_eq!(query.base_name(), "shared");
+                assert_eq!(matches.len(), 2);
+                let listing = format_ambiguity_options(&matches);
+                assert!(listing.contains("cargo:shared"));
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
         }
     }
 }

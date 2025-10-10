@@ -2,7 +2,9 @@ use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
 use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
-use crate::types::{PackageInfo, PackageSpecifier, Workspace};
+use crate::types::{
+    PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
+};
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -101,32 +103,21 @@ fn resolve_targets<'a>(
             SampoError::Prerelease(format!("Invalid package reference '{}': {}", raw, reason))
         })?;
 
-        let info = if let Some(kind) = spec.kind {
-            let identifier = PackageInfo::dependency_identifier(kind, &spec.name);
-            workspace.find_by_identifier(&identifier).ok_or_else(|| {
-                SampoError::NotFound(format!("Package '{}' not found in workspace", identifier))
-            })?
-        } else {
-            let matches = workspace.match_specifier(&spec);
-            match matches.len() {
-                0 => {
-                    return Err(SampoError::NotFound(format!(
-                        "Package '{}' not found in workspace",
-                        spec.name
-                    )));
-                }
-                1 => matches[0],
-                _ => {
-                    let options = matches
-                        .iter()
-                        .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(SampoError::Prerelease(format!(
-                        "Package '{}' is ambiguous. Disambiguate using one of: {}.",
-                        spec.name, options
-                    )));
-                }
+        let info = match workspace.resolve_specifier(&spec) {
+            SpecResolution::Match(info) => info,
+            SpecResolution::NotFound { query } => {
+                return Err(SampoError::NotFound(format!(
+                    "Package '{}' not found in workspace",
+                    query.display()
+                )));
+            }
+            SpecResolution::Ambiguous { query, matches } => {
+                let options = format_ambiguity_options(&matches);
+                return Err(SampoError::Prerelease(format!(
+                    "Package '{}' is ambiguous. Disambiguate using one of: {}.",
+                    query.base_name(),
+                    options
+                )));
             }
         };
 

@@ -1,6 +1,6 @@
 use crate::error::{ActionError, Result};
 use sampo_core::format_markdown_list_item;
-use sampo_core::types::PackageSpecifier;
+use sampo_core::types::{PackageSpecifier, SpecResolution, format_ambiguity_options};
 use sampo_core::{
     Bump, Config, VersionChange, detect_all_dependency_explanations,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
@@ -235,39 +235,30 @@ fn resolve_specifier_identifier(
     workspace: &sampo_core::Workspace,
     spec: &PackageSpecifier,
 ) -> Result<String> {
-    if let Some(kind) = spec.kind {
-        let identifier = format!("{}:{}", kind.as_str(), spec.name);
-        workspace
-            .find_by_identifier(&identifier)
-            .map(|_| identifier.clone())
-            .ok_or_else(|| {
+    match workspace.resolve_specifier(spec) {
+        SpecResolution::Match(info) => Ok(info.canonical_identifier().to_string()),
+        SpecResolution::NotFound { query } => {
+            let error = if let Some(identifier) = query.identifier() {
                 sampo_core::errors::SampoError::Changeset(format!(
                     "Changeset references '{}', but it was not found in the workspace.",
                     identifier
                 ))
-                .into()
-            })
-    } else {
-        let matches = workspace.match_specifier(spec);
-        match matches.len() {
-            0 => Err(sampo_core::errors::SampoError::Changeset(format!(
-                "Changeset references '{}', but no matching package exists in the workspace.",
-                spec.name
-            ))
-            .into()),
-            1 => Ok(matches[0].canonical_identifier().to_string()),
-            _ => {
-                let options = matches
-                    .iter()
-                    .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(sampo_core::errors::SampoError::Changeset(format!(
-                    "Changeset references '{}', which matches multiple packages. Disambiguate using one of: {}.",
-                    spec.name, options
+            } else {
+                sampo_core::errors::SampoError::Changeset(format!(
+                    "Changeset references '{}', but no matching package exists in the workspace.",
+                    query.base_name()
                 ))
-                .into())
-            }
+            };
+            Err(error.into())
+        }
+        SpecResolution::Ambiguous { query, matches } => {
+            let options = format_ambiguity_options(&matches);
+            Err(sampo_core::errors::SampoError::Changeset(format!(
+                "Changeset references '{}', which matches multiple packages. Disambiguate using one of: {}.",
+                query.base_name(),
+                options
+            ))
+            .into())
         }
     }
 }
