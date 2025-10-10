@@ -203,6 +203,7 @@ pub fn detect_all_dependency_explanations(
     releases: &BTreeMap<String, (String, String)>,
 ) -> Result<BTreeMap<String, Vec<(String, Bump)>>> {
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+    let include_kind = workspace.has_multiple_package_kinds();
 
     // 1. Detect packages bumped due to fixed dependency group policy
     let bumped_packages: BTreeSet<String> = releases.keys().cloned().collect();
@@ -249,7 +250,16 @@ pub fn detect_all_dependency_explanations(
             for dep_name in &crate_info.internal_deps {
                 if let Some(new_version) = new_version_by_name.get(dep_name as &str) {
                     // This internal dependency was updated
-                    updated_deps.push((dep_name.clone(), new_version.clone()));
+                    let display_dep = by_id
+                        .get(dep_name)
+                        .map(|info| info.display_name(include_kind))
+                        .or_else(|| {
+                            PackageSpecifier::parse(dep_name)
+                                .ok()
+                                .map(|spec| spec.display_name(include_kind))
+                        })
+                        .unwrap_or_else(|| dep_name.clone());
+                    updated_deps.push((display_dep, new_version.clone()));
                 }
             }
 
@@ -545,7 +555,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         released_packages,
     } = plan_state;
 
-    print_release_plan(&releases);
+    print_release_plan(&workspace, &releases);
 
     let is_prerelease_release = releases_include_prerelease(&releases);
 
@@ -1043,10 +1053,20 @@ fn prepare_release_plan(
 }
 
 /// Print the planned releases
-fn print_release_plan(releases: &ReleasePlan) {
+fn print_release_plan(workspace: &Workspace, releases: &ReleasePlan) {
+    let include_kind = workspace.has_multiple_package_kinds();
     println!("Planned releases:");
-    for (name, old, newv) in releases {
-        println!("  {name}: {old} -> {newv}");
+    for (identifier, old, newv) in releases {
+        let display = workspace
+            .find_by_identifier(identifier)
+            .map(|info| info.display_name(include_kind))
+            .or_else(|| {
+                PackageSpecifier::parse(identifier)
+                    .ok()
+                    .map(|spec| spec.display_name(include_kind))
+            })
+            .unwrap_or_else(|| identifier.clone());
+        println!("  {display}: {old} -> {newv}");
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::cli::{PreArgs, PreCommands, PreEnterArgs, PreExitArgs};
-use crate::ui::{prompt_io_error, prompt_nonempty_string, select_packages};
+use crate::ui::{format_package_label, prompt_io_error, prompt_nonempty_string, select_packages};
 use dialoguer::{Select, console::style, theme::ColorfulTheme};
 use sampo_core::{
     Config, VersionChange, discover_workspace, enter_prerelease,
@@ -25,7 +25,8 @@ pub fn run(args: &PreArgs) -> Result<()> {
 fn run_enter(args: &PreEnterArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let workspace = discover_workspace(&cwd)?;
-    let available = visible_packages(&workspace)?;
+    let include_kind = workspace.has_multiple_package_kinds();
+    let available = visible_packages(&workspace, include_kind)?;
 
     let selected_specs = if args.package.is_empty() {
         let labels: Vec<String> = available.iter().map(|(label, _)| label.clone()).collect();
@@ -88,7 +89,7 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
         .collect();
     let requested_display: Vec<String> = normalized_specs
         .iter()
-        .map(display_label_from_spec)
+        .map(|spec| display_label_from_spec(spec, include_kind))
         .collect();
 
     let label = resolve_label(args.label.as_deref())?;
@@ -99,7 +100,7 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
         if !exit_updates.is_empty() {
             let reset_display: Vec<String> = packages_to_reset
                 .iter()
-                .map(|id| display_name_for_identifier(&workspace, id))
+                .map(|id| display_name_for_identifier(&workspace, id, include_kind))
                 .collect();
             report_updates(
                 "Restored stable versions",
@@ -128,6 +129,7 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
 fn run_exit(args: &PreExitArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let workspace = discover_workspace(&cwd)?;
+    let include_kind = workspace.has_multiple_package_kinds();
     let prerelease_ids: BTreeSet<String> = workspace
         .members
         .iter()
@@ -135,7 +137,7 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
         .map(|info| info.canonical_identifier().to_string())
         .collect();
 
-    let available = visible_packages(&workspace)?;
+    let available = visible_packages(&workspace, include_kind)?;
     let available: Vec<(String, PackageSpecifier)> = available
         .into_iter()
         .filter(|(_, spec)| {
@@ -197,7 +199,7 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
         .collect();
     let requested_display: Vec<String> = normalized_specs
         .iter()
-        .map(display_label_from_spec)
+        .map(|spec| display_label_from_spec(spec, include_kind))
         .collect();
 
     let updates = exit_prerelease(&workspace.root, &canonical)?;
@@ -229,7 +231,10 @@ fn run_interactive() -> Result<()> {
     }
 }
 
-fn visible_packages(workspace: &sampo_core::Workspace) -> Result<Vec<(String, PackageSpecifier)>> {
+fn visible_packages(
+    workspace: &sampo_core::Workspace,
+    include_kind: bool,
+) -> Result<Vec<(String, PackageSpecifier)>> {
     let config = Config::load(&workspace.root)?;
     let members = filter_members(workspace, &config)
         .unwrap_or_else(|_| workspace.members.iter().collect::<Vec<_>>());
@@ -245,7 +250,7 @@ fn visible_packages(workspace: &sampo_core::Workspace) -> Result<Vec<(String, Pa
             kind: Some(info.kind),
             name: info.name.clone(),
         };
-        let label = format!("{} ({})", info.name, info.kind.as_str());
+        let label = format_package_label(&info.name, info.kind, include_kind);
         out.push((label, spec));
     }
     Ok(out)
@@ -346,17 +351,20 @@ fn canonical_from_spec(spec: &PackageSpecifier) -> Option<String> {
         .map(|kind| format!("{}:{}", kind.as_str(), spec.name))
 }
 
-fn display_label_from_spec(spec: &PackageSpecifier) -> String {
-    match spec.kind {
-        Some(kind) => format!("{} ({})", spec.name, kind.as_str()),
-        None => spec.name.clone(),
-    }
+fn display_label_from_spec(spec: &PackageSpecifier, include_kind: bool) -> String {
+    spec.kind
+        .map(|kind| format_package_label(&spec.name, kind, include_kind))
+        .unwrap_or_else(|| spec.name.clone())
 }
 
-fn display_name_for_identifier(workspace: &sampo_core::Workspace, identifier: &str) -> String {
+fn display_name_for_identifier(
+    workspace: &sampo_core::Workspace,
+    identifier: &str,
+    include_kind: bool,
+) -> String {
     workspace
         .find_by_identifier(identifier)
-        .map(|info| format!("{} ({})", info.name, info.kind.as_str()))
+        .map(|info| format_package_label(&info.name, info.kind, include_kind))
         .unwrap_or_else(|| identifier.to_string())
 }
 

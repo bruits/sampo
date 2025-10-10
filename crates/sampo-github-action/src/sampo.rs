@@ -125,6 +125,7 @@ pub fn build_release_pr_body(
         operation: "workspace-discovery".into(),
         message: e.to_string(),
     })?;
+    let include_kind = ws.has_multiple_package_kinds();
 
     // Group messages per canonical package id by bump
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
@@ -194,10 +195,12 @@ pub fn build_release_pr_body(
     let mut crate_ids: Vec<_> = releases.keys().cloned().collect();
     crate_ids.sort();
     for identifier in crate_ids {
-        let (display_name, old_version, new_version) = &releases[&identifier];
+        let (fallback_name, old_version, new_version) = &releases[&identifier];
+        let pretty_name =
+            display_label_for_release(&ws, &identifier, include_kind, fallback_name);
         output.push_str(&format!(
             "## {} {} -> {}\n\n",
-            display_name, old_version, new_version
+            pretty_name, old_version, new_version
         ));
 
         let mut major_changes = Vec::new();
@@ -268,6 +271,21 @@ fn resolve_specifier_identifier(
             }
         }
     }
+}
+
+fn display_label_for_release(
+    workspace: &sampo_core::Workspace,
+    identifier: &str,
+    include_kind: bool,
+    fallback: &str,
+) -> String {
+    if let Some(info) = workspace.find_by_identifier(identifier) {
+        return info.display_name(include_kind);
+    }
+    if let Ok(spec) = PackageSpecifier::parse(identifier) {
+        return spec.display_name(include_kind);
+    }
+    fallback.to_string()
 }
 
 /// Append a changes section to the output if the changes list is not empty
@@ -433,7 +451,7 @@ mod tests {
         assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
         assert!(pr_body.contains("## b 0.1.0 -> 0.2.0"));
         assert!(pr_body.contains("feat: b adds new feature"));
-        assert!(pr_body.contains("Updated dependencies: cargo:b@0.2.0"));
+        assert!(pr_body.contains("Updated dependencies: b@0.2.0"));
     }
 
     #[test]
@@ -497,7 +515,7 @@ mod tests {
         assert!(pr_body.contains("## b 1.0.0 -> 2.0.0"));
         assert!(pr_body.contains("breaking: b breaking change"));
         // Fixed dependency should show dependency update too
-        assert!(pr_body.contains("Updated dependencies: cargo:b@2.0.0"));
+        assert!(pr_body.contains("Updated dependencies: b@2.0.0"));
     }
 
     #[test]

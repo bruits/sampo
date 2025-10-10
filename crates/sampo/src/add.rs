@@ -1,6 +1,6 @@
 use crate::cli::AddArgs;
 use crate::names;
-use crate::ui::{prompt_io_error, select_packages};
+use crate::ui::{format_package_label, prompt_io_error, select_packages};
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
     Bump, Config, Workspace, discover_workspace,
@@ -17,13 +17,17 @@ pub fn run(args: &AddArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     let workspace = discover_workspace(&cwd).ok();
+    let include_kind = workspace
+        .as_ref()
+        .map(|ws| ws.has_multiple_package_kinds())
+        .unwrap_or(false);
     let (root, available_packages) = if let Some(ref ws) = workspace {
         let cfg = Config::load(&ws.root).unwrap_or_default();
         let visible =
             filter_members(ws, &cfg).unwrap_or_else(|_| ws.members.iter().collect::<Vec<_>>());
         let mut out = Vec::new();
         for info in visible {
-            let label = format!("{} ({})", info.name, info.kind.as_str());
+            let label = format_package_label(&info.name, info.kind, include_kind);
             let spec = PackageSpecifier {
                 kind: Some(info.kind),
                 name: info.name.clone(),
@@ -85,7 +89,10 @@ pub fn run(args: &AddArgs) -> Result<()> {
         ));
     }
 
-    let labels_for_bumps: Vec<String> = selected_specs.iter().map(package_display_label).collect();
+    let labels_for_bumps: Vec<String> = selected_specs
+        .iter()
+        .map(|spec| package_display_label(spec, include_kind))
+        .collect();
     let package_bumps_display = prompt_package_bumps(&labels_for_bumps)?;
     let mut package_bumps: Vec<(PackageSpecifier, Bump)> =
         Vec::with_capacity(package_bumps_display.len());
@@ -221,11 +228,10 @@ fn unique_changeset_path(dir: &Path) -> PathBuf {
     candidate
 }
 
-fn package_display_label(spec: &PackageSpecifier) -> String {
-    match spec.kind {
-        Some(kind) => format!("{} ({})", spec.name, kind.as_str()),
-        None => spec.name.clone(),
-    }
+fn package_display_label(spec: &PackageSpecifier, include_kind: bool) -> String {
+    spec.kind
+        .map(|kind| format_package_label(&spec.name, kind, include_kind))
+        .unwrap_or_else(|| spec.name.clone())
 }
 
 fn resolve_cli_packages(

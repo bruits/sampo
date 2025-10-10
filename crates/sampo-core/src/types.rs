@@ -16,6 +16,22 @@ impl PackageKind {
         }
     }
 
+    /// Returns a human-friendly display name (e.g. "Cargo").
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Cargo => "Cargo",
+        }
+    }
+
+    /// Formats a package name with the ecosystem when desired.
+    pub fn format_name(&self, package_name: &str, include_kind: bool) -> String {
+        if include_kind {
+            format!("{package_name} ({})", self.display_name())
+        } else {
+            package_name.to_string()
+        }
+    }
+
     /// Parse a kind from a case-insensitive string.
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
@@ -80,6 +96,14 @@ impl PackageSpecifier {
             None => self.name.clone(),
         }
     }
+
+    /// Human-friendly name, optionally including the ecosystem.
+    pub fn display_name(&self, include_kind: bool) -> String {
+        match self.kind {
+            Some(kind) => kind.format_name(&self.name, include_kind),
+            None => self.name.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for PackageSpecifier {
@@ -133,6 +157,11 @@ impl PackageInfo {
         &self.identifier
     }
 
+    /// Human-friendly name for display, optionally including the ecosystem.
+    pub fn display_name(&self, include_kind: bool) -> String {
+        self.kind.format_name(&self.name, include_kind)
+    }
+
     /// Helper to build a dependency identifier for a given kind/name pair.
     pub fn dependency_identifier(kind: PackageKind, name: &str) -> String {
         format!("{}:{}", kind.as_str(), name)
@@ -167,6 +196,16 @@ impl Workspace {
                 .iter()
                 .filter(|info| info.name == spec.name)
                 .collect(),
+        }
+    }
+
+    /// Returns true when the workspace contains packages from multiple ecosystems.
+    pub fn has_multiple_package_kinds(&self) -> bool {
+        let mut kinds = self.members.iter().map(|info| info.kind);
+        if let Some(first) = kinds.next() {
+            kinds.any(|kind| kind != first)
+        } else {
+            false
         }
     }
 }
