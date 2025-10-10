@@ -1000,10 +1000,7 @@ tempfile = "3.0"
             },
         ];
         let msg = format_dependency_updates_message(&updates).unwrap();
-        assert_eq!(
-            msg,
-            "Updated dependencies: pkg1@1.2.0, pkg2@2.0.0"
-        );
+        assert_eq!(msg, "Updated dependencies: pkg1@1.2.0, pkg2@2.0.0");
     }
 
     #[test]
@@ -1011,6 +1008,35 @@ tempfile = "3.0"
         let updates = vec![];
         let msg = format_dependency_updates_message(&updates);
         assert_eq!(msg, None);
+    }
+
+    #[test]
+    fn formats_dependency_updates_with_canonical_identifiers() {
+        let updates = vec![DependencyUpdate {
+            name: "cargo:pkg1".to_string(),
+            new_version: "1.2.0".to_string(),
+        }];
+        let msg = format_dependency_updates_message(&updates).unwrap();
+        assert_eq!(msg, "Updated dependencies: pkg1@1.2.0");
+    }
+
+    #[test]
+    fn formats_dependency_updates_with_ambiguous_ecosystems() {
+        let updates = vec![
+            DependencyUpdate {
+                name: "cargo:shared".to_string(),
+                new_version: "1.1.0".to_string(),
+            },
+            DependencyUpdate {
+                name: "npm:shared".to_string(),
+                new_version: "2.0.0".to_string(),
+            },
+        ];
+        let msg = format_dependency_updates_message(&updates).unwrap();
+        assert_eq!(
+            msg,
+            "Updated dependencies: cargo:shared@1.1.0, npm:shared@2.0.0"
+        );
     }
 
     #[test]

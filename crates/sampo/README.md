@@ -51,9 +51,7 @@ A markdown file describing what changed, which packages are affected, and the ty
 A helpful description of the change, to be read by your users.
 ```
 
-Packages are referenced by their canonical identifier (`<ecosystem>:<name>`) or plain name if unambiguous.
-
-Pending changesets are stored in the `.sampo/changesets` directory.
+Packages are referenced by their canonical identifier (`<ecosystem>:<name>`). Pending changesets are stored in the `.sampo/changesets` directory.
 
 #### Changelog
 

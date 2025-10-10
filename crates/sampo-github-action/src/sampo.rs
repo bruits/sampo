@@ -196,8 +196,7 @@ pub fn build_release_pr_body(
     crate_ids.sort();
     for identifier in crate_ids {
         let (fallback_name, old_version, new_version) = &releases[&identifier];
-        let pretty_name =
-            display_label_for_release(&ws, &identifier, include_kind, fallback_name);
+        let pretty_name = display_label_for_release(&ws, &identifier, include_kind, fallback_name);
         output.push_str(&format!(
             "## {} {} -> {}\n\n",
             pretty_name, old_version, new_version
