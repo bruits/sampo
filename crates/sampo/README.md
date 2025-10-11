@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... And more coming soon!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates.io](https://crates.io))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 ## Getting Started
 
@@ -81,19 +81,22 @@ Any intro content or custom main header before the first `##` section is preserv
 
 ### Usage
 
-#### Add a changeset
+#### 1. Add changesets
 
 Use `sampo add` to create a new changeset file. The command guides you through selecting packages and describing changes. Use [Sampo GitHub bot](https://github.com/bruits/sampo/tree/main/crates/sampo-github-bot) to get reminders on each PR without a changeset.
 
-#### Prepare a release
+#### 2. Prepare a release
 
 Run `sampo release` to process all pending changesets, bump package versions, and update changelogs. This can be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
 
 As long as the release is not finalized, you can continue to add changesets and re-run the `sampo release` command. Sampo will update package versions and pending changelogs accordingly.
 
-#### Publish packages
+#### 3. Publish packages
 
 Finally, run `sampo publish` to publish updated packages to their respective registries and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
+
+> [!IMPORTANT]
+> Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 #### Pre-release versions
 
@@ -102,6 +105,9 @@ Run `sampo pre` to manage pre-release versions for one or more packages.
 While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual, Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
 
 ## Configuration
+
+> [!NOTE]
+> Since Sampo automatically detects packages in your workspace (based on ecosystem conventions) and infers sensible defaults for most settings, you can often skip this section and use Sampo out-of-the-box. 
 
 The `.sampo/config.toml` file allows you to customize Sampo's behavior. Example configuration:
 
@@ -134,7 +140,8 @@ linked = [["cargo:pkg-e", "cargo:pkg-f"], ["cargo:pkg-g", "cargo:pkg-h"]]
 
 `release_branches`: Additional branch names that should behave like long-lived release lines. The default branch is always included automatically, so this list only needs the extra branches (e.g. `"3.x"`, `"4.0"`).
 
-At runtime you can override the detected branch with the `SAMPO_RELEASE_BRANCH` environment variable, which is useful for local testing or custom CI setups.
+> [!TIP]
+> At runtime you can override the detected branch with the `SAMPO_RELEASE_BRANCH` environment variable, which is useful for local testing or custom CI setups.
 
 ### `[github]` section
 
@@ -156,8 +163,6 @@ At runtime you can override the detected branch with the `SAMPO_RELEASE_BRANCH` 
 
 You can ignore certain packages, so they do not appear in the CLI commands, changesets, releases, or publishing steps. This is useful for packages that are not meant to be published or versioned, such as internal tools, examples, or documentation packages. Changesets targeting only ignored packages are left unconsumed.
 
-> Tip: canonical identifiers are forward-compatible (`<ecosystem>:<name>`). Sampo continues to accept plain names for single-ecosystem workspaces, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
-
 `ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust packages.
 
 `ignore`: A list of glob-like patterns to ignore packages by canonical identifier, plain name, or relative path. `*` matches any sequence. Examples:
@@ -165,13 +170,17 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 - `examples/*`: ignores any package whose relative path starts with `examples/`.
 - `package-a`: ignores a package named exactly `package-a` (only if the name is unique across ecosystems).
 
+> [!NOTE]
+> Canonical identifiers follow the `<ecosystem>:<name>` format (e.g., `cargo:my-crate` for a Rust package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
+
 Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo:a", "cargo:b"], ["cargo:c", "cargo:d"]]` and `cargo:a` is updated to `2.0.0` (major), then `cargo:b` will also be bumped to `2.0.0`, but `cargo:c` and `cargo:d` remain unchanged.
 
 `linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo:a", "cargo:b"]]` where `cargo:a` depends on `cargo:b`, when `cargo:b` is updated to `2.0.0` (major), then `cargo:a` will also be bumped to `2.0.0`. If `cargo:a` is later updated to `2.1.0` (minor), `cargo:b` remains at `2.0.0` since it's not affected. Finally, if `cargo:b` has a patch update, both `cargo:a` and `cargo:b` will be bumped with patch level since it's the highest bump in the group.
 
-Note: Packages cannot appear in both `fixed` and `linked` configurations.
+> [!WARNING]
+> Packages cannot appear in both `fixed` and `linked` configurations.
 
 ## Commands
 

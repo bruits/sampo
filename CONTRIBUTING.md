@@ -3,7 +3,6 @@
 First, a huge **thank you** for dedicating your time to helping us improve Sampo ❤️
 
 > [!Tip]
->
 > **New to open source?** Check out [https://github.com/firstcontributions/first-contributions](https://github.com/firstcontributions/first-contributions) for helpful information on contributing
 
 ## Philosophy
