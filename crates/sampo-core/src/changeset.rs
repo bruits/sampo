@@ -96,12 +96,7 @@ pub fn render_changeset_markdown(entries: &[(PackageSpecifier, Bump)], message: 
     out.push_str("---\n");
     for (package, bump) in entries {
         let canonical = package.to_canonical_string();
-        let key = if canonical.contains(':') {
-            format!("\"{}\"", canonical)
-        } else {
-            canonical
-        };
-        let _ = writeln!(out, "{}: {}", key, bump);
+        let _ = writeln!(out, "{}: {}", canonical, bump);
     }
     out.push_str("---\n\n");
     out.push_str(message);
@@ -160,6 +155,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_changeset_accepts_canonical_identifiers_with_slash() {
+        let text = "---\ncargo/example: minor\n---\n\nfeat: canonical id\n";
+        let path = Path::new("/tmp/canonical-slash.md");
+        let changeset = parse_changeset(text, path).unwrap().unwrap();
+        let collected: Vec<(String, Bump)> = changeset
+            .entries
+            .iter()
+            .map(|(spec, bump)| (spec.to_canonical_string(), *bump))
+            .collect();
+        assert_eq!(collected, vec![("cargo/example".into(), Bump::Minor)]);
+    }
+
+    #[test]
     fn render_changeset_markdown_test() {
         let markdown = render_changeset_markdown(
             &[
@@ -172,6 +180,18 @@ mod tests {
         assert!(markdown.contains("a: minor\n"));
         assert!(markdown.contains("b: minor\n"));
         assert!(markdown.contains("---\n\nfeat: x\n"));
+    }
+
+    #[test]
+    fn render_changeset_markdown_with_canonical_identifier() {
+        let markdown = render_changeset_markdown(
+            &[(
+                PackageSpecifier::parse("cargo/example").unwrap(),
+                Bump::Minor,
+            )],
+            "feat: canonical",
+        );
+        assert!(markdown.contains("cargo/example: minor\n"));
     }
 
     // Test from sampo/changeset.rs - ensure compatibility

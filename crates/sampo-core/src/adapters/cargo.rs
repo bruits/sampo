@@ -518,7 +518,7 @@ mod tests {
         let packages = discover_cargo(root).unwrap();
         let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
 
-        assert_eq!(pkg_a.identifier, "cargo:pkg-a");
-        assert!(pkg_a.internal_deps.contains("cargo:pkg-b"));
+        assert_eq!(pkg_a.identifier, "cargo/pkg-a");
+        assert!(pkg_a.internal_deps.contains("cargo/pkg-b"));
     }
 }

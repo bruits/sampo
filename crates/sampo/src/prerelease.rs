@@ -336,8 +336,7 @@ fn resolve_cli_specifiers(
 }
 
 fn canonical_from_spec(spec: &PackageSpecifier) -> Option<String> {
-    spec.kind
-        .map(|kind| format!("{}:{}", kind.as_str(), spec.name))
+    spec.kind.map(|_| spec.to_canonical_string())
 }
 
 fn display_label_from_spec(spec: &PackageSpecifier, include_kind: bool) -> String {

@@ -45,13 +45,13 @@ A markdown file describing what changed, which packages are affected, and the ty
 
 ```
 ---
-"cargo:example": minor
+cargo/example: minor
 ---
 
 A helpful description of the change, to be read by your users.
 ```
 
-Packages are referenced by their canonical identifier (`<ecosystem>:<name>`). Pending changesets are stored in the `.sampo/changesets` directory.
+Packages are referenced by their canonical identifier (`<ecosystem>/<name>`). Pending changesets are stored in the `.sampo/changesets` directory.
 
 #### Changelog
 
@@ -126,12 +126,12 @@ show_acknowledgments = true
 [packages]
 ignore_unpublished = false
 ignore = [
-  "cargo:package-a",
+  "cargo/package-a",
   "internal-*",
   "examples/*"
 ]
-fixed = [["cargo:pkg-a", "cargo:pkg-b"], ["cargo:pkg-c", "cargo:pkg-d"]]
-linked = [["cargo:pkg-e", "cargo:pkg-f"], ["cargo:pkg-g", "cargo:pkg-h"]]
+fixed = [["cargo/pkg-a", "cargo/pkg-b"], ["cargo/pkg-c", "cargo/pkg-d"]]
+linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 ```
 
 ### `[git]` section
@@ -166,18 +166,18 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 `ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust packages.
 
 `ignore`: A list of glob-like patterns to ignore packages by canonical identifier, plain name, or relative path. `*` matches any sequence. Examples:
-- `cargo:internal-*`: ignores Cargo packages with names like `internal-tool`.
+- `cargo/internal-*`: ignores Cargo packages with names like `internal-tool`.
 - `examples/*`: ignores any package whose relative path starts with `examples/`.
 - `package-a`: ignores a package named exactly `package-a` (only if the name is unique across ecosystems).
 
 > [!NOTE]
-> Canonical identifiers follow the `<ecosystem>:<name>` format (e.g., `cargo:my-crate` for a Rust package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
+> Canonical identifiers follow the `<ecosystem>/<name>` format (e.g., `cargo/my-crate` for a Rust package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
 
 Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
-`fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo:a", "cargo:b"], ["cargo:c", "cargo:d"]]` and `cargo:a` is updated to `2.0.0` (major), then `cargo:b` will also be bumped to `2.0.0`, but `cargo:c` and `cargo:d` remain unchanged.
+`fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo/a", "cargo/b"], ["cargo/c", "cargo/d"]]` and `cargo/a` is updated to `2.0.0` (major), then `cargo/b` will also be bumped to `2.0.0`, but `cargo/c` and `cargo/d` remain unchanged.
 
-`linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo:a", "cargo:b"]]` where `cargo:a` depends on `cargo:b`, when `cargo:b` is updated to `2.0.0` (major), then `cargo:a` will also be bumped to `2.0.0`. If `cargo:a` is later updated to `2.1.0` (minor), `cargo:b` remains at `2.0.0` since it's not affected. Finally, if `cargo:b` has a patch update, both `cargo:a` and `cargo:b` will be bumped with patch level since it's the highest bump in the group.
+`linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo/a", "cargo/b"]]` where `cargo/a` depends on `cargo/b`, when `cargo/b` is updated to `2.0.0` (major), then `cargo/a` will also be bumped to `2.0.0`. If `cargo/a` is later updated to `2.1.0` (minor), `cargo/b` remains at `2.0.0` since it's not affected. Finally, if `cargo/b` has a patch update, both `cargo/a` and `cargo/b` will be bumped with patch level since it's the highest bump in the group.
 
 > [!WARNING]
 > Packages cannot appear in both `fixed` and `linked` configurations.
