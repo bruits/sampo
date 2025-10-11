@@ -121,7 +121,7 @@ mod tests {
             members: vec![
                 PackageInfo {
                     name: "internal-tool".into(),
-                    identifier: "cargo:internal-tool".into(),
+                    identifier: "cargo/internal-tool".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/tools/internal-tool"),
                     internal_deps: Default::default(),
@@ -129,7 +129,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "examples-lib".into(),
-                    identifier: "cargo:examples-lib".into(),
+                    identifier: "cargo/examples-lib".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/examples/lib"),
                     internal_deps: Default::default(),
@@ -137,7 +137,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "normal".into(),
-                    identifier: "cargo:normal".into(),
+                    identifier: "cargo/normal".into(),
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/crates/normal"),
                     internal_deps: Default::default(),
@@ -164,7 +164,7 @@ mod tests {
         };
 
         let names = list_visible_packages(&ws, &cfg).unwrap();
-        assert_eq!(names, vec!["cargo:normal".to_string()]);
+        assert_eq!(names, vec!["cargo/normal".to_string()]);
     }
 
     #[test]

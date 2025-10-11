@@ -612,7 +612,7 @@ mod tests {
         let plan = capture_release_plan(root).expect("plan should succeed");
         assert!(plan.has_changes);
         assert_eq!(
-            plan.releases.get("cargo:example"),
+            plan.releases.get("cargo/example"),
             Some(&(
                 "example".to_string(),
                 "0.1.0".to_string(),

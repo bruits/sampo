@@ -71,9 +71,10 @@ impl PackageSpecifier {
         }
 
         let unquoted = strip_wrapping_quotes(trimmed);
-        if let Some((kind_str, rest)) = unquoted.split_once(':') {
+
+        if let Some((kind_str, rest)) = unquoted.split_once('/') {
             if rest.is_empty() {
-                return Err("package reference is missing a name after ':'".to_string());
+                return Err("package reference is missing a name after '/'".to_string());
             }
             let kind = PackageKind::from_str(kind_str)
                 .map_err(|_| format!("unsupported package kind '{}'", kind_str))?;
@@ -92,7 +93,7 @@ impl PackageSpecifier {
     /// Canonical string used when persisting the specifier.
     pub fn to_canonical_string(&self) -> String {
         match self.kind {
-            Some(kind) => format!("{}:{}", kind, self.name),
+            Some(kind) => format!("{}/{}", kind, self.name),
             None => self.name.clone(),
         }
     }
@@ -123,7 +124,7 @@ pub struct DependencyUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleasedPackage {
     pub name: String,
-    /// Canonical identifier (e.g. "cargo:sampo-core")
+    /// Canonical identifier (e.g. "cargo/sampo-core")
     pub identifier: String,
     pub old_version: String,
     pub new_version: String,
@@ -143,7 +144,7 @@ pub struct ReleaseOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageInfo {
     pub name: String,
-    /// Canonical identifier in the form "<kind>:<name>" (e.g. "cargo:sampo-core")
+    /// Canonical identifier in the form "<kind>/<name>" (e.g. "cargo/sampo-core")
     pub identifier: String,
     pub version: String,
     pub path: PathBuf,
@@ -164,7 +165,7 @@ impl PackageInfo {
 
     /// Helper to build a dependency identifier for a given kind/name pair.
     pub fn dependency_identifier(kind: PackageKind, name: &str) -> String {
-        format!("{}:{}", kind.as_str(), name)
+        format!("{}/{}", kind.as_str(), name)
     }
 }
 
@@ -280,7 +281,7 @@ impl Workspace {
 pub fn format_ambiguity_options(matches: &[&PackageInfo]) -> String {
     matches
         .iter()
-        .map(|info| format!("{}:{}", info.kind.as_str(), info.name))
+        .map(|info| format!("{}/{}", info.kind.as_str(), info.name))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -377,7 +378,7 @@ mod tests {
             root: PathBuf::new(),
             members: vec![make_package("core")],
         };
-        let spec = PackageSpecifier::parse("cargo:core").unwrap();
+        let spec = PackageSpecifier::parse("cargo/core").unwrap();
         let outcome = workspace.resolve_specifier(&spec);
         assert!(matches!(outcome, SpecResolution::Match(info) if info.name == "core"));
     }
@@ -388,12 +389,12 @@ mod tests {
             root: PathBuf::new(),
             members: vec![make_package("core")],
         };
-        let spec = PackageSpecifier::parse("cargo:missing").unwrap();
+        let spec = PackageSpecifier::parse("cargo/missing").unwrap();
         let outcome = workspace.resolve_specifier(&spec);
         match outcome {
             SpecResolution::NotFound { query } => {
-                assert_eq!(query.identifier(), Some("cargo:missing"));
-                assert_eq!(query.display(), "cargo:missing");
+                assert_eq!(query.identifier(), Some("cargo/missing"));
+                assert_eq!(query.display(), "cargo/missing");
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
@@ -403,7 +404,7 @@ mod tests {
     fn resolve_specifier_detects_ambiguity() {
         let pkg_a = make_package("shared");
         let mut pkg_b = make_package("shared");
-        pkg_b.identifier = "cargo:shared-alt".to_string();
+        pkg_b.identifier = "cargo/shared-alt".to_string();
         let workspace = Workspace {
             root: PathBuf::new(),
             members: vec![pkg_a, pkg_b],
@@ -415,7 +416,7 @@ mod tests {
                 assert_eq!(query.base_name(), "shared");
                 assert_eq!(matches.len(), 2);
                 let listing = format_ambiguity_options(&matches);
-                assert!(listing.contains("cargo:shared"));
+                assert!(listing.contains("cargo/shared"));
             }
             other => panic!("expected Ambiguous, got {other:?}"),
         }

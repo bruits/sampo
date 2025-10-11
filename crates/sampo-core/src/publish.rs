@@ -506,27 +506,27 @@ mod tests {
         // Build a small fake graph using PackageInfo structures
         let a = PackageInfo {
             name: "a".into(),
-            identifier: "cargo:a".into(),
+            identifier: "cargo/a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
         let mut deps_b = BTreeSet::new();
-        deps_b.insert("cargo:a".into());
+        deps_b.insert("cargo/a".into());
         let b = PackageInfo {
             name: "b".into(),
-            identifier: "cargo:b".into(),
+            identifier: "cargo/b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
             kind: PackageKind::Cargo,
         };
         let mut deps_c = BTreeSet::new();
-        deps_c.insert("cargo:b".into());
+        deps_c.insert("cargo/b".into());
         let c = PackageInfo {
             name: "c".into(),
-            identifier: "cargo:c".into(),
+            identifier: "cargo/c".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/c"),
             internal_deps: deps_c,
@@ -534,27 +534,27 @@ mod tests {
         };
 
         let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
-        map.insert("cargo:a".into(), &a);
-        map.insert("cargo:b".into(), &b);
-        map.insert("cargo:c".into(), &c);
+        map.insert("cargo/a".into(), &a);
+        map.insert("cargo/b".into(), &b);
+        map.insert("cargo/c".into(), &c);
 
         let mut include = BTreeSet::new();
-        include.insert("cargo:a".into());
-        include.insert("cargo:b".into());
-        include.insert("cargo:c".into());
+        include.insert("cargo/a".into());
+        include.insert("cargo/b".into());
+        include.insert("cargo/c".into());
 
         let order = topo_order(&map, &include).unwrap();
-        assert_eq!(order, vec!["cargo:a", "cargo:b", "cargo:c"]);
+        assert_eq!(order, vec!["cargo/a", "cargo/b", "cargo/c"]);
     }
 
     #[test]
     fn detects_dependency_cycle() {
         // Create a circular dependency: a -> b -> a
         let mut deps_a = BTreeSet::new();
-        deps_a.insert("cargo:b".into());
+        deps_a.insert("cargo/b".into());
         let a = PackageInfo {
             name: "a".into(),
-            identifier: "cargo:a".into(),
+            identifier: "cargo/a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: deps_a,
@@ -562,10 +562,10 @@ mod tests {
         };
 
         let mut deps_b = BTreeSet::new();
-        deps_b.insert("cargo:a".into());
+        deps_b.insert("cargo/a".into());
         let b = PackageInfo {
             name: "b".into(),
-            identifier: "cargo:b".into(),
+            identifier: "cargo/b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
@@ -573,12 +573,12 @@ mod tests {
         };
 
         let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
-        map.insert("cargo:a".into(), &a);
-        map.insert("cargo:b".into(), &b);
+        map.insert("cargo/a".into(), &a);
+        map.insert("cargo/b".into(), &b);
 
         let mut include = BTreeSet::new();
-        include.insert("cargo:a".into());
-        include.insert("cargo:b".into());
+        include.insert("cargo/a".into());
+        include.insert("cargo/b".into());
 
         let result = topo_order(&map, &include);
         assert!(result.is_err());

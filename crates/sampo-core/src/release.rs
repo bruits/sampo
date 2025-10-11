@@ -47,7 +47,7 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
                 labels_by_name.entry(base_name.clone()).or_default();
             }
             parsed_updates.push((Some(spec), None, base_name, dep));
-        } else if let Some((prefix, name)) = dep.name.split_once(':') {
+        } else if let Some((prefix, name)) = dep.name.split_once('/') {
             let base_name = name.to_string();
             labels_by_name
                 .entry(base_name.clone())
@@ -79,7 +79,7 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
             let display_label = if let Some(spec) = spec_opt.as_ref() {
                 if let Some(kind) = spec.kind {
                     if is_ambiguous {
-                        format!("{}:{}", kind.as_str(), spec.name)
+                        format!("{}/{}", kind.as_str(), spec.name)
                     } else {
                         spec.display_name(false)
                     }
@@ -88,7 +88,7 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
                 }
             } else if let Some(prefix) = raw_prefix.as_ref() {
                 if is_ambiguous {
-                    format!("{}:{}", prefix.to_ascii_lowercase(), base_name)
+                    format!("{}/{}", prefix.to_ascii_lowercase(), base_name)
                 } else {
                     base_name.clone()
                 }
@@ -1870,7 +1870,7 @@ mod tests {
             members: vec![
                 PackageInfo {
                     name: "main-package".to_string(),
-                    identifier: "cargo:main-package".to_string(),
+                    identifier: "cargo/main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("main-package"),
                     internal_deps: BTreeSet::new(),
@@ -1878,7 +1878,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "examples-package".to_string(),
-                    identifier: "cargo:examples-package".to_string(),
+                    identifier: "cargo/examples-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("examples/package"),
                     internal_deps: BTreeSet::new(),
@@ -1886,7 +1886,7 @@ mod tests {
                 },
                 PackageInfo {
                     name: "benchmarks-utils".to_string(),
-                    identifier: "cargo:benchmarks-utils".to_string(),
+                    identifier: "cargo/benchmarks-utils".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("benchmarks/utils"),
                     internal_deps: BTreeSet::new(),
@@ -1904,8 +1904,8 @@ mod tests {
         // Create a dependency graph where main-package depends on the ignored packages
         let mut dependents = BTreeMap::new();
         dependents.insert(
-            "cargo:main-package".to_string(),
-            ["cargo:examples-package", "cargo:benchmarks-utils"]
+            "cargo/main-package".to_string(),
+            ["cargo/examples-package", "cargo/benchmarks-utils"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -1913,16 +1913,16 @@ mod tests {
 
         // Start with main-package being bumped
         let mut bump_by_pkg = BTreeMap::new();
-        bump_by_pkg.insert("cargo:main-package".to_string(), Bump::Minor);
+        bump_by_pkg.insert("cargo/main-package".to_string(), Bump::Minor);
 
         // Apply dependency cascade
         apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace).unwrap();
 
         // The ignored packages should NOT be added to bump_by_pkg
         assert_eq!(bump_by_pkg.len(), 1);
-        assert!(bump_by_pkg.contains_key("cargo:main-package"));
-        assert!(!bump_by_pkg.contains_key("cargo:examples-package"));
-        assert!(!bump_by_pkg.contains_key("cargo:benchmarks-utils"));
+        assert!(bump_by_pkg.contains_key("cargo/main-package"));
+        assert!(!bump_by_pkg.contains_key("cargo/examples-package"));
+        assert!(!bump_by_pkg.contains_key("cargo/benchmarks-utils"));
     }
 
     #[test]
@@ -1937,15 +1937,15 @@ mod tests {
             members: vec![
                 PackageInfo {
                     name: "main-package".to_string(),
-                    identifier: "cargo:main-package".to_string(),
+                    identifier: "cargo/main-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("main-package"),
-                    internal_deps: ["cargo:examples-package".to_string()].into_iter().collect(),
+                    internal_deps: ["cargo/examples-package".to_string()].into_iter().collect(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
                     name: "examples-package".to_string(),
-                    identifier: "cargo:examples-package".to_string(),
+                    identifier: "cargo/examples-package".to_string(),
                     version: "1.0.0".to_string(),
                     path: root.join("examples/package"),
                     internal_deps: BTreeSet::new(),
@@ -1965,7 +1965,7 @@ mod tests {
 
         // examples-package should not appear in the dependency graph because it's ignored
         // So main-package should not appear as a dependent of examples-package
-        assert!(!dependents.contains_key("cargo:examples-package"));
+        assert!(!dependents.contains_key("cargo/examples-package"));
 
         // The dependency graph should be empty since examples-package is ignored
         // and main-package depends on it

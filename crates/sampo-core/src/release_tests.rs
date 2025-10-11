@@ -1013,7 +1013,7 @@ tempfile = "3.0"
     #[test]
     fn formats_dependency_updates_with_canonical_identifiers() {
         let updates = vec![DependencyUpdate {
-            name: "cargo:pkg1".to_string(),
+            name: "cargo/pkg1".to_string(),
             new_version: "1.2.0".to_string(),
         }];
         let msg = format_dependency_updates_message(&updates).unwrap();
@@ -1024,18 +1024,18 @@ tempfile = "3.0"
     fn formats_dependency_updates_with_ambiguous_ecosystems() {
         let updates = vec![
             DependencyUpdate {
-                name: "cargo:shared".to_string(),
+                name: "cargo/shared".to_string(),
                 new_version: "1.1.0".to_string(),
             },
             DependencyUpdate {
-                name: "npm:shared".to_string(),
+                name: "npm/shared".to_string(),
                 new_version: "2.0.0".to_string(),
             },
         ];
         let msg = format_dependency_updates_message(&updates).unwrap();
         assert_eq!(
             msg,
-            "Updated dependencies: cargo:shared@1.1.0, npm:shared@2.0.0"
+            "Updated dependencies: cargo/shared@1.1.0, npm/shared@2.0.0"
         );
     }
 
@@ -1198,15 +1198,15 @@ tempfile = "3.0"
             members: vec![
                 PackageInfo {
                     name: "pkg-a".to_string(),
-                    identifier: "cargo:pkg-a".to_string(),
+                    identifier: "cargo/pkg-a".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-a"),
-                    internal_deps: BTreeSet::from(["cargo:pkg-b".to_string()]),
+                    internal_deps: BTreeSet::from(["cargo/pkg-b".to_string()]),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
                     name: "pkg-b".to_string(),
-                    identifier: "cargo:pkg-b".to_string(),
+                    identifier: "cargo/pkg-b".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-b"),
                     internal_deps: BTreeSet::new(),
@@ -1214,7 +1214,7 @@ tempfile = "3.0"
                 },
                 PackageInfo {
                     name: "pkg-c".to_string(),
-                    identifier: "cargo:pkg-c".to_string(),
+                    identifier: "cargo/pkg-c".to_string(),
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-c"),
                     internal_deps: BTreeSet::new(),
@@ -1253,15 +1253,15 @@ tempfile = "3.0"
         // Simulate releases: pkg-a and pkg-c get fixed bump, pkg-b gets direct bump
         let mut releases = BTreeMap::new();
         releases.insert(
-            "cargo:pkg-a".to_string(),
+            "cargo/pkg-a".to_string(),
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
         releases.insert(
-            "cargo:pkg-b".to_string(),
+            "cargo/pkg-b".to_string(),
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
         releases.insert(
-            "cargo:pkg-c".to_string(),
+            "cargo/pkg-c".to_string(),
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
 
@@ -1269,7 +1269,7 @@ tempfile = "3.0"
             detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
 
         // pkg-a should have dependency update message (depends on pkg-b)
-        let pkg_a_messages = explanations.get("cargo:pkg-a").unwrap();
+        let pkg_a_messages = explanations.get("cargo/pkg-a").unwrap();
         assert_eq!(pkg_a_messages.len(), 1);
         assert!(
             pkg_a_messages[0]
@@ -1279,7 +1279,7 @@ tempfile = "3.0"
         assert_eq!(pkg_a_messages[0].1, Bump::Patch);
 
         // pkg-c should have fixed dependency policy message (no deps but in fixed group)
-        let pkg_c_messages = explanations.get("cargo:pkg-c").unwrap();
+        let pkg_c_messages = explanations.get("cargo/pkg-c").unwrap();
         assert_eq!(pkg_c_messages.len(), 1);
         assert_eq!(
             pkg_c_messages[0].0,
@@ -1288,7 +1288,7 @@ tempfile = "3.0"
         assert_eq!(pkg_c_messages[0].1, Bump::Minor); // Inferred from version change
 
         // pkg-b should have no messages (explicit changeset)
-        assert!(!explanations.contains_key("cargo:pkg-b"));
+        assert!(!explanations.contains_key("cargo/pkg-b"));
     }
 
     #[test]
@@ -1297,7 +1297,7 @@ tempfile = "3.0"
             root: PathBuf::from("/test"),
             members: vec![PackageInfo {
                 name: "pkg-a".to_string(),
-                identifier: "cargo:pkg-a".to_string(),
+                identifier: "cargo/pkg-a".to_string(),
                 version: "1.0.0".to_string(),
                 path: PathBuf::from("/test/pkg-a"),
                 internal_deps: BTreeSet::new(),
