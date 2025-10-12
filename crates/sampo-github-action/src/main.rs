@@ -1209,12 +1209,28 @@ mod tests {
         let workspace = temp.path();
         let dist_dir = workspace.join("dist");
         fs::create_dir_all(&dist_dir).unwrap();
-        
+
         // Create binaries for both sampo and sampo-github-action
-        fs::write(dist_dir.join("sampo-x86_64-unknown-linux-gnu.tar.gz"), b"sampo-linux").unwrap();
-        fs::write(dist_dir.join("sampo-x86_64-apple-darwin.tar.gz"), b"sampo-macos").unwrap();
-        fs::write(dist_dir.join("sampo-github-action-x86_64-unknown-linux-gnu.tar.gz"), b"action-linux").unwrap();
-        fs::write(dist_dir.join("sampo-github-action-x86_64-apple-darwin.tar.gz"), b"action-macos").unwrap();
+        fs::write(
+            dist_dir.join("sampo-x86_64-unknown-linux-gnu.tar.gz"),
+            b"sampo-linux",
+        )
+        .unwrap();
+        fs::write(
+            dist_dir.join("sampo-x86_64-apple-darwin.tar.gz"),
+            b"sampo-macos",
+        )
+        .unwrap();
+        fs::write(
+            dist_dir.join("sampo-github-action-x86_64-unknown-linux-gnu.tar.gz"),
+            b"action-linux",
+        )
+        .unwrap();
+        fs::write(
+            dist_dir.join("sampo-github-action-x86_64-apple-darwin.tar.gz"),
+            b"action-macos",
+        )
+        .unwrap();
 
         // Asset specs using {{crate}} template
         let specs = vec![
@@ -1231,18 +1247,38 @@ mod tests {
         // Test with sampo tag - should only match sampo binaries
         let sampo_assets = resolve_release_assets(workspace, "sampo-v0.9.0", &specs)
             .expect("sampo asset resolution should succeed");
-        assert_eq!(sampo_assets.len(), 2, "Should find exactly 2 sampo binaries");
-        assert!(sampo_assets.iter().all(|a| a.asset_name.starts_with("sampo-0.9.0-")));
+        assert_eq!(
+            sampo_assets.len(),
+            2,
+            "Should find exactly 2 sampo binaries"
+        );
+        assert!(
+            sampo_assets
+                .iter()
+                .all(|a| a.asset_name.starts_with("sampo-0.9.0-"))
+        );
         assert!(sampo_assets.iter().any(|a| a.asset_name.contains("linux")));
         assert!(sampo_assets.iter().any(|a| a.asset_name.contains("darwin")));
 
         // Test with sampo-github-action tag - should only match action binaries
         let action_assets = resolve_release_assets(workspace, "sampo-github-action-v0.8.2", &specs)
             .expect("action asset resolution should succeed");
-        assert_eq!(action_assets.len(), 2, "Should find exactly 2 action binaries");
-        assert!(action_assets.iter().all(|a| a.asset_name.starts_with("sampo-github-action-0.8.2-")));
+        assert_eq!(
+            action_assets.len(),
+            2,
+            "Should find exactly 2 action binaries"
+        );
+        assert!(
+            action_assets
+                .iter()
+                .all(|a| a.asset_name.starts_with("sampo-github-action-0.8.2-"))
+        );
         assert!(action_assets.iter().any(|a| a.asset_name.contains("linux")));
-        assert!(action_assets.iter().any(|a| a.asset_name.contains("darwin")));
+        assert!(
+            action_assets
+                .iter()
+                .any(|a| a.asset_name.contains("darwin"))
+        );
     }
 
     #[test]
