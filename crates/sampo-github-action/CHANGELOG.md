@@ -1,5 +1,47 @@
 # sampo-github-action
 
+## 0.9.0 — 2025-10-12
+
+### Minor changes
+
+- [a4bcf23](https://github.com/bruits/sampo/commit/a4bcf230586f6643dd5a75f8c4fe38b0c70b2905) To avoid ambiguity between packages in different ecosystems (e.g. a Rust crate and an npm package both named `example`), Sampo now assigns canonical identifiers to all packages using `<ecosystem>/<name>`, such as `cargo/example` for Rust crates or `npm/example` for JavaScript packages.
+  
+  Changesets, the CLI, and the GitHub Action now accept and emit ecosystem-qualified package names. Plain package names (without ecosystem prefix) are still supported when there is no ambiguity. — Thanks @goulvenclech!
+- [f91656d](https://github.com/bruits/sampo/commit/f91656dcb1ab2ef39515a47dbb6a084e12021295) **⚠️ breaking change:** Drop the built-in binary build/upload flags in favor of a simple new `release-assets` input. Workflows should now provide pre-built artifacts (paths or glob patterns, with optional renames and templated placeholders) that the action uploads after publishing.
+  
+  ```diff
+        - name: Install Rust targets for cross-compilation
+          run: rustup target add x86_64-apple-darwin x86_64-pc-windows-msvc
+  
+  +      - name: Build binaries
+  +        run: |
+  +          cargo build --release --target x86_64-unknown-linux-gnu
+  +          cargo build --release --target x86_64-apple-darwin
+  +          cargo build --release --target x86_64-pc-windows-msvc
+  +          mkdir -p dist
+  +          tar -C target/x86_64-unknown-linux-gnu/release -czf dist/my-cli-x86_64-unknown-linux-gnu.tar.gz my-cli
+  +          tar -C target/x86_64-apple-darwin/release -czf dist/my-cli-x86_64-apple-darwin.tar.gz my-cli
+  +          zip -j dist/my-cli-x86_64-pc-windows-msvc.zip target/x86_64-pc-windows-msvc/release/my-cli.exe
+  
+        - name: Run Sampo to release & publish
+          uses: bruits/sampo/crates/sampo-github-action@main
+          with:
+            create-github-release: true
+  -          upload-binary: true
+  -          targets: x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-msvc
+  +          release-assets: |
+  +            dist/my-cli-x86_64-unknown-linux-gnu.tar.gz => my-cli-{{tag}}-x86_64-unknown-linux-gnu.tar.gz
+  +            dist/my-cli-x86_64-apple-darwin.tar.gz => my-cli-{{tag}}-x86_64-apple-darwin.tar.gz
+  +            dist/my-cli-x86_64-pc-windows-msvc.zip => my-cli-{{tag}}-x86_64-pc-windows-msvc.zip
+  ```
+   — Thanks @goulvenclech!
+
+### Patch changes
+
+- [99b5683](https://github.com/bruits/sampo/commit/99b568353ee8e08680119229b9218f6c021e3aa1) Should now use `sampo` and `sampo-github-action` binaries instead of re-compiling from source. Speeds up the release workflow significantly. — Thanks @goulvenclech!
+- [99b5683](https://github.com/bruits/sampo/commit/99b568353ee8e08680119229b9218f6c021e3aa1) Each `sampo` and `sampo-github-action` GitHub release should now include binaries with proper names and formats. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.7.0
+
 ## 0.8.2 — 2025-10-04
 
 ### Patch changes
