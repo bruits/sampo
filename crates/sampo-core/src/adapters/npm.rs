@@ -77,7 +77,7 @@ pub fn update_manifest_versions(
     struct PackageJsonBorrowed<'a> {
         #[serde(borrow)]
         version: Option<&'a RawValue>,
-        #[serde(borrow, rename = "dependencies")]
+        #[serde(borrow)]
         dependencies: Option<HashMap<String, &'a RawValue>>,
         #[serde(borrow, rename = "devDependencies")]
         dev_dependencies: Option<HashMap<String, &'a RawValue>>,
