@@ -1,7 +1,9 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use std::collections::{BTreeMap, BTreeSet};
+use serde_json::value::RawValue;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -61,6 +63,194 @@ impl NpmAdapter {
     pub(super) fn regenerate_lockfile(&self, _workspace_root: &Path) -> Result<()> {
         Ok(())
     }
+}
+
+/// Update an npm manifest (`package.json`) by bumping the package version (if provided) and
+/// rewriting internal dependency specifiers when a new version is available.
+pub fn update_manifest_versions(
+    manifest_path: &Path,
+    input: &str,
+    new_pkg_version: Option<&str>,
+    new_version_by_name: &BTreeMap<String, String>,
+) -> Result<(String, Vec<(String, String)>)> {
+    #[derive(Deserialize)]
+    struct PackageJsonBorrowed<'a> {
+        #[serde(borrow)]
+        version: Option<&'a RawValue>,
+        #[serde(borrow, rename = "dependencies")]
+        dependencies: Option<HashMap<String, &'a RawValue>>,
+        #[serde(borrow, rename = "devDependencies")]
+        dev_dependencies: Option<HashMap<String, &'a RawValue>>,
+        #[serde(borrow, rename = "peerDependencies")]
+        peer_dependencies: Option<HashMap<String, &'a RawValue>>,
+        #[serde(borrow, rename = "optionalDependencies")]
+        optional_dependencies: Option<HashMap<String, &'a RawValue>>,
+    }
+
+    let borrowed: PackageJsonBorrowed = serde_json::from_str(input).map_err(|err| {
+        SampoError::Release(format!(
+            "Failed to parse package.json {}: {err}",
+            manifest_path.display()
+        ))
+    })?;
+
+    struct Replacement {
+        start: usize,
+        end: usize,
+        replacement: String,
+    }
+
+    let mut replacements: Vec<Replacement> = Vec::new();
+    let mut applied: Vec<(String, String)> = Vec::new();
+
+    if let Some(target_version) = new_pkg_version {
+        let version_raw = borrowed.version.ok_or_else(|| {
+            SampoError::Release(format!(
+                "Manifest {} is missing a version field",
+                manifest_path.display()
+            ))
+        })?;
+        let current: String = serde_json::from_str(version_raw.get()).map_err(|err| {
+            SampoError::Release(format!(
+                "Version field in {} is not a string: {err}",
+                manifest_path.display()
+            ))
+        })?;
+        if current != target_version {
+            let (start, end) = raw_span(version_raw, input);
+            replacements.push(Replacement {
+                start,
+                end,
+                replacement: format!("\"{target_version}\""),
+            });
+        }
+    }
+
+    let sections: [(&str, Option<&HashMap<String, &RawValue>>); 4] = [
+        ("dependencies", borrowed.dependencies.as_ref()),
+        ("devDependencies", borrowed.dev_dependencies.as_ref()),
+        ("peerDependencies", borrowed.peer_dependencies.as_ref()),
+        (
+            "optionalDependencies",
+            borrowed.optional_dependencies.as_ref(),
+        ),
+    ];
+
+    for (dep_name, new_version) in new_version_by_name {
+        let mut updated = false;
+
+        for (section_name, maybe_map) in sections {
+            let Some(map) = maybe_map else { continue };
+            let Some(raw) = map.get(dep_name.as_str()) else {
+                continue;
+            };
+            let current_spec: String = serde_json::from_str(raw.get()).map_err(|err| {
+                SampoError::Release(format!(
+                    "Dependency specifier for '{}' in {}.{} is not a string: {err}",
+                    dep_name,
+                    manifest_path.display(),
+                    section_name
+                ))
+            })?;
+
+            if let Some(new_spec) = compute_dependency_specifier(&current_spec, new_version)
+                && new_spec != current_spec
+            {
+                let (start, end) = raw_span(raw, input);
+                replacements.push(Replacement {
+                    start,
+                    end,
+                    replacement: format!("\"{new_spec}\""),
+                });
+                updated = true;
+            }
+        }
+
+        if updated {
+            applied.push((dep_name.clone(), new_version.clone()));
+        }
+    }
+
+    if replacements.is_empty() {
+        return Ok((input.to_string(), applied));
+    }
+
+    replacements.sort_by(|a, b| a.start.cmp(&b.start));
+    let mut output = input.to_string();
+    for replacement in replacements.into_iter().rev() {
+        output.replace_range(replacement.start..replacement.end, &replacement.replacement);
+    }
+
+    Ok((output, applied))
+}
+
+fn raw_span(raw: &RawValue, source: &str) -> (usize, usize) {
+    let slice = raw.get();
+    let start = unsafe { slice.as_ptr().offset_from(source.as_ptr()) };
+    assert!(
+        start >= 0,
+        "raw JSON segment is not derived from the provided source"
+    );
+    let start = start as usize;
+    assert!(
+        start + slice.len() <= source.len(),
+        "raw JSON segment exceeds source bounds"
+    );
+    let end = start + slice.len();
+    (start, end)
+}
+
+fn compute_dependency_specifier(old_spec: &str, new_version: &str) -> Option<String> {
+    let trimmed = old_spec.trim();
+    if trimmed.is_empty() {
+        return Some(new_version.to_string());
+    }
+
+    if let Some(suffix) = trimmed.strip_prefix("workspace:") {
+        return match suffix {
+            "*" => None,
+            "^" => Some(format!("workspace:^{}", new_version)),
+            "~" => Some(format!("workspace:~{}", new_version)),
+            "" => Some(format!("workspace:{}", new_version)),
+            _ if suffix.starts_with('^') => Some(format!("workspace:^{}", new_version)),
+            _ if suffix.starts_with('~') => Some(format!("workspace:~{}", new_version)),
+            _ => Some(format!("workspace:{}", new_version)),
+        };
+    }
+
+    if trimmed == "*" {
+        return None;
+    }
+
+    for prefix in ["file:", "link:", "npm:", "git:", "http:", "https:"] {
+        if trimmed.starts_with(prefix) {
+            return None;
+        }
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('^') {
+        if rest == new_version {
+            return None;
+        }
+        return Some(format!("^{}", new_version));
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('~') {
+        if rest == new_version {
+            return None;
+        }
+        return Some(format!("~{}", new_version));
+    }
+
+    if trimmed == new_version {
+        return None;
+    }
+
+    if trimmed.starts_with('>') || trimmed.starts_with('<') {
+        return None;
+    }
+
+    Some(new_version.to_string())
 }
 
 fn discover_npm(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
@@ -347,115 +537,4 @@ fn clean_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::tempdir;
-
-    #[test]
-    fn npm_adapter_discovers_single_package() {
-        let temp = tempdir().unwrap();
-        let root = temp.path();
-
-        fs::write(
-            root.join("package.json"),
-            r#"{
-  "name": "root-pkg",
-  "version": "0.1.0"
-}
-"#,
-        )
-        .unwrap();
-
-        let packages = NpmAdapter.discover(root).unwrap();
-        assert_eq!(packages.len(), 1);
-        let pkg = &packages[0];
-        assert_eq!(pkg.name, "root-pkg");
-        assert_eq!(pkg.version, "0.1.0");
-        assert_eq!(pkg.kind, PackageKind::Npm);
-        assert!(pkg.internal_deps.is_empty());
-    }
-
-    #[test]
-    fn npm_adapter_discovers_workspace_members_and_internal_deps() {
-        let temp = tempdir().unwrap();
-        let root = temp.path();
-
-        fs::write(
-            root.join("package.json"),
-            r#"{
-  "name": "root-workspace",
-  "version": "1.0.0",
-  "workspaces": ["packages/*"]
-}
-"#,
-        )
-        .unwrap();
-
-        fs::write(
-            root.join("pnpm-workspace.yaml"),
-            "packages:\n  - 'extras/*'\n",
-        )
-        .unwrap();
-
-        let packages_dir = root.join("packages");
-        fs::create_dir_all(packages_dir.join("pkg-a")).unwrap();
-        fs::create_dir_all(packages_dir.join("pkg-b")).unwrap();
-
-        fs::write(
-            packages_dir.join("pkg-a/package.json"),
-            r#"{
-  "name": "pkg-a",
-  "version": "0.1.0",
-  "dependencies": {
-    "pkg-b": "^0.2.0"
-  }
-}
-"#,
-        )
-        .unwrap();
-
-        fs::write(
-            packages_dir.join("pkg-b/package.json"),
-            r#"{
-  "name": "pkg-b",
-  "version": "0.2.0"
-}
-"#,
-        )
-        .unwrap();
-
-        let extras_dir = root.join("extras");
-        fs::create_dir_all(extras_dir.join("pkg-c")).unwrap();
-        fs::write(
-            extras_dir.join("pkg-c/package.json"),
-            r#"{
-  "name": "pkg-c",
-  "version": "0.3.0"
-}
-"#,
-        )
-        .unwrap();
-
-        let packages = NpmAdapter.discover(root).unwrap();
-        assert_eq!(packages.len(), 4);
-
-        let root_pkg = packages
-            .iter()
-            .find(|p| p.name == "root-workspace")
-            .unwrap();
-        assert_eq!(root_pkg.kind, PackageKind::Npm);
-
-        let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
-        assert!(
-            pkg_a
-                .internal_deps
-                .contains(&PackageInfo::dependency_identifier(
-                    PackageKind::Npm,
-                    "pkg-b"
-                ))
-        );
-
-        assert!(packages.iter().any(|p| p.name == "pkg-c"));
-    }
-}
+mod npm_tests;

@@ -5,7 +5,6 @@ pub mod enrichment;
 pub mod errors;
 pub mod filters;
 pub mod git;
-pub mod manifest;
 pub mod markdown;
 pub mod prerelease;
 pub mod publish;
@@ -14,6 +13,7 @@ pub mod types;
 pub mod workspace;
 
 // Re-export commonly used items
+pub use adapters::ManifestMetadata;
 pub use changeset::{ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown};
 pub use config::Config;
 pub use enrichment::{
@@ -23,7 +23,6 @@ pub use enrichment::{
 pub use errors::{Result, SampoError, WorkspaceError};
 pub use filters::{filter_members, list_visible_packages, should_ignore_package, wildcard_match};
 pub use git::current_branch;
-pub use manifest::{ManifestMetadata, update_manifest_versions};
 pub use markdown::format_markdown_list_item;
 pub use prerelease::{
     VersionChange, enter_prerelease, exit_prerelease, restore_preserved_changesets,

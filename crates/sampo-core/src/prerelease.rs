@@ -1,7 +1,6 @@
-use crate::adapters::PackageAdapter;
+use crate::adapters::{ManifestMetadata, PackageAdapter};
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
-use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
 use crate::types::{
     PackageInfo, PackageKind, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
@@ -259,8 +258,7 @@ fn apply_version_updates(
             PackageKind::Cargo => manifest_metadata.as_ref(),
             PackageKind::Npm => None,
         };
-        let (updated, _deps) = update_manifest_versions(
-            info.kind,
+        let (updated, _deps) = adapter.update_manifest_versions(
             &manifest_path,
             &original,
             new_pkg_version,

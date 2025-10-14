@@ -1,7 +1,6 @@
-use crate::adapters::PackageAdapter;
+use crate::adapters::{ManifestMetadata, PackageAdapter};
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
-use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::types::{
     Bump, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier, ReleaseOutput,
     ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
@@ -1290,16 +1289,16 @@ fn apply_releases(
         let text = fs::read_to_string(&manifest_path)?;
 
         // Update manifest versions
-        let (updated, _dep_updates) = update_manifest_versions(
-            info.kind,
+        let cargo_metadata = match adapter {
+            PackageAdapter::Cargo => manifest_metadata.as_ref(),
+            PackageAdapter::Npm => None,
+        };
+        let (updated, _dep_updates) = adapter.update_manifest_versions(
             &manifest_path,
             &text,
             Some(newv.as_str()),
             &new_version_by_name,
-            match info.kind {
-                PackageKind::Cargo => manifest_metadata.as_ref(),
-                PackageKind::Npm => None,
-            },
+            cargo_metadata,
         )?;
         fs::write(&manifest_path, updated)?;
 

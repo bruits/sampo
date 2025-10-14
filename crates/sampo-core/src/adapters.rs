@@ -2,8 +2,11 @@
 pub mod cargo;
 pub mod npm;
 
+pub use cargo::ManifestMetadata;
+
 use crate::errors::{Result, WorkspaceError};
 use crate::types::PackageInfo;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Package ecosystem adapter (Cargo, npm, etc.).
@@ -78,6 +81,38 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.regenerate_lockfile(workspace_root),
             Self::Npm => npm::NpmAdapter.regenerate_lockfile(workspace_root),
+        }
+    }
+
+    /// Update the manifest and dependency versions for a package.
+    pub fn update_manifest_versions(
+        &self,
+        manifest_path: &Path,
+        input: &str,
+        new_pkg_version: Option<&str>,
+        new_version_by_name: &BTreeMap<String, String>,
+        metadata: Option<&ManifestMetadata>,
+    ) -> Result<(String, Vec<(String, String)>)> {
+        match self {
+            Self::Cargo => cargo::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+                metadata,
+            ),
+            Self::Npm => {
+                debug_assert!(
+                    metadata.is_none(),
+                    "npm adapter does not use Cargo metadata"
+                );
+                npm::update_manifest_versions(
+                    manifest_path,
+                    input,
+                    new_pkg_version,
+                    new_version_by_name,
+                )
+            }
         }
     }
 }
