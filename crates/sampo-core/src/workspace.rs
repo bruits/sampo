@@ -130,11 +130,9 @@ mod tests {
     }
 
     #[test]
-    fn discover_workspace_returns_only_cargo_packages() {
-        // This test verifies that when a workspace is discovered, only Cargo packages
-        // are returned (since that's currently the only supported ecosystem).
-        // In the future, when more ecosystems are added, this test demonstrates that
-        // the abstraction correctly aggregates packages from multiple discoverers.
+    fn discover_workspace_returns_cargo_packages() {
+        // This test verifies that when a workspace contains only Cargo packages,
+        // they are discovered correctly and marked with the Cargo kind.
 
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -190,5 +188,47 @@ mod tests {
             Err(WorkspaceError::NotFound) => {}
             _ => panic!("Expected WorkspaceError::NotFound"),
         }
+    }
+
+    #[test]
+    fn discover_workspace_discovers_npm_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("package.json"),
+            r#"{
+  "name": "root-package",
+  "version": "1.0.0",
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        let packages_dir = root.join("packages");
+        fs::create_dir_all(packages_dir.join("pkg-a")).unwrap();
+        fs::write(
+            packages_dir.join("pkg-a/package.json"),
+            r#"{
+  "name": "pkg-a",
+  "version": "0.1.0"
+}
+"#,
+        )
+        .unwrap();
+
+        let ws = discover_workspace(root).unwrap();
+        assert_eq!(ws.members.len(), 2);
+        assert!(
+            ws.members
+                .iter()
+                .any(|pkg| pkg.name == "root-package" && pkg.kind == PackageKind::Npm)
+        );
+        assert!(
+            ws.members
+                .iter()
+                .any(|pkg| pkg.name == "pkg-a" && pkg.kind == PackageKind::Npm)
+        );
     }
 }

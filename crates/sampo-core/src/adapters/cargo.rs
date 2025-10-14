@@ -210,7 +210,7 @@ fn find_cargo_workspace_root(
                 WorkspaceError::Io(crate::errors::io_error_with_path(e, &toml_path))
             })?;
             let value: toml::Value = text.parse().map_err(|e| {
-                WorkspaceError::InvalidToml(format!("{}: {}", toml_path.display(), e))
+                WorkspaceError::InvalidManifest(format!("{}: {}", toml_path.display(), e))
             })?;
             if value.get("workspace").is_some() {
                 return Ok((current.to_path_buf(), value));
@@ -345,13 +345,13 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
             WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
         })?;
         let value: toml::Value = text.parse().map_err(|e| {
-            WorkspaceError::InvalidToml(format!("{}: {}", manifest_path.display(), e))
+            WorkspaceError::InvalidManifest(format!("{}: {}", manifest_path.display(), e))
         })?;
         let pkg = value
             .get("package")
             .and_then(|v| v.as_table())
             .ok_or_else(|| {
-                WorkspaceError::InvalidToml(format!(
+                WorkspaceError::InvalidManifest(format!(
                     "missing [package] in {}",
                     manifest_path.display()
                 ))
@@ -360,7 +360,7 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                WorkspaceError::InvalidToml(format!(
+                WorkspaceError::InvalidManifest(format!(
                     "missing package.name in {}",
                     manifest_path.display()
                 ))

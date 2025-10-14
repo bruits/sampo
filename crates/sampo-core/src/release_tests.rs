@@ -456,9 +456,15 @@ mod tests {
         let input = "[package]\nname=\"x\"\nversion = \"0.1.0\"\n\n[dependencies]\n";
         let new_versions = BTreeMap::new();
         let manifest_path = std::path::Path::new("/test/crates/x/Cargo.toml");
-        let (out, _) =
-            update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions, None)
-                .unwrap();
+        let (out, _) = update_manifest_versions(
+            PackageKind::Cargo,
+            manifest_path,
+            input,
+            Some("0.2.0"),
+            &new_versions,
+            None,
+        )
+        .unwrap();
         assert!(out.contains("version = \"0.2.0\""));
         assert!(out.contains("[dependencies]"));
     }
@@ -491,9 +497,15 @@ tempfile = "3.0"
 
         let new_versions = BTreeMap::new();
         let manifest_path = std::path::Path::new("/test/crates/sampo-github-action/Cargo.toml");
-        let (out, _) =
-            update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions, None)
-                .unwrap();
+        let (out, _) = update_manifest_versions(
+            PackageKind::Cargo,
+            manifest_path,
+            input,
+            Some("0.2.0"),
+            &new_versions,
+            None,
+        )
+        .unwrap();
 
         // Should update version but preserve all other formatting
         assert!(out.contains("version = \"0.2.0\""));
