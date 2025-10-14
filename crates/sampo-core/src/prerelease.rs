@@ -1,9 +1,9 @@
+use crate::adapters::{ManifestMetadata, PackageAdapter};
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
-use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
 use crate::types::{
-    PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
+    PackageInfo, PackageKind, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
 };
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
@@ -233,22 +233,37 @@ fn apply_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let manifest_metadata = ManifestMetadata::load(workspace).map_err(|err| match err {
-        SampoError::Release(msg) => SampoError::Prerelease(msg),
-        other => other,
-    })?;
+    let has_cargo = workspace
+        .members
+        .iter()
+        .any(|pkg| pkg.kind == PackageKind::Cargo);
+    let manifest_metadata = if has_cargo {
+        Some(ManifestMetadata::load(workspace).map_err(|err| match err {
+            SampoError::Release(msg) => SampoError::Prerelease(msg),
+            other => other,
+        })?)
+    } else {
+        None
+    };
 
-    let adapter = crate::adapters::PackageAdapter::Cargo;
     for info in &workspace.members {
+        let adapter = match info.kind {
+            PackageKind::Cargo => PackageAdapter::Cargo,
+            PackageKind::Npm => PackageAdapter::Npm,
+        };
         let manifest_path = adapter.manifest_path(&info.path);
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
-        let (updated, _deps) = update_manifest_versions(
+        let metadata_ref = match info.kind {
+            PackageKind::Cargo => manifest_metadata.as_ref(),
+            PackageKind::Npm => None,
+        };
+        let (updated, _deps) = adapter.update_manifest_versions(
             &manifest_path,
             &original,
             new_pkg_version,
             new_versions,
-            Some(&manifest_metadata),
+            metadata_ref,
         )?;
 
         if updated != original {
@@ -256,7 +271,7 @@ fn apply_version_updates(
         }
     }
 
-    if workspace.root.join("Cargo.lock").exists() {
+    if has_cargo && workspace.root.join("Cargo.lock").exists() {
         regenerate_lockfile(&workspace.root).map_err(|err| match err {
             SampoError::Release(msg) => SampoError::Prerelease(msg),
             other => other,

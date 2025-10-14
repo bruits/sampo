@@ -1,7 +1,6 @@
-use crate::adapters::PackageAdapter;
+use crate::adapters::{ManifestMetadata, PackageAdapter};
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
-use crate::manifest::{ManifestMetadata, update_manifest_versions};
 use crate::types::{
     Bump, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier, ReleaseOutput,
     ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
@@ -887,11 +886,6 @@ fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTre
         .collect();
 
     for c in &ws.members {
-        // Skip non-Cargo packages (only Cargo is currently supported for releases)
-        if c.kind != PackageKind::Cargo {
-            continue;
-        }
-
         // Skip ignored packages when building the dependency graph
         let identifier = c.canonical_identifier();
         if ignored_packages.contains(identifier) {
@@ -930,12 +924,10 @@ fn apply_dependency_cascade(
             .position(|group| group.contains(&pkg_id.to_string()))
     };
 
-    // Build a quick lookup map for package info (only Cargo packages)
+    // Build a quick lookup map for package info by canonical identifier
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        if c.kind == PackageKind::Cargo {
-            by_id.insert(c.canonical_identifier().to_string(), c);
-        }
+        by_id.insert(c.canonical_identifier().to_string(), c);
     }
 
     let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
@@ -1070,12 +1062,10 @@ fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
 ) -> Result<ReleasePlan> {
-    // Map package name -> PackageInfo for quick lookup (only Cargo packages)
+    // Map package identifier -> PackageInfo for quick lookup
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        if c.kind == PackageKind::Cargo {
-            by_id.insert(c.canonical_identifier().to_string(), c);
-        }
+        by_id.insert(c.canonical_identifier().to_string(), c);
     }
 
     let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
@@ -1246,15 +1236,18 @@ fn apply_releases(
     changesets: &[ChangesetInfo],
     cfg: &Config,
 ) -> Result<()> {
-    // Build lookup maps (only Cargo packages)
+    // Build lookup map for all packages
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
-        if c.kind == PackageKind::Cargo {
-            by_id.insert(c.canonical_identifier().to_string(), c);
-        }
+        by_id.insert(c.canonical_identifier().to_string(), c);
     }
 
-    let manifest_metadata = ManifestMetadata::load(ws)?;
+    let has_cargo = ws.members.iter().any(|pkg| pkg.kind == PackageKind::Cargo);
+    let manifest_metadata = if has_cargo {
+        Some(ManifestMetadata::load(ws)?)
+    } else {
+        None
+    };
 
     // Build releases map for dependency explanations
     let releases_map: BTreeMap<String, (String, String)> = releases
@@ -1284,19 +1277,28 @@ fn apply_releases(
     let release_date_display = compute_release_date_display(cfg)?;
 
     // Apply updates for each release
-    let adapter = crate::adapters::PackageAdapter::Cargo;
     for (name, old, newv) in releases {
-        let info = by_id.get(name.as_str()).unwrap();
+        let info = by_id
+            .get(name.as_str())
+            .ok_or_else(|| SampoError::Release(format!("package '{}' not found", name)))?;
+        let adapter = match info.kind {
+            PackageKind::Cargo => crate::adapters::PackageAdapter::Cargo,
+            PackageKind::Npm => crate::adapters::PackageAdapter::Npm,
+        };
         let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
 
         // Update manifest versions
-        let (updated, _dep_updates) = update_manifest_versions(
+        let cargo_metadata = match adapter {
+            PackageAdapter::Cargo => manifest_metadata.as_ref(),
+            PackageAdapter::Npm => None,
+        };
+        let (updated, _dep_updates) = adapter.update_manifest_versions(
             &manifest_path,
             &text,
             Some(newv.as_str()),
             &new_version_by_name,
-            Some(&manifest_metadata),
+            cargo_metadata,
         )?;
         fs::write(&manifest_path, updated)?;
 

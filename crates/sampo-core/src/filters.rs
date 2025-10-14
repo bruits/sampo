@@ -16,6 +16,7 @@ pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -
     if cfg.ignore_unpublished {
         let adapter = match info.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
+            crate::types::PackageKind::Npm => PackageAdapter::Npm,
         };
         let manifest = adapter.manifest_path(&info.path);
         if !adapter.is_publishable(&manifest)? {

@@ -6,6 +6,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PackageKind {
     Cargo,
+    Npm,
 }
 
 impl PackageKind {
@@ -13,6 +14,7 @@ impl PackageKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Cargo => "cargo",
+            Self::Npm => "npm",
         }
     }
 
@@ -20,6 +22,7 @@ impl PackageKind {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Cargo => "Cargo",
+            Self::Npm => "npm",
         }
     }
 
@@ -36,6 +39,7 @@ impl PackageKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "cargo" => Some(Self::Cargo),
+            "npm" => Some(Self::Npm),
             _ => None,
         }
     }

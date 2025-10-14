@@ -46,10 +46,10 @@ pub enum SampoError {
 pub enum WorkspaceError {
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    #[error("No Cargo.toml with [workspace] found")]
+    #[error("No supported workspace manifest found")]
     NotFound,
-    #[error("Invalid Cargo.toml: {0}")]
-    InvalidToml(String),
+    #[error("Invalid manifest: {0}")]
+    InvalidManifest(String),
     #[error("Invalid workspace: {0}")]
     InvalidWorkspace(String),
 }

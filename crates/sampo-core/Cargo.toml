@@ -14,12 +14,13 @@ categories = ["development-tools"]
 [dependencies]
 glob = "0.3"
 rustc-hash = "2.0"
-serde_json = "1.0"
 thiserror = "1.0"
 toml = "0.8"
 toml_edit = "0.22"
 changesets = "0.4"
 semver = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
+serde_yaml = "0.9"
 tempfile = { version = "3.13", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.0", features = ["rt", "macros"] }
