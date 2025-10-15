@@ -67,23 +67,24 @@ impl NpmAdapter {
         if info.private { Ok(false) } else { Ok(true) }
     }
 
-    pub(super) fn version_exists(&self, package_name: &str, version: &str) -> Result<bool> {
-        version_exists_on_registry(package_name, version, None)
-    }
-
-    pub(super) fn version_exists_with_manifest(
+    pub(super) fn version_exists(
         &self,
-        manifest_path: &Path,
         package_name: &str,
         version: &str,
+        manifest_path: Option<&Path>,
     ) -> Result<bool> {
-        let manifest = load_package_json(manifest_path)?;
-        let info = parse_manifest_info(manifest_path, &manifest)?;
-        version_exists_on_registry(
-            package_name,
-            version,
-            info.publish_config.registry.as_deref(),
-        )
+        match manifest_path {
+            Some(path) => {
+                let manifest = load_package_json(path)?;
+                let info = parse_manifest_info(path, &manifest)?;
+                version_exists_on_registry(
+                    package_name,
+                    version,
+                    info.publish_config.registry.as_deref(),
+                )
+            }
+            None => version_exists_on_registry(package_name, version, None),
+        }
     }
 
     pub(super) fn publish(

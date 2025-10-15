@@ -127,7 +127,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         let manifest = adapter.manifest_path(&c.path);
 
         // Skip if the exact version already exists on the registry
-        match adapter.version_exists_with_manifest(&manifest, &c.name, &c.version) {
+        match adapter.version_exists(&c.name, &c.version, Some(&manifest)) {
             Ok(true) => {
                 println!(
                     "Skipping {}@{} (already exists on {})",

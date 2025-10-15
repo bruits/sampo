@@ -56,29 +56,15 @@ impl PackageAdapter {
     }
 
     /// Check if a specific version already exists on the registry.
-    pub fn version_exists(&self, package_name: &str, version: &str) -> Result<bool> {
-        match self {
-            Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version),
-            Self::Npm => npm::NpmAdapter.version_exists(package_name, version),
-        }
-    }
-
-    /// Check if a specific version already exists on the registry, with manifest context.
-    pub fn version_exists_with_manifest(
+    pub fn version_exists(
         &self,
-        manifest_path: &Path,
         package_name: &str,
         version: &str,
+        manifest_path: Option<&Path>,
     ) -> Result<bool> {
         match self {
-            Self::Cargo => cargo::CargoAdapter.version_exists_with_manifest(
-                manifest_path,
-                package_name,
-                version,
-            ),
-            Self::Npm => {
-                npm::NpmAdapter.version_exists_with_manifest(manifest_path, package_name, version)
-            }
+            Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version),
+            Self::Npm => npm::NpmAdapter.version_exists(package_name, version, manifest_path),
         }
     }
 
