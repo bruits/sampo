@@ -56,10 +56,15 @@ impl PackageAdapter {
     }
 
     /// Check if a specific version already exists on the registry.
-    pub fn version_exists(&self, package_name: &str, version: &str) -> Result<bool> {
+    pub fn version_exists(
+        &self,
+        package_name: &str,
+        version: &str,
+        manifest_path: Option<&Path>,
+    ) -> Result<bool> {
         match self {
             Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version),
-            Self::Npm => npm::NpmAdapter.version_exists(package_name, version),
+            Self::Npm => npm::NpmAdapter.version_exists(package_name, version, manifest_path),
         }
     }
 

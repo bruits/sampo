@@ -73,15 +73,17 @@ pub fn run_publish(
     }
 
     // Parse extra args into a vector
-    let cargo_args: Vec<String> = if let Some(args) = extra_args {
+    let publish_args: Vec<String> = if let Some(args) = extra_args {
         args.split_whitespace().map(|s| s.to_string()).collect()
     } else {
         Vec::new()
     };
 
-    core_publish(workspace, dry_run, &cargo_args).map_err(|e| ActionError::SampoCommandFailed {
-        operation: "publish".to_string(),
-        message: format!("sampo publish failed: {}", e),
+    core_publish(workspace, dry_run, &publish_args).map_err(|e| {
+        ActionError::SampoCommandFailed {
+            operation: "publish".to_string(),
+            message: format!("sampo publish failed: {}", e),
+        }
     })?;
 
     Ok(())

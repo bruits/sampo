@@ -40,15 +40,15 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --allow-dirty\n  sampo publish -- --no-verify\n\nBehavior:\n  - Publishes only crates that have a git tag of the form <name>-v<version> for their current version.\n  - Skips crates whose current version already exists on crates.io.\n\nAll arguments after `--` are forwarded to `cargo publish` (separator required).")]
+Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish -- --tag beta\n\nBehavior:\n  - Publishes only packages that have a git tag of the form <name>-v<version> for their current version.\n  - Skips packages whose current version already exists on their registry.\n\nAll arguments after `--` are forwarded to the underlying publish command (separator required).")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Extra flags passed through to `cargo publish` (must follow `--`)
-    #[arg(last = true, value_name = "CARGO_ARG")]
-    pub cargo_args: Vec<String>,
+    /// Extra flags passed through to the underlying publish command (must follow `--`)
+    #[arg(last = true, value_name = "PUBLISH_ARG")]
+    pub publish_args: Vec<String>,
 }
 
 #[derive(Debug, Args, Default)]
@@ -148,7 +148,7 @@ mod tests {
         match cli.command {
             Commands::Publish(args) => {
                 assert!(args.dry_run);
-                assert_eq!(args.cargo_args, vec!["--allow-dirty", "--no-verify"]);
+                assert_eq!(args.publish_args, vec!["--allow-dirty", "--no-verify"]);
             }
             _ => panic!("wrong variant"),
         }

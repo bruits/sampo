@@ -355,7 +355,7 @@ fn test_default_command_is_auto() {
     assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
 
     assert!(
-        stdout.contains("Publish plan (crates.io):"),
+        stdout.contains("Publish plan:"),
         "Expected auto mode to trigger publish path, got stdout: {}",
         stdout
     );
@@ -419,7 +419,7 @@ fn test_publish_dry_run_reports_no_publishable_crates() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("No publishable crates"),
+        stdout.contains("No publishable packages were found in the workspace."),
         "Expected dry-run publish to report missing crates"
     );
 
@@ -602,7 +602,7 @@ fn test_auto_mode_without_changesets_attempts_publish() {
     Should follow the "no changesets -> try publish" logic path
     */
     assert!(
-        stdout.contains("Publish plan (crates.io):"),
+        stdout.contains("Publish plan:"),
         "Expected auto mode to attempt publish path, got stdout: {}",
         stdout
     );

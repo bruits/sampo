@@ -1,11 +1,47 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
+use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const DEFAULT_NPM_REGISTRY: &str = "https://registry.npmjs.org/";
+const NPM_USER_AGENT: &str = concat!("sampo-core/", env!("CARGO_PKG_VERSION"));
+const REGISTRY_RATE_LIMIT: Duration = Duration::from_millis(300);
+
+static REGISTRY_LAST_CALL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Default)]
+struct NpmPublishConfig {
+    registry: Option<String>,
+    access: Option<String>,
+    tag: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NpmManifestInfo {
+    name: String,
+    #[allow(dead_code)]
+    version: String,
+    private: bool,
+    package_manager: Option<String>,
+    publish_config: NpmPublishConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+    Bun,
+}
 
 pub(super) struct NpmAdapter;
 
@@ -26,43 +62,434 @@ impl NpmAdapter {
     }
 
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
-        let value = load_package_json(manifest_path)?;
-        if value
-            .get("private")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false)
-        {
-            return Ok(false);
-        }
-
-        let has_name = value.get("name").and_then(JsonValue::as_str).is_some();
-        let has_version = value
-            .get("version")
-            .and_then(JsonValue::as_str)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false);
-
-        Ok(has_name && has_version)
+        let manifest = load_package_json(manifest_path)?;
+        let info = parse_manifest_info(manifest_path, &manifest)?;
+        if info.private { Ok(false) } else { Ok(true) }
     }
 
-    pub(super) fn version_exists(&self, _package_name: &str, _version: &str) -> Result<bool> {
-        Ok(false)
+    pub(super) fn version_exists(
+        &self,
+        package_name: &str,
+        version: &str,
+        manifest_path: Option<&Path>,
+    ) -> Result<bool> {
+        match manifest_path {
+            Some(path) => {
+                let manifest = load_package_json(path)?;
+                let info = parse_manifest_info(path, &manifest)?;
+                version_exists_on_registry(
+                    package_name,
+                    version,
+                    info.publish_config.registry.as_deref(),
+                )
+            }
+            None => version_exists_on_registry(package_name, version, None),
+        }
     }
 
     pub(super) fn publish(
         &self,
-        _manifest_path: &Path,
-        _dry_run: bool,
-        _extra_args: &[String],
+        manifest_path: &Path,
+        dry_run: bool,
+        extra_args: &[String],
     ) -> Result<()> {
-        Err(SampoError::Publish(
-            "npm package publishing is not implemented yet".to_string(),
-        ))
+        let manifest_dir = manifest_path.parent().ok_or_else(|| {
+            SampoError::Publish(format!(
+                "Manifest {} does not have a parent directory",
+                manifest_path.display()
+            ))
+        })?;
+        let manifest = load_package_json(manifest_path)?;
+        let info = parse_manifest_info(manifest_path, &manifest)?;
+
+        if info.private {
+            return Err(SampoError::Publish(format!(
+                "Package '{}' is marked as private and cannot be published",
+                info.name
+            )));
+        }
+
+        let manager = detect_package_manager(manifest_dir, &info);
+        let mut cmd = match manager {
+            PackageManager::Npm => {
+                let mut cmd = Command::new("npm");
+                cmd.arg("publish");
+                cmd
+            }
+            PackageManager::Pnpm => {
+                let mut cmd = Command::new("pnpm");
+                cmd.arg("publish");
+                cmd
+            }
+            PackageManager::Yarn => {
+                let mut cmd = Command::new("yarn");
+                cmd.arg("publish");
+                cmd
+            }
+            PackageManager::Bun => {
+                let mut cmd = Command::new("bun");
+                cmd.arg("publish");
+                cmd
+            }
+        };
+        cmd.current_dir(manifest_dir);
+
+        if dry_run && !has_flag(extra_args, "--dry-run") {
+            cmd.arg("--dry-run");
+        }
+
+        if let Some(registry) = info.publish_config.registry.as_deref()
+            && !has_flag(extra_args, "--registry")
+        {
+            cmd.arg("--registry").arg(registry);
+        }
+
+        if !has_flag(extra_args, "--access") {
+            if let Some(access) = info.publish_config.access.as_deref() {
+                cmd.arg("--access").arg(access);
+            } else if info.name.starts_with('@') {
+                cmd.arg("--access").arg("public");
+            }
+        }
+
+        if let Some(tag) = info.publish_config.tag.as_deref()
+            && !has_flag(extra_args, "--tag")
+        {
+            cmd.arg("--tag").arg(tag);
+        }
+
+        if !extra_args.is_empty() {
+            cmd.args(extra_args);
+        }
+
+        println!("Running: {}", format_command_display(&cmd));
+
+        let status = cmd.status()?;
+        if !status.success() {
+            let tool = match manager {
+                PackageManager::Npm => "npm",
+                PackageManager::Pnpm => "pnpm",
+                PackageManager::Yarn => "yarn",
+                PackageManager::Bun => "bun",
+            };
+            return Err(SampoError::Publish(format!(
+                "{} publish failed for {} (package '{}') with status {}",
+                tool,
+                manifest_path.display(),
+                info.name,
+                status
+            )));
+        }
+
+        Ok(())
     }
 
     pub(super) fn regenerate_lockfile(&self, _workspace_root: &Path) -> Result<()> {
         Ok(())
     }
+}
+
+fn parse_manifest_info(manifest_path: &Path, manifest: &JsonValue) -> Result<NpmManifestInfo> {
+    let name = manifest
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            SampoError::Publish(format!(
+                "Manifest {} is missing a non-empty 'name' field",
+                manifest_path.display()
+            ))
+        })?;
+    validate_package_name(name).map_err(|msg| {
+        SampoError::Publish(format!(
+            "Manifest {} has invalid package name '{}': {}",
+            manifest_path.display(),
+            name,
+            msg
+        ))
+    })?;
+
+    let version = manifest
+        .get("version")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            SampoError::Publish(format!(
+                "Manifest {} is missing a non-empty 'version' field",
+                manifest_path.display()
+            ))
+        })?;
+
+    let private = manifest
+        .get("private")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+
+    let package_manager = manifest
+        .get("packageManager")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let publish_config = manifest
+        .get("publishConfig")
+        .and_then(JsonValue::as_object)
+        .map(|map| {
+            let mut cfg = NpmPublishConfig::default();
+            if let Some(registry) = map.get("registry").and_then(JsonValue::as_str) {
+                let trimmed = registry.trim();
+                if !trimmed.is_empty() {
+                    cfg.registry = Some(trimmed.to_string());
+                }
+            }
+            if let Some(access) = map.get("access").and_then(JsonValue::as_str) {
+                let trimmed = access.trim();
+                if !trimmed.is_empty() {
+                    cfg.access = Some(trimmed.to_string());
+                }
+            }
+            if let Some(tag) = map.get("tag").and_then(JsonValue::as_str) {
+                let trimmed = tag.trim();
+                if !trimmed.is_empty() {
+                    cfg.tag = Some(trimmed.to_string());
+                }
+            }
+            cfg
+        })
+        .unwrap_or_default();
+
+    Ok(NpmManifestInfo {
+        name: name.to_string(),
+        version: version.to_string(),
+        private,
+        package_manager,
+        publish_config,
+    })
+}
+
+fn validate_package_name(name: &str) -> std::result::Result<(), String> {
+    if name.len() > 214 {
+        return Err("package name must be 214 characters or fewer".into());
+    }
+    if name.starts_with('.') || name.starts_with('_') {
+        return Err("package name must not start with '.' or '_'".into());
+    }
+    if name.contains(' ') {
+        return Err("package name must not contain spaces".into());
+    }
+    if name.chars().any(|c| c.is_ascii_uppercase()) {
+        return Err("package name must be lowercase".into());
+    }
+
+    let (scope_part, pkg_part) = if name.starts_with('@') {
+        let (scope, rest) = name
+            .split_once('/')
+            .ok_or_else(|| "scoped packages must use the form '@scope/name'".to_string())?;
+        if scope.len() <= 1 {
+            return Err("scope name must not be empty".into());
+        }
+        (&scope[1..], rest)
+    } else {
+        ("", name)
+    };
+
+    for (label, part) in [("scope", scope_part), ("name", pkg_part)] {
+        if part.is_empty() {
+            continue;
+        }
+        if part.starts_with('.') || part.starts_with('_') {
+            return Err(format!("{label} must not start with '.' or '_'"));
+        }
+        if !part
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+        {
+            return Err(format!(
+                "{label} may only contain lowercase letters, digits, '-', '_', or '.'"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn version_exists_on_registry(
+    package_name: &str,
+    version: &str,
+    registry_override: Option<&str>,
+) -> Result<bool> {
+    enforce_registry_rate_limit();
+
+    let base_url = registry_override
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_NPM_REGISTRY);
+
+    let url = build_registry_url(base_url, package_name)?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .user_agent(NPM_USER_AGENT)
+        .build()
+        .map_err(|err| SampoError::Publish(format!("failed to build HTTP client: {}", err)))?;
+
+    let response = client
+        .get(url.clone())
+        .send()
+        .map_err(|err| SampoError::Publish(format!("HTTP request to {} failed: {}", url, err)))?;
+
+    let status = response.status();
+
+    if status == StatusCode::OK {
+        let body = response.text().map_err(|err| {
+            SampoError::Publish(format!("failed to read registry response: {}", err))
+        })?;
+        let value: JsonValue = serde_json::from_str(&body)
+            .map_err(|err| SampoError::Publish(format!("invalid JSON from {}: {}", url, err)))?;
+        let versions = value
+            .get("versions")
+            .and_then(JsonValue::as_object)
+            .ok_or_else(|| {
+                SampoError::Publish(format!(
+                    "registry response for {} is missing a 'versions' object",
+                    package_name
+                ))
+            })?;
+        Ok(versions.contains_key(version))
+    } else if status == StatusCode::NOT_FOUND {
+        Ok(false)
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| format!(" Retry-After: {s}"));
+        let msg = format!(
+            "Registry {} returned 429 Too Many Requests{}",
+            url,
+            retry_after.unwrap_or_default()
+        );
+        Err(SampoError::Publish(msg))
+    } else {
+        let body = response.text().unwrap_or_default();
+        let snippet: String = body.trim().chars().take(400).collect();
+        Err(SampoError::Publish(format!(
+            "Registry {} returned {}: {}",
+            url, status, snippet
+        )))
+    }
+}
+
+fn enforce_registry_rate_limit() {
+    let lock = REGISTRY_LAST_CALL.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap();
+    let now = Instant::now();
+    if let Some(last) = *guard {
+        let elapsed = now.saturating_duration_since(last);
+        if elapsed < REGISTRY_RATE_LIMIT {
+            thread::sleep(REGISTRY_RATE_LIMIT - elapsed);
+        }
+    }
+    *guard = Some(Instant::now());
+}
+
+fn build_registry_url(base: &str, package_name: &str) -> Result<reqwest::Url> {
+    let trimmed = if base.trim().is_empty() {
+        DEFAULT_NPM_REGISTRY
+    } else {
+        base.trim()
+    };
+    let normalized = if trimmed.ends_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/")
+    };
+    let base_url = reqwest::Url::parse(&normalized)
+        .map_err(|err| SampoError::Publish(format!("invalid registry URL '{}': {}", base, err)))?;
+    let encoded = encode_package_name(package_name);
+    base_url.join(&encoded).map_err(|err| {
+        SampoError::Publish(format!(
+            "failed to construct registry URL for '{}': {}",
+            package_name, err
+        ))
+    })
+}
+
+fn encode_package_name(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len());
+    for b in name.bytes() {
+        match b {
+            b'0'..=b'9' | b'a'..=b'z' | b'-' | b'_' | b'.' | b'~' => encoded.push(b as char),
+            b'@' => encoded.push_str("%40"),
+            b'/' => encoded.push_str("%2F"),
+            other => encoded.push_str(&format!("%{:02X}", other)),
+        }
+    }
+    encoded
+}
+
+fn detect_package_manager(dir: &Path, info: &NpmManifestInfo) -> PackageManager {
+    if let Some(field) = info.package_manager.as_deref()
+        && let Some(manager) = parse_package_manager_field(field)
+    {
+        return manager;
+    }
+
+    for ancestor in dir.ancestors() {
+        if ancestor.join("pnpm-lock.yaml").exists() {
+            return PackageManager::Pnpm;
+        }
+        if ancestor.join("bun.lockb").exists() {
+            return PackageManager::Bun;
+        }
+        if ancestor.join("yarn.lock").exists() {
+            return PackageManager::Yarn;
+        }
+        if ancestor.join("package-lock.json").exists()
+            || ancestor.join("npm-shrinkwrap.json").exists()
+        {
+            return PackageManager::Npm;
+        }
+    }
+
+    PackageManager::Npm
+}
+
+fn parse_package_manager_field(field: &str) -> Option<PackageManager> {
+    let trimmed = field.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (tool, _) = trimmed.split_once('@').unwrap_or((trimmed, ""));
+    match tool {
+        "pnpm" => Some(PackageManager::Pnpm),
+        "npm" => Some(PackageManager::Npm),
+        "yarn" => Some(PackageManager::Yarn),
+        "bun" => Some(PackageManager::Bun),
+        _ => None,
+    }
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    let prefix = format!("{flag}=");
+    for arg in args {
+        if arg == flag || arg.starts_with(&prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn format_command_display(cmd: &Command) -> String {
+    let mut text = cmd.get_program().to_string_lossy().into_owned();
+    for arg in cmd.get_args() {
+        text.push(' ');
+        text.push_str(&arg.to_string_lossy());
+    }
+    text
 }
 
 /// Update an npm manifest (`package.json`) by bumping the package version (if provided) and

@@ -4,6 +4,6 @@ cargo/sampo-core: minor
 cargo/sampo-github-action: minor
 ---
 
-**npm packages are now supported!** Sampo can now manage versioning and changelogs for JavaScript/TypeScript projects, even in mixed Rust+JS workspaces. 
+**npm packages are now supported!** Sampo now automatically detects npm packages, and handles versioning, changelogs, and publishing—even in mixed Rust/JS workspaces.
 
-⚠️ Publishing is not yet implemented.
+⚠️ Lockfile generation is not yet implemented.
