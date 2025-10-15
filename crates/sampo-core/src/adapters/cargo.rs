@@ -38,6 +38,15 @@ impl CargoAdapter {
         version_exists_on_crates_io(package_name, version)
     }
 
+    pub(super) fn version_exists_with_manifest(
+        &self,
+        _manifest_path: &Path,
+        package_name: &str,
+        version: &str,
+    ) -> Result<bool> {
+        self.version_exists(package_name, version)
+    }
+
     pub(super) fn publish(
         &self,
         manifest_path: &Path,

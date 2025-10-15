@@ -152,3 +152,73 @@ fn updates_package_json_versions_preserving_formatting() {
     assert!(!applied.iter().any(|(name, _)| name == "pkg-b"));
     assert!(!applied.iter().any(|(name, _)| name == "pkg-c"));
 }
+
+#[test]
+fn validate_package_name_accepts_scoped_packages() {
+    super::validate_package_name("@scope/pkg-name").unwrap();
+}
+
+#[test]
+fn validate_package_name_rejects_uppercase() {
+    assert!(super::validate_package_name("BadName").is_err());
+}
+
+#[test]
+fn parse_manifest_reads_publish_config() {
+    let manifest: serde_json::Value = serde_json::json!({
+        "name": "pkg",
+        "version": "1.2.3",
+        "publishConfig": {
+            "registry": "https://registry.example.com/",
+            "access": "restricted",
+            "tag": "beta"
+        }
+    });
+    let info = super::parse_manifest_info(Path::new("/repo/package.json"), &manifest).unwrap();
+    assert_eq!(info.name, "pkg");
+    assert_eq!(info.version, "1.2.3");
+    assert_eq!(
+        info.publish_config.registry.as_deref(),
+        Some("https://registry.example.com/")
+    );
+    assert_eq!(info.publish_config.access.as_deref(), Some("restricted"));
+    assert_eq!(info.publish_config.tag.as_deref(), Some("beta"));
+}
+
+#[test]
+fn detect_package_manager_prefers_manifest_field() {
+    let temp = tempdir().unwrap();
+    let dir = temp.path();
+    let manifest_path = dir.join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{"name":"app","version":"0.1.0","packageManager":"pnpm@8.0.0"}"#,
+    )
+    .unwrap();
+
+    let manifest = super::load_package_json(&manifest_path).unwrap();
+    let info = super::parse_manifest_info(&manifest_path, &manifest).unwrap();
+    assert_eq!(
+        super::detect_package_manager(dir, &info),
+        super::PackageManager::Pnpm
+    );
+}
+
+#[test]
+fn detect_package_manager_from_lockfiles() {
+    let temp = tempdir().unwrap();
+    let dir = temp.path();
+    fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("yarn.lock"), "").unwrap();
+
+    let manifest = super::load_package_json(&dir.join("package.json")).unwrap();
+    let info = super::parse_manifest_info(&dir.join("package.json"), &manifest).unwrap();
+    assert_eq!(
+        super::detect_package_manager(dir, &info),
+        super::PackageManager::Yarn
+    );
+}

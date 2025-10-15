@@ -9,16 +9,16 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 
-/// Publishes all publishable crates in a workspace to crates.io in dependency order.
+/// Publishes all publishable packages in a workspace to their registries in dependency order.
 ///
-/// This function discovers all crates in the workspace, determines which ones are
-/// publishable to crates.io, validates their dependencies, and publishes them in
-/// topological order (dependencies first).
+/// This function discovers all packages in the workspace, determines which ones are
+/// publishable for their respective ecosystems, validates their dependencies, and publishes
+/// them in topological order (dependencies first).
 ///
 /// # Arguments
 /// * `root` - Path to the workspace root directory
 /// * `dry_run` - If true, performs validation and shows what would be published without actually publishing
-/// * `cargo_args` - Additional arguments to pass to `cargo publish`
+/// * `publish_args` - Additional arguments forwarded to the underlying publish command
 ///
 /// # Examples
 /// ```no_run
@@ -31,7 +31,7 @@ use std::process::Command;
 /// // Actual publish with custom cargo args
 /// run_publish(Path::new("."), false, &["--allow-dirty".to_string()]).unwrap();
 /// ```
-pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String]) -> Result<()> {
+pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String]) -> Result<()> {
     let ws = discover_workspace(root)?;
     let config = Config::load(&ws.root)?;
 
@@ -44,47 +44,48 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
         )));
     }
 
-    // Determine which packages are publishable to crates.io and not ignored
+    // Determine which packages are publishable and not ignored
     let mut id_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     for c in &ws.members {
-        // Skip non-Cargo packages (only Cargo publishing is currently supported)
-        if c.kind != crate::types::PackageKind::Cargo {
-            continue;
-        }
-
         // Skip ignored packages
         if should_ignore_package(&config, &ws, c)? {
             continue;
         }
 
-        let adapter = PackageAdapter::Cargo;
+        let adapter = match c.kind {
+            crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
+            crate::types::PackageKind::Npm => PackageAdapter::Npm,
+        };
+
         let manifest = adapter.manifest_path(&c.path);
-        if adapter.is_publishable(&manifest)? {
-            let identifier = c.canonical_identifier().to_string();
-            publishable.insert(identifier.clone());
-            id_to_package.insert(identifier, c);
+        if !adapter.is_publishable(&manifest)? {
+            continue;
         }
+
+        let identifier = c.canonical_identifier().to_string();
+        publishable.insert(identifier.clone());
+        id_to_package.insert(identifier, c);
     }
 
     if publishable.is_empty() {
-        println!("No publishable crates for crates.io were found in the workspace.");
+        println!("No publishable packages were found in the workspace.");
         return Ok(());
     }
 
-    // Validate internal deps do not include non-publishable crates
+    // Validate internal deps do not include non-publishable packages
     let mut errors: Vec<String> = Vec::new();
     for identifier in &publishable {
         let c = id_to_package.get(identifier).ok_or_else(|| {
             SampoError::Publish(format!(
-                "internal error: crate '{}' not found in workspace",
+                "internal error: package '{}' not found in workspace",
                 identifier
             ))
         })?;
         for dep in &c.internal_deps {
             if !publishable.contains(dep) {
                 errors.push(format!(
-                    "crate '{}' depends on internal crate '{}' which is not publishable",
+                    "package '{}' depends on internal package '{}' which is not publishable",
                     c.name, dep
                 ));
             }
@@ -102,17 +103,16 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
     // Compute publish order (topological: deps first) for all publishable crates.
     let order = topo_order(&id_to_package, &publishable)?;
 
-    println!("Publish plan (crates.io):");
+    println!("Publish plan:");
     for identifier in &order {
         if let Some(info) = id_to_package.get(identifier) {
-            println!("  - {}", info.name);
+            println!("  - {}", info.display_name(true));
         } else {
             println!("  - {identifier}");
         }
     }
 
-    // Execute cargo publish in order using the adapter
-    let adapter = PackageAdapter::Cargo;
+    // Execute publish in order using the appropriate adapter for each package
     for identifier in &order {
         let c = id_to_package.get(identifier).ok_or_else(|| {
             SampoError::Publish(format!(
@@ -120,28 +120,37 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, cargo_args: &[String])
                 identifier
             ))
         })?;
+        let adapter = match c.kind {
+            crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
+            crate::types::PackageKind::Npm => PackageAdapter::Npm,
+        };
         let manifest = adapter.manifest_path(&c.path);
 
-        // Skip if the exact version already exists on crates.io
-        match adapter.version_exists(&c.name, &c.version) {
+        // Skip if the exact version already exists on the registry
+        match adapter.version_exists_with_manifest(&manifest, &c.name, &c.version) {
             Ok(true) => {
                 println!(
-                    "Skipping {}@{} (already exists on crates.io)",
-                    c.name, c.version
+                    "Skipping {}@{} (already exists on {})",
+                    c.display_name(true),
+                    c.version,
+                    c.kind.display_name()
                 );
                 continue;
             }
             Ok(false) => {}
             Err(e) => {
                 eprintln!(
-                    "Warning: could not check crates.io for {}@{}: {}. Attempting publish…",
-                    c.name, c.version, e
+                    "Warning: could not check {} registry for {}@{}: {}. Attempting publish…",
+                    c.kind.display_name(),
+                    c.name,
+                    c.version,
+                    e
                 );
             }
         }
 
         // Publish using the adapter
-        adapter.publish(&manifest, dry_run, cargo_args)?;
+        adapter.publish(&manifest, dry_run, publish_args)?;
 
         // Create an annotated git tag after successful publish (not in dry-run)
         if !dry_run && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version) {

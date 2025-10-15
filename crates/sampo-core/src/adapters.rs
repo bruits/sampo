@@ -63,6 +63,25 @@ impl PackageAdapter {
         }
     }
 
+    /// Check if a specific version already exists on the registry, with manifest context.
+    pub fn version_exists_with_manifest(
+        &self,
+        manifest_path: &Path,
+        package_name: &str,
+        version: &str,
+    ) -> Result<bool> {
+        match self {
+            Self::Cargo => cargo::CargoAdapter.version_exists_with_manifest(
+                manifest_path,
+                package_name,
+                version,
+            ),
+            Self::Npm => {
+                npm::NpmAdapter.version_exists_with_manifest(manifest_path, package_name, version)
+            }
+        }
+    }
+
     /// Execute the publish command for a package.
     pub fn publish(
         &self,
