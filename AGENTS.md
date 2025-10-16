@@ -26,6 +26,7 @@ Principles for how automated agents and contributors generate code and docs here
 - Self-documenting code first: expressive names and straightforward logic.
 - Comments explain why (intent, invariants, trade‑offs), not how.
 - All code, comments, documentation, commit messages, and user-facing output (CLI prompts, logs, errors) must be in English.
+- Do NOT create a documentation file to explain the implementation.
 
 ## Repository Conventions
 

@@ -271,12 +271,10 @@ fn apply_version_updates(
         }
     }
 
-    if has_cargo && workspace.root.join("Cargo.lock").exists() {
-        regenerate_lockfile(&workspace.root).map_err(|err| match err {
-            SampoError::Release(msg) => SampoError::Prerelease(msg),
-            other => other,
-        })?;
-    }
+    regenerate_lockfile(workspace).map_err(|err| match err {
+        SampoError::Release(msg) => SampoError::Prerelease(msg),
+        other => other,
+    })?;
 
     Ok(())
 }
