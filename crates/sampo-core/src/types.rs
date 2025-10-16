@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 /// Identifies the ecosystem a package belongs to
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PackageKind {
     Cargo,
     Npm,

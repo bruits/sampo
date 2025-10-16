@@ -222,3 +222,125 @@ fn detect_package_manager_from_lockfiles() {
         super::PackageManager::Yarn
     );
 }
+
+#[test]
+fn detect_workspace_package_manager_pnpm() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Pnpm);
+}
+
+#[test]
+fn detect_workspace_package_manager_bun() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("bun.lockb"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Bun);
+}
+
+#[test]
+fn detect_workspace_package_manager_yarn() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("yarn.lock"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Yarn);
+}
+
+#[test]
+fn detect_workspace_package_manager_npm() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("package-lock.json"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Npm);
+}
+
+#[test]
+fn detect_workspace_package_manager_npm_shrinkwrap() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("npm-shrinkwrap.json"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Npm);
+}
+
+#[test]
+fn detect_workspace_package_manager_from_package_json_field() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0","packageManager":"pnpm@8.0.0"}"#,
+    )
+    .unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Pnpm);
+}
+
+#[test]
+fn detect_workspace_package_manager_prioritizes_lockfile_over_field() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    // packageManager field says pnpm, but yarn.lock exists
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0","packageManager":"pnpm@8.0.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("yarn.lock"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    // Lockfile takes precedence
+    assert_eq!(result, super::PackageManager::Yarn);
+}
+
+#[test]
+fn detect_workspace_package_manager_fails_when_no_indicators() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+
+    let result = super::detect_workspace_package_manager(root);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("cannot detect package manager"));
+}

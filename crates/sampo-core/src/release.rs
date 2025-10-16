@@ -620,17 +620,12 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
     finalize_consumed_changesets(used_paths, &workspace.root, is_prerelease_release)?;
 
-    // If the workspace has a lockfile, regenerate it so the release branch includes
-    // a consistent, up-to-date Cargo.lock and avoids a dirty working tree later.
-    // This runs only when a lockfile already exists, to keep tests (which create
-    // ephemeral workspaces without lockfiles) fast and deterministic.
-    if workspace.root.join("Cargo.lock").exists()
-        && let Err(e) = regenerate_lockfile(&workspace.root)
-    {
-        // Do not fail the release if regenerating the lockfile fails.
-        // Emit a concise warning and continue to keep behavior resilient.
-        eprintln!("Warning: failed to regenerate Cargo.lock, {}", e);
-    }
+    // Regenerate lockfiles for all ecosystems present in the workspace.
+    // This ensures the release branch includes consistent, up-to-date lockfiles
+    // and avoids a dirty working tree later. Only runs when lockfiles already exist,
+    // to keep tests (which create ephemeral workspaces without lockfiles) fast.
+    // Errors are logged but do not fail the release to keep behavior resilient.
+    let _ = regenerate_lockfile(&workspace);
 
     Ok(ReleaseOutput {
         released_packages,
@@ -801,8 +796,54 @@ fn unique_destination_path(dir: &Path, file_name: &OsStr) -> PathBuf {
 ///
 /// Uses `cargo generate-lockfile`, which will rebuild the lockfile with the latest
 /// compatible versions, ensuring the lockfile reflects the new workspace versions.
-pub(crate) fn regenerate_lockfile(root: &Path) -> Result<()> {
-    PackageAdapter::Cargo.regenerate_lockfile(root)
+/// Regenerate lockfiles for all ecosystems present in a workspace.
+pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
+    use crate::types::PackageKind;
+    use rustc_hash::FxHashSet;
+
+    // Determine which ecosystems are present in the workspace
+    let mut ecosystems: FxHashSet<PackageKind> = FxHashSet::default();
+    for pkg in &workspace.members {
+        ecosystems.insert(pkg.kind);
+    }
+
+    // Regenerate lockfiles for each ecosystem present
+    let mut errors: Vec<(PackageKind, String)> = Vec::new();
+
+    for kind in ecosystems {
+        let adapter = match kind {
+            PackageKind::Cargo => PackageAdapter::Cargo,
+            PackageKind::Npm => PackageAdapter::Npm,
+        };
+
+        let lockfile_exists = match kind {
+            PackageKind::Cargo => workspace.root.join("Cargo.lock").exists(),
+            PackageKind::Npm => {
+                workspace.root.join("package-lock.json").exists()
+                    || workspace.root.join("pnpm-lock.yaml").exists()
+                    || workspace.root.join("yarn.lock").exists()
+                    || workspace.root.join("bun.lockb").exists()
+                    || workspace.root.join("npm-shrinkwrap.json").exists()
+            }
+        };
+
+        if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
+            errors.push((kind, e.to_string()));
+        }
+    }
+
+    // If there were errors, report them but don't fail the release
+    if !errors.is_empty() {
+        for (kind, err) in errors {
+            eprintln!(
+                "Warning: failed to regenerate {} lockfile: {}",
+                kind.display_name(),
+                err
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Compute initial bumps from changesets and collect messages

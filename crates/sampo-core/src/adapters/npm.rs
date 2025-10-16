@@ -184,8 +184,8 @@ impl NpmAdapter {
         Ok(())
     }
 
-    pub(super) fn regenerate_lockfile(&self, _workspace_root: &Path) -> Result<()> {
-        Ok(())
+    pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
+        regenerate_npm_lockfile(workspace_root)
     }
 }
 
@@ -490,6 +490,100 @@ fn format_command_display(cmd: &Command) -> String {
         text.push_str(&arg.to_string_lossy());
     }
     text
+}
+
+/// Regenerate the lockfile for npm-ecosystem packages.
+///
+/// Detects which package manager is in use (npm, pnpm, yarn, or bun) by examining
+/// lockfiles and package.json packageManager field, then runs the appropriate install
+/// command to regenerate the lockfile after version updates.
+fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
+    let package_manager = detect_workspace_package_manager(workspace_root)?;
+
+    let (program, args, lockfile_name) = match package_manager {
+        PackageManager::Npm => (
+            "npm",
+            vec!["install", "--package-lock-only"],
+            "package-lock.json",
+        ),
+        PackageManager::Pnpm => ("pnpm", vec!["install", "--lockfile-only"], "pnpm-lock.yaml"),
+        PackageManager::Yarn => (
+            "yarn",
+            vec!["install", "--mode", "update-lockfile"],
+            "yarn.lock",
+        ),
+        PackageManager::Bun => (
+            "bun",
+            vec!["install", "--frozen-lockfile=false"],
+            "bun.lockb",
+        ),
+    };
+
+    println!("Regenerating {} using {}…", lockfile_name, program);
+
+    let mut cmd = Command::new(program);
+    cmd.args(&args).current_dir(workspace_root);
+
+    let status = cmd.status().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            SampoError::Release(format!(
+                "{} not found in PATH; ensure {} is installed to regenerate {}",
+                program, program, lockfile_name
+            ))
+        } else {
+            SampoError::Io(err)
+        }
+    })?;
+
+    if !status.success() {
+        return Err(SampoError::Release(format!(
+            "{} failed with status {}",
+            program, status
+        )));
+    }
+
+    println!("{} updated.", lockfile_name);
+    Ok(())
+}
+
+/// Detect which package manager is in use for the workspace.
+///
+/// Checks for lockfiles and the packageManager field in the root package.json.
+/// Returns an error if no package manager can be detected (no lockfile or package.json).
+fn detect_workspace_package_manager(workspace_root: &Path) -> Result<PackageManager> {
+    // First, check for lockfiles (most reliable indicator)
+    if workspace_root.join("pnpm-lock.yaml").exists() {
+        return Ok(PackageManager::Pnpm);
+    }
+    if workspace_root.join("bun.lockb").exists() {
+        return Ok(PackageManager::Bun);
+    }
+    if workspace_root.join("yarn.lock").exists() {
+        return Ok(PackageManager::Yarn);
+    }
+    if workspace_root.join("package-lock.json").exists()
+        || workspace_root.join("npm-shrinkwrap.json").exists()
+    {
+        return Ok(PackageManager::Npm);
+    }
+
+    // No lockfile found, try reading packageManager field from root package.json
+    let package_json_path = workspace_root.join("package.json");
+    if package_json_path.exists() {
+        let manifest = load_package_json(&package_json_path)?;
+        if let Some(package_manager_field) = manifest
+            .get("packageManager")
+            .and_then(|v| v.as_str())
+            .and_then(parse_package_manager_field)
+        {
+            return Ok(package_manager_field);
+        }
+    }
+
+    // If we can't detect a package manager, it's an error since we're in an npm workspace
+    Err(SampoError::Release(
+        "cannot detect package manager for npm workspace; no lockfile found and no packageManager field in package.json".to_string()
+    ))
 }
 
 /// Update an npm manifest (`package.json`) by bumping the package version (if provided) and
