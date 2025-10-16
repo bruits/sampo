@@ -1,5 +1,15 @@
 # sampo
 
+## 0.11.0 — 2025-10-16
+
+### Minor changes
+
+- [8d4e0e0](https://github.com/bruits/sampo/commit/8d4e0e0b4f076d0679525480539f3cfc170f0ede) **npm packages are now supported!** Sampo now automatically detects npm packages, and handles versioning, changelogs, and publishing—even in mixed Rust/JS workspaces. — Thanks @goulvenclech!
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.8.0
+
 ## 0.10.0 — 2025-10-12
 
 ### Minor changes
