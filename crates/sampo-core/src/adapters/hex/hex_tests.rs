@@ -156,6 +156,38 @@ end
 }
 
 #[test]
+fn update_manifest_versions_skips_complex_requirement() {
+    let manifest = r#"
+defmodule Foo.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :foo,
+      version: "0.1.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    [
+      {:bar, ">= 0.2.0 and < 0.3.0"}
+    ]
+  end
+end
+"#;
+
+    let mut versions = BTreeMap::new();
+    versions.insert("bar".to_string(), "0.4.0".to_string());
+
+    let (updated, applied) =
+        update_manifest_versions(Path::new("mix.exs"), manifest, None, &versions).unwrap();
+
+    assert_eq!(updated, manifest);
+    assert!(applied.is_empty());
+}
+
+#[test]
 fn is_publishable_requires_app_and_version() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = temp.path().join("mix.exs");

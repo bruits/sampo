@@ -586,9 +586,20 @@ fn compute_requirement(old: &str, new_version: &str) -> Option<String> {
         return None;
     }
 
-    for op in ["~>", "==", ">=", "<=", "="] {
+    if contains_requirement_conjunction(trimmed) {
+        return None;
+    }
+
+    const OPERATORS: [&str; 7] = ["~>", "==", ">=", "<=", ">", "<", "="];
+    for op in OPERATORS {
         if let Some(rest) = trimmed.strip_prefix(op) {
-            let current = rest.trim();
+            let current = rest.trim_start();
+            if current.is_empty() {
+                return None;
+            }
+            if !is_single_version_token(current) {
+                return None;
+            }
             if current == new_version {
                 return None;
             }
@@ -596,11 +607,24 @@ fn compute_requirement(old: &str, new_version: &str) -> Option<String> {
         }
     }
 
-    if trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') {
+    if is_single_version_token(trimmed) {
         return Some(new_version.to_string());
     }
 
     None
+}
+
+fn contains_requirement_conjunction(input: &str) -> bool {
+    let lowered = input.to_ascii_lowercase();
+    lowered.contains(" and ") || lowered.contains(" or ")
+}
+
+fn is_single_version_token(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && !candidate.contains(char::is_whitespace)
+        && candidate
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
