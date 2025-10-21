@@ -212,3 +212,12 @@ fn version_exists_rejects_empty_name() {
         .expect_err("expected empty package name to fail");
     assert!(format!("{}", err).contains("Package name cannot be empty"));
 }
+
+#[test]
+fn regenerate_lockfile_requires_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let err = HexAdapter
+        .regenerate_lockfile(temp.path())
+        .expect_err("expected missing manifest to fail");
+    assert!(format!("{}", err).contains("mix.exs"));
+}

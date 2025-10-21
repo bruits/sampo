@@ -187,11 +187,48 @@ impl HexAdapter {
         Ok(())
     }
 
-    pub(super) fn regenerate_lockfile(&self, _workspace_root: &Path) -> Result<()> {
-        // Mix lockfile regeneration requires invoking `mix deps.get`, which we will add once
-        // publishing support lands. Returning Ok keeps release flows working for now.
-        Ok(())
+    pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
+        regenerate_mix_lockfile(workspace_root)
     }
+}
+
+fn regenerate_mix_lockfile(workspace_root: &Path) -> Result<()> {
+    let manifest_path = workspace_root.join(MIX_MANIFEST);
+    if !manifest_path.exists() {
+        return Err(SampoError::Release(format!(
+            "cannot regenerate mix.lock; {} not found in {}",
+            MIX_MANIFEST,
+            workspace_root.display()
+        )));
+    }
+
+    println!("Regenerating mix.lock using mix…");
+
+    let mut cmd = Command::new("mix");
+    cmd.arg("deps.get");
+    cmd.current_dir(workspace_root);
+
+    println!("Running: {}", format_command_display(&cmd));
+
+    let status = cmd.status().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            SampoError::Release(
+                "mix command not found; install Elixir to regenerate mix.lock".to_string(),
+            )
+        } else {
+            SampoError::Io(err)
+        }
+    })?;
+
+    if !status.success() {
+        return Err(SampoError::Release(format!(
+            "mix deps.get failed with status {}",
+            status
+        )));
+    }
+
+    println!("mix.lock updated.");
+    Ok(())
 }
 
 /// Update a Mix manifest with a new package version and refreshed dependency requirements.
