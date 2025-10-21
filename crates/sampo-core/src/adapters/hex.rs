@@ -1,10 +1,16 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
+use reqwest::StatusCode;
+use reqwest::blocking::Client;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
 
 const MIX_MANIFEST: &str = "mix.exs";
+const HEX_API_BASE: &str = "https://hex.pm/api";
+const HEX_USER_AGENT: &str = concat!("sampo-core/", env!("CARGO_PKG_VERSION"));
 
 /// Stateless adapter for Hex/Mix workspaces.
 pub(super) struct HexAdapter;
@@ -25,31 +31,160 @@ impl HexAdapter {
         package_dir.join(MIX_MANIFEST)
     }
 
-    pub(super) fn is_publishable(&self, _manifest_path: &Path) -> Result<bool> {
-        // TODO: tighten once Hex publishing support is implemented.
+    pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
+        let text = fs::read_to_string(manifest_path)
+            .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+        let ProjectMetadata { app, version, .. } = parse_project_metadata(&text);
+
+        let Some(app) = app else {
+            return Err(SampoError::Publish(format!(
+                "Manifest {} is missing an :app declaration",
+                manifest_path.display()
+            )));
+        };
+        if app.trim().is_empty() {
+            return Err(SampoError::Publish(format!(
+                "Manifest {} declares an empty app name",
+                manifest_path.display()
+            )));
+        }
+
+        let Some(version) = version else {
+            return Err(SampoError::Publish(format!(
+                "Manifest {} is missing a version field",
+                manifest_path.display()
+            )));
+        };
+        if version.trim().is_empty() {
+            return Err(SampoError::Publish(format!(
+                "Manifest {} declares an empty version",
+                manifest_path.display()
+            )));
+        }
+
         Ok(true)
     }
 
     pub(super) fn version_exists(
         &self,
-        _package_name: &str,
-        _version: &str,
+        package_name: &str,
+        version: &str,
         _manifest_path: Option<&Path>,
     ) -> Result<bool> {
-        Err(SampoError::Publish(
-            "Hex registry version checks are not implemented yet".into(),
-        ))
+        let name = package_name.trim();
+        if name.is_empty() {
+            return Err(SampoError::Publish(
+                "Package name cannot be empty when checking Hex registry".into(),
+            ));
+        }
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .user_agent(HEX_USER_AGENT)
+            .build()
+            .map_err(|e| {
+                SampoError::Publish(format!("failed to build HTTP client for Hex: {}", e))
+            })?;
+
+        let url = format!("{HEX_API_BASE}/packages/{}/releases/{}", name, version);
+        let response = client.get(&url).send().map_err(|e| {
+            SampoError::Publish(format!(
+                "failed to query Hex registry for '{}': {}",
+                name, e
+            ))
+        })?;
+
+        match response.status() {
+            StatusCode::OK => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(SampoError::Publish(format!(
+                "Hex registry returned {} for '{}@{}'; authentication may be required",
+                response.status(),
+                name,
+                version
+            ))),
+            status => {
+                let body = response.text().unwrap_or_default();
+                let snippet: String = body.trim().chars().take(300).collect();
+                let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
+                let body_part = if snippet.is_empty() {
+                    String::new()
+                } else {
+                    format!(" body=\"{}\"", snippet)
+                };
+                Err(SampoError::Publish(format!(
+                    "Hex registry returned {} for '{}@{}'{}",
+                    status, name, version, body_part
+                )))
+            }
+        }
     }
 
     pub(super) fn publish(
         &self,
-        _manifest_path: &Path,
-        _dry_run: bool,
-        _extra_args: &[String],
+        manifest_path: &Path,
+        dry_run: bool,
+        extra_args: &[String],
     ) -> Result<()> {
-        Err(SampoError::Publish(
-            "Publishing to Hex is not implemented yet".into(),
-        ))
+        let manifest_dir = manifest_path.parent().ok_or_else(|| {
+            SampoError::Publish(format!(
+                "Manifest {} does not have a parent directory",
+                manifest_path.display()
+            ))
+        })?;
+
+        let text = fs::read_to_string(manifest_path)
+            .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+        let ProjectMetadata { app, version, .. } = parse_project_metadata(&text);
+        let package = app.ok_or_else(|| {
+            SampoError::Publish(format!(
+                "Manifest {} is missing an :app declaration",
+                manifest_path.display()
+            ))
+        })?;
+
+        let version = version.ok_or_else(|| {
+            SampoError::Publish(format!(
+                "Manifest {} is missing a version field",
+                manifest_path.display()
+            ))
+        })?;
+        if version.trim().is_empty() {
+            return Err(SampoError::Publish(format!(
+                "Manifest {} declares an empty version",
+                manifest_path.display()
+            )));
+        }
+
+        let mut cmd = Command::new("mix");
+        cmd.current_dir(manifest_dir);
+        cmd.arg("hex.publish");
+
+        if dry_run && !has_flag(extra_args, "--dry-run") {
+            cmd.arg("--dry-run");
+        }
+
+        if !has_flag(extra_args, "--yes") {
+            cmd.arg("--yes");
+        }
+
+        if !extra_args.is_empty() {
+            cmd.args(extra_args);
+        }
+
+        println!("Running: {}", format_command_display(&cmd));
+
+        let status = cmd.status()?;
+        if !status.success() {
+            return Err(SampoError::Publish(format!(
+                "mix hex.publish failed for {} (package '{}') with status {}",
+                manifest_path.display(),
+                package,
+                status
+            )));
+        }
+
+        Ok(())
     }
 
     pub(super) fn regenerate_lockfile(&self, _workspace_root: &Path) -> Result<()> {
@@ -722,6 +857,25 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    let prefix = format!("{flag}=");
+    for arg in args {
+        if arg == flag || arg.starts_with(&prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn format_command_display(cmd: &Command) -> String {
+    let mut text = cmd.get_program().to_string_lossy().into_owned();
+    for arg in cmd.get_args() {
+        text.push(' ');
+        text.push_str(&arg.to_string_lossy());
+    }
+    text
 }
 
 #[cfg(test)]

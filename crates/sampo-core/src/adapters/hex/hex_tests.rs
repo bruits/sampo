@@ -154,3 +154,61 @@ end
     assert!(updated.contains(r#"{:bar, "~> 0.3.0"}"#));
     assert_eq!(applied, vec![("bar".to_string(), "0.3.0".to_string())]);
 }
+
+#[test]
+fn is_publishable_requires_app_and_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("mix.exs");
+
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      version: "0.1.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+    let err = HexAdapter.is_publishable(&manifest).unwrap_err();
+    assert!(format!("{}", err).contains("missing an :app declaration"));
+
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+    let err = HexAdapter.is_publishable(&manifest).unwrap_err();
+    assert!(format!("{}", err).contains("missing a version field"));
+}
+
+#[test]
+fn version_exists_rejects_empty_name() {
+    let err = HexAdapter
+        .version_exists("", "1.0.0", None)
+        .expect_err("expected empty package name to fail");
+    assert!(format!("{}", err).contains("Package name cannot be empty"));
+}

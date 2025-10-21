@@ -41,6 +41,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }} # For Cargo packages (optional)
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}     # For npm packages (optional, uses .npmrc if not set)
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }} # For Hex packages (optional)
 ```
 
 ### Creating GitHub Releases and Discussions
