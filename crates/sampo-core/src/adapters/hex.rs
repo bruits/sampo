@@ -6,11 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const MIX_MANIFEST: &str = "mix.exs";
 const HEX_API_BASE: &str = "https://hex.pm/api";
 const HEX_USER_AGENT: &str = concat!("sampo-core/", env!("CARGO_PKG_VERSION"));
+// Hex public docs specify 100 anonymous requests per minute -> https://hexpm.docs.apiary.io/#introduction/rate-limiting
+const HEX_RATE_LIMIT: Duration = Duration::from_millis(600);
+
+static HEX_LAST_CALL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 /// Stateless adapter for Hex/Mix workspaces.
 pub(super) struct HexAdapter;
@@ -87,6 +93,7 @@ impl HexAdapter {
             })?;
 
         let url = format!("{HEX_API_BASE}/packages/{}/releases/{}", name, version);
+        enforce_hex_rate_limit();
         let response = client.get(&url).send().map_err(|e| {
             SampoError::Publish(format!(
                 "failed to query Hex registry for '{}': {}",
@@ -94,16 +101,27 @@ impl HexAdapter {
             ))
         })?;
 
-        match response.status() {
+        let status_code = response.status();
+        match status_code {
             StatusCode::OK => Ok(true),
             StatusCode::NOT_FOUND => Ok(false),
+            StatusCode::TOO_MANY_REQUESTS => {
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| format!(" Retry-After: {}", value))
+                    .unwrap_or_default();
+                Err(SampoError::Publish(format!(
+                    "Hex registry returned 429 Too Many Requests for '{}@{}'.{}",
+                    name, version, retry_after
+                )))
+            }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(SampoError::Publish(format!(
                 "Hex registry returned {} for '{}@{}'; authentication may be required",
-                response.status(),
-                name,
-                version
+                status_code, name, version
             ))),
-            status => {
+            other => {
                 let body = response.text().unwrap_or_default();
                 let snippet: String = body.trim().chars().take(300).collect();
                 let snippet = snippet.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -114,7 +132,7 @@ impl HexAdapter {
                 };
                 Err(SampoError::Publish(format!(
                     "Hex registry returned {} for '{}@{}'{}",
-                    status, name, version, body_part
+                    other, name, version, body_part
                 )))
             }
         }
@@ -190,6 +208,22 @@ impl HexAdapter {
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         regenerate_mix_lockfile(workspace_root)
     }
+}
+
+fn enforce_hex_rate_limit() {
+    let lock = HEX_LAST_CALL.get_or_init(|| Mutex::new(None));
+    let mut guard = match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let now = Instant::now();
+    if let Some(last_call) = *guard {
+        let elapsed = now.saturating_duration_since(last_call);
+        if elapsed < HEX_RATE_LIMIT {
+            thread::sleep(HEX_RATE_LIMIT - elapsed);
+        }
+    }
+    *guard = Some(now);
 }
 
 fn regenerate_mix_lockfile(workspace_root: &Path) -> Result<()> {
