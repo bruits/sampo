@@ -9,6 +9,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 const MIX_MANIFEST: &str = "mix.exs";
 const HEX_API_BASE: &str = "https://hex.pm/api";
@@ -477,30 +478,47 @@ struct Replacement {
 }
 
 fn parse_project_metadata(source: &str) -> ProjectMetadata {
-    let mut metadata = ProjectMetadata::default();
+    let Some(tree) = parse_mix_tree(source) else {
+        return ProjectMetadata::default();
+    };
 
-    if let Some(project_span) = find_function_keyword_list(source, &["def project do"]) {
-        for entry_span in split_top_level_ranges(source, project_span.clone()) {
-            if let Some((key, value_span)) = parse_keyword_entry(source, entry_span) {
-                match key.as_str() {
-                    "app" => {
-                        if let Some(app) = parse_atom(source, value_span) {
-                            metadata.app = Some(app);
-                        }
-                    }
-                    "version" => {
-                        if let Some(literal) = parse_string_literal(source, value_span) {
-                            metadata.version = Some(literal.value);
-                        }
-                    }
-                    "apps_path" => {
-                        if let Some(literal) = parse_string_literal(source, value_span) {
-                            metadata.apps_path = Some(PathBuf::from(literal.value));
-                        }
-                    }
-                    _ => {}
+    let source_bytes = source.as_bytes();
+    let Some(function) = find_function_call(&tree, source_bytes, "project") else {
+        return ProjectMetadata::default();
+    };
+    let Some(keywords) = function_body_keywords(function) else {
+        return ProjectMetadata::default();
+    };
+
+    let mut metadata = ProjectMetadata::default();
+    let mut cursor = keywords.walk();
+    for pair in keywords.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let Some((key_node, value_node)) = pair_key_value(pair) else {
+            continue;
+        };
+        let Some(key) = keyword_name(source_bytes, key_node) else {
+            continue;
+        };
+        match key.as_str() {
+            "app" => {
+                if let Some(app) = parse_atom_node(source_bytes, value_node) {
+                    metadata.app = Some(app);
                 }
             }
+            "version" => {
+                if let Some(literal) = parse_string_literal_node(source, value_node) {
+                    metadata.version = Some(literal.value);
+                }
+            }
+            "apps_path" => {
+                if let Some(literal) = parse_string_literal_node(source, value_node) {
+                    metadata.apps_path = Some(PathBuf::from(literal.value));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -508,384 +526,58 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
 }
 
 fn locate_project_version_literal(source: &str) -> Option<ValueLiteral> {
-    let project_span = find_function_keyword_list(source, &["def project do"])?;
-    for entry_span in split_top_level_ranges(source, project_span) {
-        if let Some((key, value_span)) = parse_keyword_entry(source, entry_span)
-            && key == "version"
-        {
-            return parse_string_literal(source, value_span);
+    let tree = parse_mix_tree(source)?;
+    let source_bytes = source.as_bytes();
+    let function = find_function_call(&tree, source_bytes, "project")?;
+    let keywords = function_body_keywords(function)?;
+
+    let mut cursor = keywords.walk();
+    for pair in keywords.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let Some((key_node, value_node)) = pair_key_value(pair) else {
+            continue;
+        };
+        let key = keyword_name(source_bytes, key_node)?;
+        if key == "version" {
+            return parse_string_literal_node(source, value_node);
         }
     }
+
     None
 }
 
 fn collect_dependencies(source: &str, manifest_dir: &Path) -> Vec<ParsedDependency> {
-    let mut out = Vec::new();
-    let deps_span = find_function_keyword_list(source, &["defp deps do", "def deps do"]);
-    let Some(span) = deps_span else {
-        return out;
+    let Some(tree) = parse_mix_tree(source) else {
+        return Vec::new();
     };
 
-    for entry_span in split_top_level_ranges(source, span) {
-        if let Some(dep) = parse_dependency_entry(source, entry_span.clone(), manifest_dir) {
-            out.push(dep);
-        }
+    let source_bytes = source.as_bytes();
+    let mut function_calls = find_function_calls(&tree, source_bytes, "deps");
+    if function_calls.is_empty() {
+        return Vec::new();
     }
 
-    out
-}
+    function_calls.sort_by_key(Node::start_byte);
 
-fn parse_dependency_entry(
-    source: &str,
-    span: std::ops::Range<usize>,
-    manifest_dir: &Path,
-) -> Option<ParsedDependency> {
-    let trimmed = trim_range(source, span);
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let inner = strip_enclosing(source, trimmed.clone(), '{', '}')?;
-    let parts = split_top_level_ranges(source, inner);
-    if parts.is_empty() {
-        return None;
-    }
-
-    let name = parse_atom(source, parts[0].clone())?;
-    let mut requirement = None;
-    let mut path = None;
-    let mut option_index = 1;
-
-    if parts.len() >= 2
-        && let Some(literal) = parse_string_literal(source, parts[1].clone())
-    {
-        requirement = Some(literal);
-        option_index = 2;
-    }
-
-    for part in parts.into_iter().skip(option_index) {
-        if let Some((key, value_span)) = parse_keyword_entry(source, part)
-            && key == "path"
-            && let Some(literal) = parse_string_literal(source, value_span)
-        {
-            let joined = manifest_dir.join(&literal.value);
-            path = Some(joined);
-        }
-    }
-
-    Some(ParsedDependency {
-        name,
-        requirement,
-        path,
-    })
-}
-
-fn find_function_keyword_list(source: &str, patterns: &[&str]) -> Option<std::ops::Range<usize>> {
-    for pattern in patterns {
-        if let Some(idx) = source.find(pattern)
-            && let Some(range) = find_bracketed_list(source, idx + pattern.len())
-        {
-            return Some(range);
-        }
-    }
-    None
-}
-
-fn find_bracketed_list(source: &str, start_idx: usize) -> Option<std::ops::Range<usize>> {
-    let mut in_string: Option<char> = None;
-    let mut escape = false;
-    let mut list_start = None;
-    for (offset, ch) in source[start_idx..].char_indices() {
-        let idx = start_idx + offset;
-        if let Some(q) = in_string {
-            if escape {
-                escape = false;
-                continue;
-            }
-            if ch == '\\' {
-                escape = true;
-                continue;
-            }
-            if ch == q {
-                in_string = None;
-            }
+    let mut deps = Vec::new();
+    for function in function_calls {
+        let Some(list) = function_body_list(function) else {
             continue;
-        }
-
-        match ch {
-            '"' | '\'' => in_string = Some(ch),
-            '[' => {
-                list_start = Some(idx);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    let list_start = list_start?;
-    let mut depth = 0usize;
-    escape = false;
-    in_string = None;
-    for (offset, ch) in source[list_start..].char_indices() {
-        let abs = list_start + offset;
-        if let Some(q) = in_string {
-            if escape {
-                escape = false;
+        };
+        let mut cursor = list.walk();
+        for item in list.named_children(&mut cursor) {
+            if item.kind() != "tuple" {
                 continue;
             }
-            if ch == '\\' {
-                escape = true;
-                continue;
+            if let Some(dep) = parse_dependency_tuple(item, source, manifest_dir) {
+                deps.push(dep);
             }
-            if ch == q {
-                in_string = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' | '\'' => in_string = Some(ch),
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((list_start + 1)..abs);
-                }
-            }
-            _ => {}
         }
     }
 
-    None
-}
-
-fn parse_keyword_entry(
-    source: &str,
-    span: std::ops::Range<usize>,
-) -> Option<(String, std::ops::Range<usize>)> {
-    let trimmed = trim_range(source, span);
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let slice = &source[trimmed.clone()];
-    let mut colon_offset = None;
-    for (offset, ch) in slice.char_indices() {
-        if ch == ':' {
-            colon_offset = Some(trimmed.start + offset);
-            break;
-        }
-    }
-    let colon = colon_offset?;
-
-    let key_range = trimmed.start..colon;
-    let key = source[key_range.clone()].trim().to_string();
-    if key.is_empty() {
-        return None;
-    }
-
-    let mut value_start = colon + 1;
-    while value_start < trimmed.end {
-        let ch = source[value_start..].chars().next().unwrap();
-        if ch.is_whitespace() {
-            value_start += ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-
-    let value_range = value_start..trimmed.end;
-    Some((key, value_range))
-}
-
-fn parse_atom(source: &str, span: std::ops::Range<usize>) -> Option<String> {
-    let trimmed = trim_range(source, span);
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut chars = source[trimmed.clone()].chars();
-    if chars.next()? != ':' {
-        return None;
-    }
-
-    let mut atom = String::new();
-    for ch in chars {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            atom.push(ch);
-        } else {
-            break;
-        }
-    }
-
-    if atom.is_empty() { None } else { Some(atom) }
-}
-
-fn parse_string_literal(source: &str, span: std::ops::Range<usize>) -> Option<ValueLiteral> {
-    let trimmed = trim_range(source, span);
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut iter = source[trimmed.clone()].char_indices();
-    let (offset, first) = iter.next()?;
-    if offset != 0 {
-        return None;
-    }
-    if first != '"' && first != '\'' {
-        return None;
-    }
-    let quote = first;
-    let mut escape = false;
-    for (i, ch) in iter {
-        if escape {
-            escape = false;
-            continue;
-        }
-        if ch == '\\' {
-            escape = true;
-            continue;
-        }
-        if ch == quote {
-            let start = trimmed.start;
-            let end = trimmed.start + i + quote.len_utf8();
-            let inner_start = start + quote.len_utf8();
-            let inner_end = trimmed.start + i;
-            let value = source[inner_start..inner_end].to_string();
-            return Some(ValueLiteral {
-                start,
-                end,
-                quote,
-                value,
-            });
-        }
-    }
-    None
-}
-
-fn strip_enclosing(
-    source: &str,
-    span: std::ops::Range<usize>,
-    open: char,
-    close: char,
-) -> Option<std::ops::Range<usize>> {
-    let trimmed = trim_range(source, span);
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut start = trimmed.start;
-    let mut first = None;
-    while start < trimmed.end {
-        let ch = source[start..].chars().next().unwrap();
-        if ch.is_whitespace() {
-            start += ch.len_utf8();
-        } else {
-            first = Some((start, ch));
-            break;
-        }
-    }
-    let (first_idx, first_char) = first?;
-    if first_char != open {
-        return None;
-    }
-    let mut end = trimmed.end;
-    let mut last = None;
-    while end > first_idx {
-        let ch = source[..end].chars().next_back().unwrap();
-        if ch.is_whitespace() {
-            end -= ch.len_utf8();
-        } else {
-            last = Some((end - ch.len_utf8(), ch));
-            break;
-        }
-    }
-    let (last_idx, last_char) = last?;
-    if last_char != close || last_idx < first_idx {
-        return None;
-    }
-
-    Some((first_idx + open.len_utf8())..last_idx)
-}
-
-fn split_top_level_ranges(
-    source: &str,
-    span: std::ops::Range<usize>,
-) -> Vec<std::ops::Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut depth_brace = 0usize;
-    let mut depth_bracket = 0usize;
-    let mut depth_paren = 0usize;
-    let mut in_string: Option<char> = None;
-    let mut escape = false;
-    let mut item_start = span.start;
-
-    for (offset, ch) in source[span.clone()].char_indices() {
-        let idx = span.start + offset;
-        if let Some(q) = in_string {
-            if escape {
-                escape = false;
-                continue;
-            }
-            if ch == '\\' {
-                escape = true;
-                continue;
-            }
-            if ch == q {
-                in_string = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' | '\'' => in_string = Some(ch),
-            '{' => depth_brace += 1,
-            '}' => depth_brace = depth_brace.saturating_sub(1),
-            '[' => depth_bracket += 1,
-            ']' => depth_bracket = depth_bracket.saturating_sub(1),
-            '(' => depth_paren += 1,
-            ')' => depth_paren = depth_paren.saturating_sub(1),
-            ',' if depth_brace == 0 && depth_bracket == 0 && depth_paren == 0 => {
-                let range = item_start..idx;
-                if !range.is_empty() {
-                    ranges.push(range);
-                }
-                item_start = idx + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-
-    if item_start < span.end {
-        ranges.push(item_start..span.end);
-    }
-
-    ranges
-}
-
-fn trim_range(source: &str, span: std::ops::Range<usize>) -> std::ops::Range<usize> {
-    let mut start = span.start;
-    let mut end = span.end;
-
-    while start < end {
-        let ch = source[start..].chars().next().unwrap();
-        if ch.is_whitespace() {
-            start += ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-
-    while end > start {
-        let ch = source[..end].chars().next_back().unwrap();
-        if ch.is_whitespace() {
-            end -= ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-
-    start..end
+    deps
 }
 
 fn compute_requirement(old: &str, new_version: &str) -> Option<String> {
@@ -951,3 +643,240 @@ fn format_command_display(cmd: &Command) -> String {
 
 #[cfg(test)]
 mod hex_tests;
+
+fn parse_mix_tree(source: &str) -> Option<Tree> {
+    let language = elixir_language();
+    let mut parser = Parser::new();
+    parser.set_language(language).ok()?;
+    parser.parse(source, None)
+}
+
+fn elixir_language() -> &'static Language {
+    static LANGUAGE: OnceLock<Language> = OnceLock::new();
+    LANGUAGE.get_or_init(|| tree_sitter_elixir::LANGUAGE.into())
+}
+
+fn find_function_call<'tree>(
+    tree: &'tree Tree,
+    source_bytes: &[u8],
+    function_name: &str,
+) -> Option<Node<'tree>> {
+    let mut calls = find_function_calls(tree, source_bytes, function_name);
+    calls.sort_by_key(Node::start_byte);
+    calls.into_iter().next()
+}
+
+fn find_function_calls<'tree>(
+    tree: &'tree Tree,
+    source_bytes: &[u8],
+    function_name: &str,
+) -> Vec<Node<'tree>> {
+    let mut matches = Vec::new();
+    let mut stack = Vec::new();
+    stack.push(tree.root_node());
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call"
+            && let Some(target) = call_target(node)
+            && let Ok(target_text) = target.utf8_text(source_bytes)
+            && matches!(target_text, "def" | "defp")
+            && is_function_call_named(node, source_bytes, function_name)
+        {
+            matches.push(node);
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    matches
+}
+
+fn is_function_call_named(node: Node<'_>, source_bytes: &[u8], function_name: &str) -> bool {
+    let Some(arguments) = first_named_child(node, "arguments") else {
+        return false;
+    };
+    let mut cursor = arguments.walk();
+    for child in arguments.named_children(&mut cursor) {
+        if child.kind() == "identifier" && child.utf8_text(source_bytes) == Ok(function_name) {
+            return true;
+        }
+    }
+    false
+}
+
+fn function_body_keywords(function: Node<'_>) -> Option<Node<'_>> {
+    let list = function_body_list(function)?;
+    find_named_descendant_by_kind(list, "keywords")
+}
+
+fn function_body_list(function: Node<'_>) -> Option<Node<'_>> {
+    let do_block = first_named_child(function, "do_block")?;
+    find_named_descendant_by_kind(do_block, "list")
+}
+
+fn find_named_descendant_by_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
+    let mut stack = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        stack.push(child);
+    }
+
+    while let Some(candidate) = stack.pop() {
+        if candidate.kind() == kind {
+            return Some(candidate);
+        }
+        let mut child_cursor = candidate.walk();
+        for child in candidate.named_children(&mut child_cursor) {
+            stack.push(child);
+        }
+    }
+
+    None
+}
+
+fn keyword_name(source_bytes: &[u8], keyword: Node<'_>) -> Option<String> {
+    let text = keyword.utf8_text(source_bytes).ok()?;
+    let trimmed = text.trim_end();
+    let without_colon = trimmed.strip_suffix(':')?;
+    Some(without_colon.trim().to_string())
+}
+
+fn call_target<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    first_named_child_any(node)
+}
+
+fn first_named_child<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|child| child.kind() == kind)
+}
+
+fn first_named_child_any<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    let mut cursor = node.walk();
+    let mut iter = node.named_children(&mut cursor);
+    iter.next()
+}
+
+fn pair_key_value<'tree>(pair: Node<'tree>) -> Option<(Node<'tree>, Node<'tree>)> {
+    let mut cursor = pair.walk();
+    let mut key = None;
+    let mut value = None;
+    for child in pair.named_children(&mut cursor) {
+        match child.kind() {
+            "keyword" | "quoted_keyword" => key = Some(child),
+            _ => value = Some(child),
+        }
+    }
+    match (key, value) {
+        (Some(k), Some(v)) => Some((k, v)),
+        _ => None,
+    }
+}
+
+fn parse_string_literal_node(source: &str, node: Node<'_>) -> Option<ValueLiteral> {
+    if node.kind() != "string" {
+        return None;
+    }
+    let start = node.start_byte();
+    let end = node.end_byte();
+    if end <= start || end > source.len() {
+        return None;
+    }
+    let text = &source[start..end];
+    let mut chars = text.chars();
+    let quote = chars.next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let last = text.chars().last()?;
+    if last != quote {
+        return None;
+    }
+    let inner_start = start + quote.len_utf8();
+    let inner_end = end - quote.len_utf8();
+    if inner_end < inner_start || inner_end > source.len() {
+        return None;
+    }
+    let value = source[inner_start..inner_end].to_string();
+    Some(ValueLiteral {
+        start,
+        end,
+        quote,
+        value,
+    })
+}
+
+fn parse_atom_node(source_bytes: &[u8], node: Node<'_>) -> Option<String> {
+    if node.kind() != "atom" {
+        return None;
+    }
+    let text = node.utf8_text(source_bytes).ok()?;
+    let trimmed = text.trim();
+    let value = trimmed.strip_prefix(':')?.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn parse_dependency_tuple(
+    tuple: Node<'_>,
+    source: &str,
+    manifest_dir: &Path,
+) -> Option<ParsedDependency> {
+    let source_bytes = source.as_bytes();
+    let mut cursor = tuple.walk();
+    let children: Vec<Node<'_>> = tuple.named_children(&mut cursor).collect();
+    if children.is_empty() {
+        return None;
+    }
+
+    let name_node = children[0];
+    let name = parse_atom_node(source_bytes, name_node)?;
+
+    let mut requirement = None;
+    let mut path = None;
+    for child in children.into_iter().skip(1) {
+        match child.kind() {
+            "string" if requirement.is_none() => {
+                requirement = parse_string_literal_node(source, child);
+            }
+            "keywords" => {
+                if path.is_none() {
+                    path = path_from_keywords(child, source, manifest_dir);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(ParsedDependency {
+        name,
+        requirement,
+        path,
+    })
+}
+
+fn path_from_keywords(keywords: Node<'_>, source: &str, manifest_dir: &Path) -> Option<PathBuf> {
+    let source_bytes = source.as_bytes();
+    let mut cursor = keywords.walk();
+    for pair in keywords.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let Some((key_node, value_node)) = pair_key_value(pair) else {
+            continue;
+        };
+        if keyword_name(source_bytes, key_node)?.as_str() != "path" {
+            continue;
+        }
+        if let Some(literal) = parse_string_literal_node(source, value_node) {
+            return Some(manifest_dir.join(literal.value));
+        }
+    }
+    None
+}
