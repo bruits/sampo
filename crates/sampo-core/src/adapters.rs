@@ -1,5 +1,6 @@
 /// Ecosystem-specific adapters (Cargo, npm, etc.) for all package operations.
 pub mod cargo;
+pub mod hex;
 pub mod npm;
 
 pub use cargo::ManifestMetadata;
@@ -14,13 +15,18 @@ use std::path::Path;
 pub enum PackageAdapter {
     Cargo,
     Npm,
+    Hex,
 }
 
 impl PackageAdapter {
     /// All registered adapters, checked in order during workspace discovery.
     /// TODO: it's fine for now, but eventually we could using strum or enum-iterators here.
     pub fn all() -> &'static [PackageAdapter] {
-        &[PackageAdapter::Cargo, PackageAdapter::Npm]
+        &[
+            PackageAdapter::Cargo,
+            PackageAdapter::Npm,
+            PackageAdapter::Hex,
+        ]
     }
 
     /// Check if this adapter can handle the given directory.
@@ -28,6 +34,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.can_discover(root),
             Self::Npm => npm::NpmAdapter.can_discover(root),
+            Self::Hex => hex::HexAdapter.can_discover(root),
         }
     }
 
@@ -36,6 +43,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.discover(root),
             Self::Npm => npm::NpmAdapter.discover(root),
+            Self::Hex => hex::HexAdapter.discover(root),
         }
     }
 
@@ -44,6 +52,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.manifest_path(package_dir),
             Self::Npm => npm::NpmAdapter.manifest_path(package_dir),
+            Self::Hex => hex::HexAdapter.manifest_path(package_dir),
         }
     }
 
@@ -52,6 +61,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.is_publishable(manifest_path),
             Self::Npm => npm::NpmAdapter.is_publishable(manifest_path),
+            Self::Hex => hex::HexAdapter.is_publishable(manifest_path),
         }
     }
 
@@ -65,6 +75,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version),
             Self::Npm => npm::NpmAdapter.version_exists(package_name, version, manifest_path),
+            Self::Hex => hex::HexAdapter.version_exists(package_name, version, manifest_path),
         }
     }
 
@@ -78,6 +89,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.publish(manifest_path, dry_run, extra_args),
             Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, extra_args),
+            Self::Hex => hex::HexAdapter.publish(manifest_path, dry_run, extra_args),
         }
     }
 
@@ -86,6 +98,7 @@ impl PackageAdapter {
         match self {
             Self::Cargo => cargo::CargoAdapter.regenerate_lockfile(workspace_root),
             Self::Npm => npm::NpmAdapter.regenerate_lockfile(workspace_root),
+            Self::Hex => hex::HexAdapter.regenerate_lockfile(workspace_root),
         }
     }
 
@@ -112,6 +125,18 @@ impl PackageAdapter {
                     "npm adapter does not use Cargo metadata"
                 );
                 npm::update_manifest_versions(
+                    manifest_path,
+                    input,
+                    new_pkg_version,
+                    new_version_by_name,
+                )
+            }
+            Self::Hex => {
+                debug_assert!(
+                    metadata.is_none(),
+                    "hex adapter does not use Cargo metadata"
+                );
+                hex::update_manifest_versions(
                     manifest_path,
                     input,
                     new_pkg_version,

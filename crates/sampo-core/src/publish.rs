@@ -56,6 +56,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         let adapter = match c.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
             crate::types::PackageKind::Npm => PackageAdapter::Npm,
+            crate::types::PackageKind::Hex => PackageAdapter::Hex,
         };
 
         let manifest = adapter.manifest_path(&c.path);
@@ -123,6 +124,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         let adapter = match c.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
             crate::types::PackageKind::Npm => PackageAdapter::Npm,
+            crate::types::PackageKind::Hex => PackageAdapter::Hex,
         };
         let manifest = adapter.manifest_path(&c.path);
 

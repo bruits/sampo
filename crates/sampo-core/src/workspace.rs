@@ -231,4 +231,37 @@ mod tests {
                 .any(|pkg| pkg.name == "pkg-a" && pkg.kind == PackageKind::Npm)
         );
     }
+
+    #[test]
+    fn discover_workspace_discovers_hex_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("mix.exs"),
+            r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+        )
+        .unwrap();
+
+        let ws = discover_workspace(root).unwrap();
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name, "example");
+        assert_eq!(ws.members[0].kind, PackageKind::Hex);
+    }
 }
