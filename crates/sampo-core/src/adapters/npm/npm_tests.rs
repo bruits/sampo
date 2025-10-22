@@ -176,13 +176,33 @@ fn parse_manifest_reads_publish_config() {
     });
     let info = super::parse_manifest_info(Path::new("/repo/package.json"), &manifest).unwrap();
     assert_eq!(info.name, "pkg");
-    assert_eq!(info.version, "1.2.3");
+    assert_eq!(info.version.as_deref(), Some("1.2.3"));
     assert_eq!(
         info.publish_config.registry.as_deref(),
         Some("https://registry.example.com/")
     );
     assert_eq!(info.publish_config.access.as_deref(), Some("restricted"));
     assert_eq!(info.publish_config.tag.as_deref(), Some("beta"));
+}
+
+#[test]
+fn parse_manifest_allows_private_package_without_version() {
+    let manifest: serde_json::Value =
+        serde_json::json!({"name": "pkg", "private": true, "type": "module"});
+    let info = super::parse_manifest_info(Path::new("/repo/package.json"), &manifest).unwrap();
+    assert!(info.version.is_none());
+    assert!(info.private);
+}
+
+#[test]
+fn parse_manifest_requires_version_for_publishable_package() {
+    let manifest: serde_json::Value = serde_json::json!({"name": "pkg"});
+    let err = super::parse_manifest_info(Path::new("/repo/package.json"), &manifest).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("missing a non-empty 'version' field"),
+        "unexpected error message: {msg}"
+    );
 }
 
 #[test]
