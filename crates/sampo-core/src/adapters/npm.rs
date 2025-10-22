@@ -29,7 +29,7 @@ struct NpmPublishConfig {
 struct NpmManifestInfo {
     name: String,
     #[allow(dead_code)]
-    version: String,
+    version: Option<String>,
     private: bool,
     package_manager: Option<String>,
     publish_config: NpmPublishConfig,
@@ -215,17 +215,19 @@ fn parse_manifest_info(manifest_path: &Path, manifest: &JsonValue) -> Result<Npm
         .and_then(JsonValue::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            SampoError::Publish(format!(
-                "Manifest {} is missing a non-empty 'version' field",
-                manifest_path.display()
-            ))
-        })?;
+        .map(|s| s.to_string());
 
     let private = manifest
         .get("private")
         .and_then(JsonValue::as_bool)
         .unwrap_or(false);
+
+    if !private && version.is_none() {
+        return Err(SampoError::Publish(format!(
+            "Manifest {} is missing a non-empty 'version' field",
+            manifest_path.display()
+        )));
+    }
 
     let package_manager = manifest
         .get("packageManager")
@@ -263,7 +265,7 @@ fn parse_manifest_info(manifest_path: &Path, manifest: &JsonValue) -> Result<Npm
 
     Ok(NpmManifestInfo {
         name: name.to_string(),
-        version: version.to_string(),
+        version,
         private,
         package_manager,
         publish_config,
