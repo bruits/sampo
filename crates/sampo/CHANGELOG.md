@@ -1,5 +1,16 @@
 # sampo
 
+## 0.12.0 — 2025-10-23
+
+### Minor changes
+
+- [3703dfa](https://github.com/bruits/sampo/commit/3703dfa5c93190ca46d60e1a9e4a96e180f0c3d2) **Elixir packages are now supported!** Sampo now automatically detects Hex packages managed by `mix` (Elixir), and handles versioning, changelogs, and publishing—even in mixed workspaces. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [a83904b](https://github.com/bruits/sampo/commit/a83904bf59f25291b78b466335baec28d8044c94) Npm packages marked `private: true` no longer block Sampo publish when their manifest omits `version`. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.9.0
+
 ## 0.11.0 — 2025-10-16
 
 ### Minor changes
