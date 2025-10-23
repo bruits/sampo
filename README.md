@@ -5,7 +5,7 @@
 
 > Steers his mighty boat in safety, Through the perils of the whirlpool, Through the watery deeps and dangers. 
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 Don't know where to start? Check out Sampo's [Getting Started](./crates/sampo/README.md#getting-started) guide.
 
