@@ -99,6 +99,9 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > [!IMPORTANT]
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
+> [!WARNING]
+> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
+
 #### Pre-release versions
 
 Run `sampo pre` to manage pre-release versions for one or more packages.

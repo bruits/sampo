@@ -814,6 +814,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
         let adapter = match kind {
             PackageKind::Cargo => PackageAdapter::Cargo,
             PackageKind::Npm => PackageAdapter::Npm,
+            PackageKind::Hex => PackageAdapter::Hex,
         };
 
         let lockfile_exists = match kind {
@@ -825,6 +826,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
                     || workspace.root.join("bun.lockb").exists()
                     || workspace.root.join("npm-shrinkwrap.json").exists()
             }
+            PackageKind::Hex => workspace.root.join("mix.lock").exists(),
         };
 
         if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
@@ -1325,6 +1327,7 @@ fn apply_releases(
         let adapter = match info.kind {
             PackageKind::Cargo => crate::adapters::PackageAdapter::Cargo,
             PackageKind::Npm => crate::adapters::PackageAdapter::Npm,
+            PackageKind::Hex => crate::adapters::PackageAdapter::Hex,
         };
         let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
@@ -1332,7 +1335,7 @@ fn apply_releases(
         // Update manifest versions
         let cargo_metadata = match adapter {
             PackageAdapter::Cargo => manifest_metadata.as_ref(),
-            PackageAdapter::Npm => None,
+            PackageAdapter::Npm | PackageAdapter::Hex => None,
         };
         let (updated, _dep_updates) = adapter.update_manifest_versions(
             &manifest_path,

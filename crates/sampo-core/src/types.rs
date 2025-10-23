@@ -7,6 +7,7 @@ use std::str::FromStr;
 pub enum PackageKind {
     Cargo,
     Npm,
+    Hex,
 }
 
 impl PackageKind {
@@ -15,6 +16,7 @@ impl PackageKind {
         match self {
             Self::Cargo => "cargo",
             Self::Npm => "npm",
+            Self::Hex => "hex",
         }
     }
 
@@ -23,6 +25,7 @@ impl PackageKind {
         match self {
             Self::Cargo => "Cargo",
             Self::Npm => "npm",
+            Self::Hex => "Hex",
         }
     }
 
@@ -40,6 +43,7 @@ impl PackageKind {
         match value.to_ascii_lowercase().as_str() {
             "cargo" => Some(Self::Cargo),
             "npm" => Some(Self::Npm),
+            "hex" => Some(Self::Hex),
             _ => None,
         }
     }

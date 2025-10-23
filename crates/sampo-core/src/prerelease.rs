@@ -250,13 +250,14 @@ fn apply_version_updates(
         let adapter = match info.kind {
             PackageKind::Cargo => PackageAdapter::Cargo,
             PackageKind::Npm => PackageAdapter::Npm,
+            PackageKind::Hex => PackageAdapter::Hex,
         };
         let manifest_path = adapter.manifest_path(&info.path);
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
         let metadata_ref = match info.kind {
             PackageKind::Cargo => manifest_metadata.as_ref(),
-            PackageKind::Npm => None,
+            PackageKind::Npm | PackageKind::Hex => None,
         };
         let (updated, _deps) = adapter.update_manifest_versions(
             &manifest_path,
