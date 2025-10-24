@@ -1,21 +1,92 @@
-use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
+use dialoguer::{
+    Input, MultiSelect,
+    console::{Style, style},
+    theme::ColorfulTheme,
+};
 use sampo_core::{
     errors::{Result, SampoError},
     types::PackageKind,
 };
 use std::io;
 
-pub fn select_packages(available: &[String], prompt: &str) -> Result<Vec<String>> {
+pub const SUCCESS_PREFIX: &str = "✔";
+pub const WARNING_PREFIX: &str = "⚠️";
+const EMPTY_SELECTION_PLACEHOLDER: &str = "none";
+
+pub fn log_success_value(label: &str, value: &str) {
+    let theme = success_output_theme();
+    let line = format!(
+        "{} {}{} {}",
+        theme.success_prefix.clone(),
+        theme.prompt_style.apply_to(label),
+        theme.success_suffix.clone(),
+        theme.values_style.apply_to(value),
+    );
+    println!("{line}");
+}
+
+pub fn log_success_list(label: &str, items: &[String]) {
+    let theme = success_output_theme();
+    let display = if items.is_empty() {
+        EMPTY_SELECTION_PLACEHOLDER.to_string()
+    } else {
+        items.join(", ")
+    };
+    let line = format!(
+        "{} {}{} {}",
+        theme.success_prefix.clone(),
+        theme.prompt_style.apply_to(label),
+        theme.success_suffix.clone(),
+        theme.values_style.apply_to(display.as_str()),
+    );
+    println!("{line}");
+}
+
+pub fn log_warning(message: &str) {
+    let mut theme = prompt_theme();
+    theme.error_prefix = style(WARNING_PREFIX.to_string()).for_stderr().yellow();
+    theme.error_style = Style::new().for_stderr().yellow();
+
+    let line = format!(
+        "{} {}",
+        theme.error_prefix.clone(),
+        theme.error_style.apply_to(message)
+    );
+    eprintln!("{line}");
+}
+
+pub fn prompt_theme() -> ColorfulTheme {
+    ColorfulTheme {
+        prompt_prefix: style("🧭".to_string()).cyan(),
+        prompt_style: Style::new().for_stderr(),
+        success_prefix: style(SUCCESS_PREFIX.to_string()).for_stderr(),
+        success_suffix: style(":".to_string()).for_stderr(),
+        values_style: Style::new().for_stderr(),
+        ..ColorfulTheme::default()
+    }
+}
+
+fn success_output_theme() -> ColorfulTheme {
+    let mut theme = prompt_theme();
+    theme.success_prefix = theme.success_prefix.clone().for_stdout();
+    theme.success_suffix = theme.success_suffix.clone().for_stdout();
+    theme.prompt_style = theme.prompt_style.clone().for_stdout();
+    theme.values_style = theme.values_style.clone().for_stdout();
+    theme
+}
+
+pub fn select_packages(
+    available: &[String],
+    prompt: &str,
+    summary_label: &str,
+) -> Result<Vec<String>> {
     if available.is_empty() {
         return Err(SampoError::InvalidData(
             "No workspace packages detected. Run this command inside a Cargo workspace.".into(),
         ));
     }
 
-    let theme = ColorfulTheme {
-        prompt_prefix: dialoguer::console::style("🧭".to_string()),
-        ..ColorfulTheme::default()
-    };
+    let theme = prompt_theme();
 
     loop {
         let selections = MultiSelect::with_theme(&theme)
@@ -26,28 +97,31 @@ pub fn select_packages(available: &[String], prompt: &str) -> Result<Vec<String>
             .map_err(prompt_io_error)?;
 
         if selections.is_empty() {
-            eprintln!("Select at least one package to continue.");
+            log_warning("Select at least one package to continue.");
             continue;
         }
 
-        return Ok(selections
+        let selected = selections
             .into_iter()
             .map(|index| available[index].clone())
-            .collect());
+            .collect::<Vec<_>>();
+        log_success_list(summary_label, &selected);
+        return Ok(selected);
     }
 }
 
 pub fn prompt_nonempty_string(prompt: &str) -> Result<String> {
-    let theme = ColorfulTheme::default();
+    let theme = prompt_theme();
     loop {
         let value: String = Input::with_theme(&theme)
             .with_prompt(prompt)
+            .report(false)
             .allow_empty(false)
             .interact_text()
             .map_err(prompt_io_error)?;
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            eprintln!("Enter a non-empty value.");
+            log_warning("Enter a non-empty value.");
             continue;
         }
         return Ok(trimmed.to_string());
@@ -70,7 +144,7 @@ mod tests {
 
     #[test]
     fn select_packages_requires_non_empty_workspace() {
-        let err = select_packages(&[], "prompt").unwrap_err();
+        let err = select_packages(&[], "prompt", "Packages").unwrap_err();
         match err {
             SampoError::InvalidData(msg) => {
                 assert!(msg.contains("No workspace packages"));

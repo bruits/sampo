@@ -1,7 +1,10 @@
 use crate::cli::AddArgs;
 use crate::names;
-use crate::ui::{format_package_label, prompt_io_error, select_packages};
-use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
+use crate::ui::{
+    format_package_label, log_success_list, log_success_value, log_warning, prompt_io_error,
+    prompt_nonempty_string, prompt_theme, select_packages,
+};
+use dialoguer::{MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
     Bump, Config, Workspace, discover_workspace,
     errors::{Result, SampoError},
@@ -53,12 +56,14 @@ pub fn run(args: &AddArgs) -> Result<()> {
             select_packages(
                 &labels,
                 "Select packages impacted by this changeset (space to toggle, enter to confirm)",
+                "Packages",
             )?; // This will yield a consistent error message for empty workspaces.
             Vec::new()
         } else {
             let selections = select_packages(
                 &labels,
                 "Select packages impacted by this changeset (space to toggle, enter to confirm)",
+                "Packages",
             )?;
             let map: HashMap<&str, &PackageSpecifier> = available_packages
                 .iter()
@@ -80,7 +85,13 @@ pub fn run(args: &AddArgs) -> Result<()> {
                 .collect::<Result<Vec<_>>>()?
         }
     } else {
-        resolve_cli_packages(workspace.as_ref(), &args.package)?
+        let specs = resolve_cli_packages(workspace.as_ref(), &args.package)?;
+        let labels: Vec<String> = specs
+            .iter()
+            .map(|spec| package_display_label(spec, include_kind))
+            .collect();
+        log_success_list("Packages", &labels);
+        specs
     };
 
     if selected_specs.is_empty() {
@@ -105,9 +116,11 @@ pub fn run(args: &AddArgs) -> Result<()> {
         package_bumps.push((spec, bump));
     }
 
-    let message = match &args.message {
-        Some(m) if !m.trim().is_empty() => m.trim().to_string(),
-        _ => prompt_message()?,
+    let message = if let Some(trimmed) = normalized_message_arg(args.message.as_deref()) {
+        log_success_value("Changeset message", &trimmed);
+        trimmed
+    } else {
+        prompt_message()?
     };
 
     // Compose file contents
@@ -115,7 +128,8 @@ pub fn run(args: &AddArgs) -> Result<()> {
     let path = unique_changeset_path(&changesets_dir);
     fs::write(&path, contents)?;
 
-    println!("Created: {}", path.display());
+    let created_path = path.display().to_string();
+    log_success_value("Created", &created_path);
     Ok(())
 }
 
@@ -133,16 +147,26 @@ fn prompt_package_bumps(packages: &[String]) -> Result<Vec<(String, Bump)>> {
 
     let mut remaining: Vec<String> = packages.to_vec();
     let mut assignments: HashMap<String, Bump> = HashMap::new();
-    let theme = ColorfulTheme::default();
+    let theme = prompt_theme();
 
-    let patch = prompt_bump_level(&theme, "Which packages receive a PATCH bump?", &remaining)?;
+    let patch = prompt_bump_level(
+        &theme,
+        "Which packages receive a PATCH bump?",
+        "PATCH bump",
+        &remaining,
+    )?;
     for name in patch {
         assignments.insert(name.clone(), Bump::Patch);
     }
     remaining.retain(|name| !assignments.contains_key(name));
 
     if !remaining.is_empty() {
-        let minor = prompt_bump_level(&theme, "Which packages receive a MINOR bump?", &remaining)?;
+        let minor = prompt_bump_level(
+            &theme,
+            "Which packages receive a MINOR bump?",
+            "MINOR bump",
+            &remaining,
+        )?;
         for name in minor {
             assignments.insert(name.clone(), Bump::Minor);
         }
@@ -150,7 +174,12 @@ fn prompt_package_bumps(packages: &[String]) -> Result<Vec<(String, Bump)>> {
     }
 
     if !remaining.is_empty() {
-        let major = prompt_bump_level(&theme, "Which packages receive a MAJOR bump?", &remaining)?;
+        let major = prompt_bump_level(
+            &theme,
+            "Which packages receive a MAJOR bump?",
+            "MAJOR bump",
+            &remaining,
+        )?;
         for name in major {
             assignments.insert(name.clone(), Bump::Major);
         }
@@ -158,10 +187,10 @@ fn prompt_package_bumps(packages: &[String]) -> Result<Vec<(String, Bump)>> {
     }
 
     if !remaining.is_empty() {
-        eprintln!(
+        log_warning(&format!(
             "No bump level selected for: {} — defaulting to PATCH.",
-            remaining.join(", "),
-        );
+            remaining.join(", ")
+        ));
         for name in &remaining {
             assignments.insert(name.clone(), Bump::Patch);
         }
@@ -178,6 +207,7 @@ fn prompt_package_bumps(packages: &[String]) -> Result<Vec<(String, Bump)>> {
 fn prompt_bump_level(
     theme: &ColorfulTheme,
     prompt: &str,
+    summary_label: &str,
     choices: &[String],
 ) -> Result<Vec<String>> {
     if choices.is_empty() {
@@ -191,27 +221,29 @@ fn prompt_bump_level(
         .interact()
         .map_err(prompt_io_error)?;
 
-    Ok(selections
+    let selected = selections
         .into_iter()
         .map(|index| choices[index].clone())
-        .collect())
+        .collect::<Vec<_>>();
+    log_success_list(summary_label, &selected);
+    Ok(selected)
 }
 
 fn prompt_message() -> Result<String> {
-    let theme = ColorfulTheme::default();
-    loop {
-        let message: String = Input::with_theme(&theme)
-            .with_prompt("Changeset message")
-            .allow_empty(false)
-            .interact_text()
-            .map_err(prompt_io_error)?;
-        let trimmed = message.trim();
+    let value = prompt_nonempty_string("Changeset message")?;
+    log_success_value("Changeset message", &value);
+    Ok(value)
+}
+
+fn normalized_message_arg(input: Option<&str>) -> Option<String> {
+    input.and_then(|value| {
+        let trimmed = value.trim();
         if trimmed.is_empty() {
-            eprintln!("Enter a non-empty message.");
-            continue;
+            None
+        } else {
+            Some(trimmed.to_string())
         }
-        return Ok(trimmed.to_string());
-    }
+    })
 }
 
 fn unique_changeset_path(dir: &Path) -> PathBuf {
@@ -342,5 +374,17 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn normalized_message_arg_trims_and_accepts_content() {
+        let value = super::normalized_message_arg(Some("  feat: update docs  "));
+        assert_eq!(value.as_deref(), Some("feat: update docs"));
+    }
+
+    #[test]
+    fn normalized_message_arg_rejects_empty_input() {
+        assert!(super::normalized_message_arg(Some("   ")).is_none());
+        assert!(super::normalized_message_arg(None).is_none());
     }
 }
