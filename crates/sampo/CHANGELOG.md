@@ -1,5 +1,11 @@
 # sampo
 
+## 0.12.1 — 2025-10-27
+
+### Patch changes
+
+- [797aae9](https://github.com/bruits/sampo/commit/797aae958990ddc3d413a677255e6f0c8a0c66b3) The CLI now provides clearer feedback after each interactive prompt, and uses a more consistent visual style. — Thanks @goulvenclech!
+
 ## 0.12.0 — 2025-10-23
 
 ### Minor changes
