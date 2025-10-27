@@ -1,8 +1,9 @@
 use crate::cli::AddArgs;
 use crate::names;
 use crate::ui::{
-    format_package_label, log_success_list, log_success_value, log_warning, prompt_io_error,
-    prompt_nonempty_string, prompt_theme, select_packages,
+    format_package_label, log_success_list, log_success_value, log_warning,
+    normalize_nonempty_string, prompt_io_error, prompt_nonempty_string, prompt_theme,
+    select_packages,
 };
 use dialoguer::{MultiSelect, theme::ColorfulTheme};
 use sampo_core::{
@@ -116,7 +117,7 @@ pub fn run(args: &AddArgs) -> Result<()> {
         package_bumps.push((spec, bump));
     }
 
-    let message = if let Some(trimmed) = normalized_message_arg(args.message.as_deref()) {
+    let message = if let Some(trimmed) = normalize_nonempty_string(args.message.as_deref()) {
         log_success_value("Changeset message", &trimmed);
         trimmed
     } else {
@@ -233,17 +234,6 @@ fn prompt_message() -> Result<String> {
     let value = prompt_nonempty_string("Changeset message")?;
     log_success_value("Changeset message", &value);
     Ok(value)
-}
-
-fn normalized_message_arg(input: Option<&str>) -> Option<String> {
-    input.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
 }
 
 fn unique_changeset_path(dir: &Path) -> PathBuf {
@@ -378,13 +368,13 @@ mod tests {
 
     #[test]
     fn normalized_message_arg_trims_and_accepts_content() {
-        let value = super::normalized_message_arg(Some("  feat: update docs  "));
+        let value = crate::ui::normalize_nonempty_string(Some("  feat: update docs  "));
         assert_eq!(value.as_deref(), Some("feat: update docs"));
     }
 
     #[test]
     fn normalized_message_arg_rejects_empty_input() {
-        assert!(super::normalized_message_arg(Some("   ")).is_none());
-        assert!(super::normalized_message_arg(None).is_none());
+        assert!(crate::ui::normalize_nonempty_string(Some("   ")).is_none());
+        assert!(crate::ui::normalize_nonempty_string(None).is_none());
     }
 }

@@ -11,7 +11,7 @@ use std::io;
 
 pub const SUCCESS_PREFIX: &str = "✔";
 pub const WARNING_PREFIX: &str = "⚠️";
-const EMPTY_SELECTION_PLACEHOLDER: &str = "none";
+const EMPTY_SELECTION_PLACEHOLDER: &str = "(none)";
 
 pub fn log_success_value(label: &str, value: &str) {
     let theme = success_output_theme();
@@ -128,6 +128,19 @@ pub fn prompt_nonempty_string(prompt: &str) -> Result<String> {
     }
 }
 
+/// Normalize an optional string input by trimming whitespace.
+/// Returns None if the input is None or if the trimmed value is empty.
+pub fn normalize_nonempty_string(input: Option<&str>) -> Option<String> {
+    input.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 pub fn prompt_io_error(error: dialoguer::Error) -> io::Error {
     match error {
         dialoguer::Error::IO(err) => err,
@@ -151,5 +164,19 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn normalize_nonempty_string_trims_and_accepts_value() {
+        assert_eq!(
+            normalize_nonempty_string(Some("  value  ")).as_deref(),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn normalize_nonempty_string_rejects_empty_value() {
+        assert!(normalize_nonempty_string(Some("   ")).is_none());
+        assert!(normalize_nonempty_string(None).is_none());
     }
 }

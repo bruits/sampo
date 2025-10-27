@@ -1,7 +1,7 @@
 use crate::cli::{PreArgs, PreCommands, PreEnterArgs, PreExitArgs};
 use crate::ui::{
-    format_package_label, log_success_list, log_success_value, prompt_io_error,
-    prompt_nonempty_string, prompt_theme, select_packages,
+    format_package_label, log_success_list, log_success_value, normalize_nonempty_string,
+    prompt_io_error, prompt_nonempty_string, prompt_theme, select_packages,
 };
 use dialoguer::Select;
 use sampo_core::{
@@ -271,24 +271,13 @@ fn visible_packages(
 }
 
 fn resolve_label(existing: Option<&str>) -> Result<String> {
-    if let Some(value) = normalized_label_arg(existing) {
+    if let Some(value) = normalize_nonempty_string(existing) {
         log_success_value("Pre-release label", &value);
         return Ok(value);
     }
     let value = prompt_nonempty_string(LABEL_PROMPT)?;
     log_success_value("Pre-release label", &value);
     Ok(value)
-}
-
-fn normalized_label_arg(input: Option<&str>) -> Option<String> {
-    input.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
 }
 
 fn packages_requiring_label_switch(
@@ -465,19 +454,19 @@ fn report_updates(
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_label_arg;
+    use crate::ui::normalize_nonempty_string;
 
     #[test]
     fn normalized_label_arg_trims_and_accepts_value() {
         assert_eq!(
-            normalized_label_arg(Some("  beta  ")).as_deref(),
+            normalize_nonempty_string(Some("  beta  ")).as_deref(),
             Some("beta")
         );
     }
 
     #[test]
     fn normalized_label_arg_rejects_empty_value() {
-        assert!(normalized_label_arg(Some("   ")).is_none());
-        assert!(normalized_label_arg(None).is_none());
+        assert!(normalize_nonempty_string(Some("   ")).is_none());
+        assert!(normalize_nonempty_string(None).is_none());
     }
 }
