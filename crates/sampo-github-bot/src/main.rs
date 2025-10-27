@@ -1,6 +1,10 @@
+mod changeset;
 mod error;
 
-use crate::error::{BotError, Result, VerifyError};
+use crate::{
+    changeset::analyze_pr_changesets,
+    error::{BotError, Result, VerifyError},
+};
 use axum::{
     Router,
     extract::{Request, State},
@@ -11,7 +15,6 @@ use axum::{
 use hmac::{Hmac, Mac};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use octocrab::models::issues::Comment;
-use octocrab::models::repos::DiffEntryStatus;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::net::SocketAddr;
@@ -168,6 +171,14 @@ async fn webhook(
 
     info!("PR #{} -> {}/{} action={}", pr_number, owner, repo, action);
 
+    let head_sha = payload
+        .get("pull_request")
+        .and_then(|pr| pr.get("head"))
+        .and_then(|head| head.get("sha"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "missing PR head sha".to_string()))?
+        .to_string();
+
     // Get installation token for this repository
     let installation_octo = match get_installation_client(&state, &owner, &repo).await {
         Ok(client) => client,
@@ -180,39 +191,70 @@ async fn webhook(
         }
     };
 
-    // Check files in PR for changeset
-    let has_changeset = match pr_has_changeset(&installation_octo, &owner, &repo, pr_number).await {
-        Ok(v) => v,
+    let analysis = match analyze_pr_changesets(
+        &installation_octo,
+        &owner,
+        &repo,
+        pr_number,
+        &head_sha,
+    )
+    .await
+    {
+        Ok(result) => result,
         Err(e) => {
-            error!("error checking PR files: {}", e);
+            error!("error analysing changesets: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to check PR files".into(),
+                "failed to evaluate changesets".into(),
             ));
         }
     };
 
+    if analysis.has_changeset {
+        info!("changeset detected for PR #{}", pr_number);
+    } else {
+        info!("no valid changeset detected for PR #{}", pr_number);
+    }
+
     // Compose message with a sticky marker to allow updates
     const MARKER: &str = "<!-- sampo-bot:changeset-check -->";
-    let body = if has_changeset {
-        format!(
-            "{marker}\n## 🧭 Changeset detected\n\nMerging this PR will bump the version and include these changes in the next release.\n",
-            marker = MARKER
-        )
-    } else {
-        format!(
-            "{marker}\n## ⚠️ No changeset detected\n\nIf this PR isn’t meant to release a new version, no action needed. If it should, add a changeset to bump the version.\n",
-            marker = MARKER
-        )
-    };
+    let mut comment_body = String::from(MARKER);
+    comment_body.push('\n');
+    comment_body.push_str(&analysis.comment_markdown);
+    if !comment_body.ends_with('\n') {
+        comment_body.push('\n');
+    }
 
-    if let Err(e) =
-        upsert_sticky_comment(&installation_octo, &owner, &repo, pr_number, MARKER, &body).await
+    if let Err(e) = upsert_sticky_comment(
+        &installation_octo,
+        &owner,
+        &repo,
+        pr_number,
+        MARKER,
+        &comment_body,
+    )
+    .await
     {
         error!("failed to upsert comment: {}", e);
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to comment".into(),
+        ));
+    }
+
+    if let Err(e) = submit_review(
+        &installation_octo,
+        &owner,
+        &repo,
+        pr_number,
+        &analysis.review,
+    )
+    .await
+    {
+        error!("failed to submit review: {}", e);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to submit review".into(),
         ));
     }
 
@@ -263,51 +305,6 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         i += 2;
     }
     Some(out)
-}
-
-async fn pr_has_changeset(
-    octo: &octocrab::Octocrab,
-    owner: &str,
-    repo: &str,
-    pr: u64,
-) -> Result<bool> {
-    let files = octo
-        .pulls(owner, repo)
-        .list_files(pr)
-        .await
-        .map_err(BotError::from_pr_files)?;
-    let mut page = files;
-    let mut any = false;
-    let dir_prefix = ".sampo/changesets/"; // align with Sampo defaults
-    loop {
-        for f in &page {
-            let filename = f.filename.as_str();
-            // Only consider newly added changeset files in this PR
-            if is_new_changeset_in_pr(filename, &f.status, dir_prefix) {
-                any = true;
-                break;
-            }
-        }
-        if any {
-            break;
-        }
-        if let Some(next) = octo
-            .get_page::<octocrab::models::repos::DiffEntry>(&page.next)
-            .await
-            .map_err(BotError::from_pr_files)?
-        {
-            page = next;
-        } else {
-            break;
-        }
-    }
-    Ok(any)
-}
-
-fn is_new_changeset_in_pr(filename: &str, status: &DiffEntryStatus, dir_prefix: &str) -> bool {
-    filename.starts_with(dir_prefix)
-        && filename.ends_with(".md")
-        && matches!(status, DiffEntryStatus::Added)
 }
 
 /// Detect whether the PR was generated by the Sampo GitHub Action (release PR).
@@ -390,6 +387,31 @@ async fn upsert_sticky_comment(
             .map_err(BotError::from_comments)?;
     }
     Ok(())
+}
+
+async fn submit_review(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    review: &crate::changeset::ReviewMessage,
+) -> Result<()> {
+    let route = format!(
+        "/repos/{owner}/{repo}/pulls/{pr}/reviews",
+        owner = owner,
+        repo = repo,
+        pr = pr
+    );
+
+    let payload = serde_json::json!({
+        "event": review.action,
+        "body": review.body,
+    });
+
+    octo.post::<serde_json::Value, octocrab::models::pulls::Review>(route, Some(&payload))
+        .await
+        .map(|_| ())
+        .map_err(|err| BotError::Internal(format!("failed to submit review: {err}")))
 }
 
 fn comment_has_marker(c: &Comment, marker: &str) -> bool {
@@ -751,74 +773,6 @@ mod tests {
 
         let err = VerifyError::Internal("test error".to_string());
         assert_eq!(err.to_string(), "internal: test error");
-    }
-
-    #[test]
-    fn changeset_message_format() {
-        const MARKER: &str = "<!-- sampo-bot:changeset-check -->";
-
-        let with_changeset = format!(
-            "{marker}\n## 🧭 Changeset detected\n\nMerging this PR will bump the version and include these changes in the next release.\n",
-            marker = MARKER
-        );
-        assert!(with_changeset.contains(MARKER));
-        assert!(with_changeset.contains("🧭 Changeset detected"));
-        assert!(with_changeset.contains("bump the version"));
-
-        let without_changeset = format!(
-            "{marker}\n## ⚠️ No changeset detected\n\nIf this PR isn't meant to release a new version, no action needed. If it should, add a changeset to bump the version.\n",
-            marker = MARKER
-        );
-        assert!(without_changeset.contains(MARKER));
-        assert!(without_changeset.contains("⚠️ No changeset detected"));
-        assert!(without_changeset.contains("add a changeset"));
-    }
-
-    #[test]
-    fn detect_new_changeset_in_pr_only_for_added_md_files() {
-        let dir = ".sampo/changesets/";
-
-        // Added changeset markdown in the right directory -> true
-        assert!(is_new_changeset_in_pr(
-            ".sampo/changesets/some-change.md",
-            &DiffEntryStatus::Added,
-            dir
-        ));
-
-        // Modified file should not count
-        assert!(!is_new_changeset_in_pr(
-            ".sampo/changesets/edited-change.md",
-            &DiffEntryStatus::Modified,
-            dir
-        ));
-
-        // Removed file should not count
-        assert!(!is_new_changeset_in_pr(
-            ".sampo/changesets/old-change.md",
-            &DiffEntryStatus::Removed,
-            dir
-        ));
-
-        // Added non-markdown should not count
-        assert!(!is_new_changeset_in_pr(
-            ".sampo/changesets/note.txt",
-            &DiffEntryStatus::Added,
-            dir
-        ));
-
-        // Added markdown outside directory should not count
-        assert!(!is_new_changeset_in_pr(
-            "docs/changesets/new.md",
-            &DiffEntryStatus::Added,
-            dir
-        ));
-
-        // Added markdown in nested path under directory should count
-        assert!(is_new_changeset_in_pr(
-            ".sampo/changesets/nested/new.md",
-            &DiffEntryStatus::Added,
-            dir
-        ));
     }
 
     #[test]
