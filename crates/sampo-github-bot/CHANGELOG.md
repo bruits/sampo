@@ -1,5 +1,11 @@
 # sampo-github-bot
 
+## 0.3.0 — 2025-10-27
+
+### Minor changes
+
+- [d1fb836](https://github.com/bruits/sampo/commit/d1fb836d02b0368f90531ab976b9fb16be6e5553) Github bot's feedback messages have been improved: when no changeset is found, explicit instructions are provided on how to create one; when changesets are present, a preview of their content and bump level is included. — Thanks @goulvenclech!
+
 ## 0.2.2
 
 ### Patch changes
