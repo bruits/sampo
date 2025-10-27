@@ -128,6 +128,26 @@ fn cargo_discoverer_detects_internal_deps() {
 }
 
 #[test]
+fn adds_version_to_regular_dependency_with_only_path() {
+    let input = "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nfoo = { path = \"../foo\" }\n";
+    let mut updates = BTreeMap::new();
+    updates.insert("foo".to_string(), "0.2.0".to_string());
+
+    let (out, applied) = update_manifest_versions(
+        Path::new("/workspace/pkg/Cargo.toml"),
+        input,
+        None,
+        &updates,
+        None,
+    )
+    .unwrap();
+
+    assert!(applied.contains(&("foo".to_string(), "0.2.0".to_string())));
+    assert!(out.contains("version = \"0.2.0\""));
+    assert!(out.contains("path = \"../foo\""));
+}
+
+#[test]
 fn skips_workspace_dependencies_when_updating() {
     let input = "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nfoo = { workspace = true, optional = true }\n";
     let mut updates = BTreeMap::new();
@@ -185,7 +205,7 @@ fn skips_workspace_dependency_with_wildcard_version() {
 }
 
 #[test]
-fn skips_workspace_dependency_without_version() {
+fn adds_version_to_workspace_dependency_with_only_path() {
     let input = "[workspace.dependencies]\nfoo = { path = \"foo\" }\n";
     let mut updates = BTreeMap::new();
     updates.insert("foo".to_string(), "0.2.0".to_string());
@@ -199,8 +219,9 @@ fn skips_workspace_dependency_without_version() {
     )
     .unwrap();
 
-    assert_eq!(out.trim_end(), input.trim_end());
-    assert!(applied.is_empty());
+    assert!(applied.contains(&("foo".to_string(), "0.2.0".to_string())));
+    assert!(out.contains("version = \"0.2.0\""));
+    assert!(out.contains("path = \"foo\""));
 }
 
 #[test]

@@ -511,6 +511,13 @@ fn update_workspace_dependency_item(item: &mut Item, new_version: &str) -> bool 
     match item {
         Item::Value(Value::InlineTable(table)) => {
             let current = table.get("version").and_then(Value::as_str);
+
+            // If no version exists but there's a path, add the version
+            if current.is_none() && table.contains_key("path") {
+                table.insert("version", Value::from(new_version));
+                return true;
+            }
+
             let Some(existing) = current else {
                 return false;
             };
@@ -528,6 +535,13 @@ fn update_workspace_dependency_item(item: &mut Item, new_version: &str) -> bool 
                 .get("version")
                 .and_then(Item::as_value)
                 .and_then(Value::as_str);
+
+            // If no version exists but there's a path, add the version
+            if current.is_none() && table.contains_key("path") {
+                table.insert("version", Item::Value(Value::from(new_version)));
+                return true;
+            }
+
             let Some(existing) = current else {
                 return false;
             };
