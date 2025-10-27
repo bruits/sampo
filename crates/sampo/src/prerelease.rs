@@ -1,6 +1,9 @@
 use crate::cli::{PreArgs, PreCommands, PreEnterArgs, PreExitArgs};
-use crate::ui::{format_package_label, prompt_io_error, prompt_nonempty_string, select_packages};
-use dialoguer::{Select, console::style, theme::ColorfulTheme};
+use crate::ui::{
+    format_package_label, log_success_list, log_success_value, normalize_nonempty_string,
+    prompt_io_error, prompt_nonempty_string, prompt_theme, select_packages,
+};
+use dialoguer::Select;
 use sampo_core::{
     Config, VersionChange, discover_workspace, enter_prerelease,
     errors::{Result, SampoError},
@@ -28,12 +31,14 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
     let include_kind = workspace.has_multiple_package_kinds();
     let available = visible_packages(&workspace, include_kind)?;
 
+    let from_cli_packages = !args.package.is_empty();
     let selected_specs = if args.package.is_empty() {
         let labels: Vec<String> = available.iter().map(|(label, _)| label.clone()).collect();
         if labels.is_empty() {
             select_packages(
                 &labels,
                 "Select packages to enter pre-release mode (space to toggle, enter to confirm)",
+                "Packages",
             )?;
             Vec::new()
         } else {
@@ -44,6 +49,7 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
             select_packages(
                 &labels,
                 "Select packages to enter pre-release mode (space to toggle, enter to confirm)",
+                "Packages",
             )?
             .into_iter()
             .map(|label| {
@@ -83,13 +89,16 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
         return Err(SampoError::Prerelease("No packages selected.".to_string()));
     }
 
-    let canonical: Vec<String> = normalized_specs
-        .iter()
-        .map(|spec| spec.to_canonical_string())
-        .collect();
     let requested_display: Vec<String> = normalized_specs
         .iter()
         .map(|spec| display_label_from_spec(spec, include_kind))
+        .collect();
+    if from_cli_packages {
+        log_success_list("Packages", &requested_display);
+    }
+    let canonical: Vec<String> = normalized_specs
+        .iter()
+        .map(|spec| spec.to_canonical_string())
         .collect();
 
     let label = resolve_label(args.label.as_deref())?;
@@ -147,6 +156,7 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
         })
         .collect();
 
+    let from_cli_packages = !args.package.is_empty();
     let selected_specs = if args.package.is_empty() {
         if available.is_empty() {
             println!("All workspace packages are already stable.");
@@ -160,6 +170,7 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
         select_packages(
             &labels,
             "Select packages to exit pre-release mode (space to toggle, enter to confirm)",
+            "Packages",
         )?
         .into_iter()
         .map(|label| {
@@ -193,13 +204,16 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
         return Err(SampoError::Prerelease("No packages selected.".to_string()));
     }
 
-    let canonical: Vec<String> = normalized_specs
-        .iter()
-        .map(|spec| spec.to_canonical_string())
-        .collect();
     let requested_display: Vec<String> = normalized_specs
         .iter()
         .map(|spec| display_label_from_spec(spec, include_kind))
+        .collect();
+    if from_cli_packages {
+        log_success_list("Packages", &requested_display);
+    }
+    let canonical: Vec<String> = normalized_specs
+        .iter()
+        .map(|spec| spec.to_canonical_string())
         .collect();
 
     let updates = exit_prerelease(&workspace.root, &canonical)?;
@@ -257,13 +271,13 @@ fn visible_packages(
 }
 
 fn resolve_label(existing: Option<&str>) -> Result<String> {
-    if let Some(value) = existing {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
+    if let Some(value) = normalize_nonempty_string(existing) {
+        log_success_value("Pre-release label", &value);
+        return Ok(value);
     }
-    prompt_nonempty_string(LABEL_PROMPT)
+    let value = prompt_nonempty_string(LABEL_PROMPT)?;
+    log_success_value("Pre-release label", &value);
+    Ok(value)
 }
 
 fn packages_requiring_label_switch(
@@ -370,10 +384,7 @@ enum InteractiveMode {
 }
 
 fn prompt_mode() -> Result<InteractiveMode> {
-    let theme = ColorfulTheme {
-        prompt_prefix: style("🧭".to_string()),
-        ..ColorfulTheme::default()
-    };
+    let theme = prompt_theme();
     let options = ["Enter pre-release mode", "Exit pre-release mode"];
     let selection = Select::with_theme(&theme)
         .with_prompt("Choose pre-release action")
@@ -382,11 +393,17 @@ fn prompt_mode() -> Result<InteractiveMode> {
         .report(false)
         .interact()
         .map_err(prompt_io_error)?;
-    Ok(match selection {
+    let mode = match selection {
         0 => InteractiveMode::Enter,
         1 => InteractiveMode::Exit,
         _ => InteractiveMode::Enter,
-    })
+    };
+    let summary = match mode {
+        InteractiveMode::Enter => "Enter pre-release mode",
+        InteractiveMode::Exit => "Exit pre-release mode",
+    };
+    log_success_value("Action", summary);
+    Ok(mode)
 }
 fn report_updates(
     action: &str,
@@ -432,5 +449,24 @@ fn report_updates(
         } else {
             println!("Already stable: {}", skipped.join(", "));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ui::normalize_nonempty_string;
+
+    #[test]
+    fn normalized_label_arg_trims_and_accepts_value() {
+        assert_eq!(
+            normalize_nonempty_string(Some("  beta  ")).as_deref(),
+            Some("beta")
+        );
+    }
+
+    #[test]
+    fn normalized_label_arg_rejects_empty_value() {
+        assert!(normalize_nonempty_string(Some("   ")).is_none());
+        assert!(normalize_nonempty_string(None).is_none());
     }
 }
