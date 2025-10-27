@@ -1832,6 +1832,7 @@ dependencies = [
  "jsonwebtoken",
  "octocrab",
  "reqwest 0.11.27",
+ "sampo-core",
  "serde",
  "serde_json",
  "sha2",
