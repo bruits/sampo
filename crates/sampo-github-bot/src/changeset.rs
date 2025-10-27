@@ -121,12 +121,12 @@ pub async fn analyze_pr_changesets(
 fn build_missing_changeset_comment(issues: &[ChangesetIssue]) -> String {
     let mut out = String::new();
     out.push_str("## ⚠️ No changeset detected\n\n");
-    out.push_str(
-        "I didn't find any new `.sampo/changesets/*.md` files in this PR. To add one:\n\n",
-    );
+    out.push_str("No new `.sampo/changesets/*.md` files were detected in this PR. To add one:\n\n");
     out.push_str("- run `sampo add`\n");
     out.push_str("- follow the prompts to pick the affected packages and describe the change\n");
-    out.push_str("- commit the generated file to this pull request, I'll take it from there!\n\n");
+    out.push_str(
+        "- commit the generated file to this pull request, and it will be detected automatically\n",
+    );
 
     append_issue_section(&mut out, issues);
     out
@@ -181,7 +181,7 @@ fn append_issue_section(out: &mut String, issues: &[ChangesetIssue]) {
     if issues.is_empty() {
         return;
     }
-    out.push_str("I ran into issues with these files:\n");
+    out.push_str("Detected issues with these files:\n");
     for issue in issues {
         out.push_str(&format!("- `{}`: {}\n", issue.path, issue.reason));
     }
