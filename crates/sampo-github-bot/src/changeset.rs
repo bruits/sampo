@@ -1,5 +1,4 @@
 use crate::error::{BotError, Result};
-use octocrab::models::pulls::ReviewAction;
 use octocrab::models::repos::{DiffEntry, DiffEntryStatus};
 use sampo_core::changeset::{ChangesetInfo, parse_changeset};
 use sampo_core::types::{Bump, PackageSpecifier};
@@ -9,12 +8,6 @@ use std::path::Path;
 pub struct ChangesetAnalysis {
     pub has_changeset: bool,
     pub comment_markdown: String,
-    pub review: ReviewMessage,
-}
-
-pub struct ReviewMessage {
-    pub action: ReviewAction,
-    pub body: String,
 }
 
 struct ChangesetFile {
@@ -78,14 +71,9 @@ pub async fn analyze_pr_changesets(
 
     if files.is_empty() {
         let comment = build_missing_changeset_comment(&[]);
-        let review = ReviewMessage {
-            action: ReviewAction::RequestChanges,
-            body: comment.clone(),
-        };
         return Ok(ChangesetAnalysis {
             has_changeset: false,
             comment_markdown: comment,
-            review,
         });
     }
 
@@ -93,28 +81,18 @@ pub async fn analyze_pr_changesets(
 
     if parsed.valid.is_empty() {
         let comment = build_missing_changeset_comment(&parsed.issues);
-        let review = ReviewMessage {
-            action: ReviewAction::RequestChanges,
-            body: comment.clone(),
-        };
         return Ok(ChangesetAnalysis {
             has_changeset: false,
             comment_markdown: comment,
-            review,
         });
     }
 
     let packages = summarize_packages(&parsed.valid);
     let comment = build_present_changeset_comment(&packages, &parsed.issues);
-    let review = ReviewMessage {
-        action: ReviewAction::Approve,
-        body: comment.clone(),
-    };
 
     Ok(ChangesetAnalysis {
         has_changeset: true,
         comment_markdown: comment,
-        review,
     })
 }
 

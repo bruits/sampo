@@ -216,21 +216,101 @@ async fn webhook(
         info!("no valid changeset detected for PR #{}", pr_number);
     }
 
-    // Compose message with a sticky marker to allow updates
-    const MARKER: &str = "<!-- sampo-bot:changeset-check -->";
-    let mut comment_body = String::from(MARKER);
-    comment_body.push('\n');
-    comment_body.push_str(&analysis.comment_markdown);
-    if !comment_body.ends_with('\n') {
-        comment_body.push('\n');
+    const COMMENT_MARKER: &str = "<!-- sampo-bot:changeset-check -->";
+    let existing_comment =
+        match find_sticky_comment(&installation_octo, &owner, &repo, pr_number, COMMENT_MARKER)
+            .await
+        {
+            Ok(comment) => comment,
+            Err(e) => {
+                error!("failed to locate existing comment: {}", e);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to inspect existing comment".into(),
+                ));
+            }
+        };
+
+    let mut approval_state = existing_comment
+        .as_ref()
+        .and_then(|comment| comment.body.as_deref())
+        .and_then(parse_approval_state)
+        .unwrap_or_default();
+
+    if analysis.has_changeset {
+        if let Some(review_id) = approval_state.approval_review_id {
+            match review_is_approved(&installation_octo, &owner, &repo, pr_number, review_id).await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    approval_state.approval_review_id = None;
+                }
+                Err(e) => {
+                    error!("failed to inspect existing review: {}", e);
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to inspect review state".into(),
+                    ));
+                }
+            }
+        }
+        if approval_state.approval_review_id.is_none() {
+            match submit_review(
+                &installation_octo,
+                &owner,
+                &repo,
+                pr_number,
+                octocrab::models::pulls::ReviewAction::Approve,
+                None,
+            )
+            .await
+            {
+                Ok(review) => {
+                    approval_state.approval_review_id = Some(review.id.0);
+                }
+                Err(e) => {
+                    error!("failed to submit review: {}", e);
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to submit review".into(),
+                    ));
+                }
+            }
+        }
+        approval_state.approved_head = Some(head_sha.clone());
+    } else {
+        if let Some(review_id) = approval_state.approval_review_id
+            && let Err(e) =
+                dismiss_review(&installation_octo, &owner, &repo, pr_number, review_id).await
+        {
+            error!("failed to dismiss review: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to dismiss review".into(),
+            ));
+        }
+        approval_state.approval_review_id = None;
+        approval_state.approved_head = None;
     }
+
+    let comment_body =
+        match build_comment_body(COMMENT_MARKER, &analysis.comment_markdown, &approval_state) {
+            Ok(body) => body,
+            Err(e) => {
+                error!("failed to build comment body: {}", e);
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to prepare comment".into(),
+                ));
+            }
+        };
 
     if let Err(e) = upsert_sticky_comment(
         &installation_octo,
         &owner,
         &repo,
         pr_number,
-        MARKER,
+        existing_comment.as_ref().map(|c| c.id),
         &comment_body,
     )
     .await
@@ -239,22 +319,6 @@ async fn webhook(
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to comment".into(),
-        ));
-    }
-
-    if let Err(e) = submit_review(
-        &installation_octo,
-        &owner,
-        &repo,
-        pr_number,
-        &analysis.review,
-    )
-    .await
-    {
-        error!("failed to submit review: {}", e);
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to submit review".into(),
         ));
     }
 
@@ -338,16 +402,13 @@ fn is_sampo_action_release_pr(payload: &serde_json::Value) -> bool {
     false
 }
 
-async fn upsert_sticky_comment(
+async fn find_sticky_comment(
     octo: &octocrab::Octocrab,
     owner: &str,
     repo: &str,
     pr: u64,
     marker: &str,
-    body: &str,
-) -> Result<()> {
-    // Look for existing comment with marker
-    let mut existing: Option<octocrab::models::CommentId> = None;
+) -> Result<Option<Comment>> {
     let mut page = octo
         .issues(owner, repo)
         .list_comments(pr)
@@ -355,14 +416,10 @@ async fn upsert_sticky_comment(
         .await
         .map_err(BotError::from_comments)?;
     loop {
-        for c in &page {
-            if comment_has_marker(c, marker) {
-                existing = Some(c.id);
-                break;
+        for comment in &page {
+            if comment_has_marker(comment, marker) {
+                return Ok(Some(comment.clone()));
             }
-        }
-        if existing.is_some() {
-            break;
         }
         if let Some(next) = octo
             .get_page::<Comment>(&page.next)
@@ -374,7 +431,17 @@ async fn upsert_sticky_comment(
             break;
         }
     }
+    Ok(None)
+}
 
+async fn upsert_sticky_comment(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    existing: Option<octocrab::models::CommentId>,
+    body: &str,
+) -> Result<()> {
     if let Some(id) = existing {
         octo.issues(owner, repo)
             .update_comment(id, body)
@@ -394,8 +461,9 @@ async fn submit_review(
     owner: &str,
     repo: &str,
     pr: u64,
-    review: &crate::changeset::ReviewMessage,
-) -> Result<()> {
+    action: octocrab::models::pulls::ReviewAction,
+    body: Option<&str>,
+) -> Result<octocrab::models::pulls::Review> {
     let route = format!(
         "/repos/{owner}/{repo}/pulls/{pr}/reviews",
         owner = owner,
@@ -403,15 +471,128 @@ async fn submit_review(
         pr = pr
     );
 
-    let payload = serde_json::json!({
-        "event": review.action,
-        "body": review.body,
-    });
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "event".to_string(),
+        serde_json::to_value(action).map_err(|err| {
+            BotError::Internal(format!("failed to serialize review action: {err}"))
+        })?,
+    );
+    if let Some(text) = body {
+        payload.insert(
+            "body".to_string(),
+            serde_json::Value::String(text.to_string()),
+        );
+    }
+    let payload = serde_json::Value::Object(payload);
 
     octo.post::<serde_json::Value, octocrab::models::pulls::Review>(route, Some(&payload))
         .await
-        .map(|_| ())
         .map_err(|err| BotError::Internal(format!("failed to submit review: {err}")))
+}
+
+async fn dismiss_review(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    review_id: u64,
+) -> Result<()> {
+    let route = format!(
+        "/repos/{owner}/{repo}/pulls/{pr}/reviews/{review_id}/dismissals",
+        owner = owner,
+        repo = repo,
+        pr = pr,
+        review_id = review_id
+    );
+    let payload = serde_json::json!({
+        "message": "Dismissed by Sampo GitHub Bot: changeset removed from PR.",
+    });
+
+    match octo
+        .put::<serde_json::Value, _, _>(route, Some(&payload))
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(octocrab::Error::GitHub { source, .. })
+            if matches!(
+                source.status_code,
+                StatusCode::NOT_FOUND | StatusCode::UNPROCESSABLE_ENTITY
+            ) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(BotError::Internal(format!(
+            "failed to dismiss review: {err}"
+        ))),
+    }
+}
+
+async fn review_is_approved(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    review_id: u64,
+) -> Result<bool> {
+    let route = format!(
+        "/repos/{owner}/{repo}/pulls/{pr}/reviews/{review_id}",
+        owner = owner,
+        repo = repo,
+        pr = pr,
+        review_id = review_id
+    );
+    match octo
+        .get::<octocrab::models::pulls::Review, _, ()>(route, None)
+        .await
+    {
+        Ok(review) => Ok(matches!(
+            review.state,
+            Some(octocrab::models::pulls::ReviewState::Approved)
+        )),
+        Err(octocrab::Error::GitHub { source, .. })
+            if source.status_code == StatusCode::NOT_FOUND =>
+        {
+            Ok(false)
+        }
+        Err(err) => Err(BotError::Internal(format!(
+            "failed to fetch review state: {err}"
+        ))),
+    }
+}
+
+fn build_comment_body(marker: &str, markdown: &str, state: &ApprovalState) -> Result<String> {
+    let mut body = String::from(marker);
+    body.push('\n');
+    body.push_str(markdown);
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+
+    let state_json = serde_json::to_string(state)
+        .map_err(|err| BotError::Internal(format!("failed to serialize approval state: {err}")))?;
+    body.push_str("<!-- sampo-bot:review-state ");
+    body.push_str(&state_json);
+    body.push_str(" -->");
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    Ok(body)
+}
+
+fn parse_approval_state(body: &str) -> Option<ApprovalState> {
+    let marker = "<!-- sampo-bot:review-state ";
+    let start = body.find(marker)?;
+    let after_marker = &body[start + marker.len()..];
+    let end = after_marker.find("-->")?;
+    let json = after_marker[..end].trim();
+    serde_json::from_str(json).ok()
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct ApprovalState {
+    approval_review_id: Option<u64>,
+    approved_head: Option<String>,
 }
 
 fn comment_has_marker(c: &Comment, marker: &str) -> bool {
@@ -758,6 +939,19 @@ mod tests {
             &comment,
             "<!-- sampo-bot:changeset-check -->"
         ));
+    }
+
+    #[test]
+    fn approval_state_roundtrip() {
+        let state = ApprovalState {
+            approval_review_id: Some(99),
+            approved_head: Some("deadbeef".to_string()),
+        };
+        let body = build_comment_body("<!-- sampo-bot:changeset-check -->", "body\n", &state)
+            .expect("body builds");
+        let parsed = parse_approval_state(&body).expect("state parses");
+        assert_eq!(parsed.approval_review_id, state.approval_review_id);
+        assert_eq!(parsed.approved_head, state.approved_head);
     }
 
     #[test]
