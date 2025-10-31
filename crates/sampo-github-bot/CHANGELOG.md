@@ -1,5 +1,11 @@
 # sampo-github-bot
 
+## 0.3.1 — 2025-10-31
+
+### Patch changes
+
+- [673b44d](https://github.com/bruits/sampo/commit/673b44d6966ebf3cf4ce904b67a11fbbc3dc0bb0) Sampo GitHub Bot no longer spams change-request reviews when no changesets are found, and keeps one silent approval review in sync with the presence of changesets in the PR. — Thanks @goulvenclech!
+
 ## 0.3.0 — 2025-10-27
 
 ### Minor changes
