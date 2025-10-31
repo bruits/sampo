@@ -107,15 +107,12 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     println!("Publish plan:");
     let mut publish_targets = Vec::new();
     for identifier in &order {
-        let package = id_to_package
-            .get(identifier)
-            .copied()
-            .ok_or_else(|| {
-                SampoError::Publish(format!(
-                    "internal error: crate '{}' not found in workspace",
-                    identifier
-                ))
-            })?;
+        let package = id_to_package.get(identifier).copied().ok_or_else(|| {
+            SampoError::Publish(format!(
+                "internal error: crate '{}' not found in workspace",
+                identifier
+            ))
+        })?;
         println!("  - {}", package.display_name(true));
         let adapter = match package.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
@@ -154,11 +151,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     // Execute publish in order using the appropriate adapter for each package
     for (package, adapter, manifest) in &publish_targets {
         // Skip if the exact version already exists on the registry
-        match adapter.version_exists(
-            &package.name,
-            &package.version,
-            Some(manifest.as_path()),
-        ) {
+        match adapter.version_exists(&package.name, &package.version, Some(manifest.as_path())) {
             Ok(true) => {
                 println!(
                     "Skipping {}@{} (already exists on {})",
@@ -184,9 +177,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
 
         // Create an annotated git tag after successful publish (not in dry-run)
-        if !dry_run
-            && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version)
-        {
+        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
             eprintln!(
                 "Warning: failed to create tag for {}@{}: {}",
                 package.name, package.version, e
