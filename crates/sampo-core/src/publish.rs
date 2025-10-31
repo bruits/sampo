@@ -340,6 +340,7 @@ mod tests {
     use super::*;
     use crate::types::{PackageInfo, PackageKind, Workspace};
     use rustc_hash::FxHashMap;
+    use serial_test::serial;
     use std::{
         ffi::OsString,
         fs,
@@ -645,6 +646,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn run_publish_rejects_unconfigured_branch() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("foo", "0.1.0");
@@ -667,6 +669,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn run_publish_allows_configured_branch() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("foo", "0.1.0");
@@ -764,6 +767,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn identifies_publishable_crates() {
         let mut workspace = TestWorkspace::new();
         workspace
@@ -775,6 +779,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn handles_empty_workspace() {
         let workspace = TestWorkspace::new();
 
@@ -784,6 +789,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn rejects_invalid_internal_dependencies() {
         let mut workspace = TestWorkspace::new();
         workspace
@@ -799,6 +805,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn dry_run_publishes_in_dependency_order() {
         let mut workspace = TestWorkspace::new();
         workspace
@@ -814,6 +821,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn run_publish_performs_preflight_dry_runs() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("sampo-preflight", "0.0.1");
@@ -844,6 +852,7 @@ fn main() {
     }
 
     #[test]
+    #[serial]
     fn dry_run_validation_failure_blocks_publish() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("sampo-preflight-failure", "0.0.1");
