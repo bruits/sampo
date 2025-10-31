@@ -105,37 +105,66 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     let order = topo_order(&id_to_package, &publishable)?;
 
     println!("Publish plan:");
+    let mut publish_targets = Vec::new();
     for identifier in &order {
-        if let Some(info) = id_to_package.get(identifier) {
-            println!("  - {}", info.display_name(true));
-        } else {
-            println!("  - {identifier}");
-        }
-    }
-
-    // Execute publish in order using the appropriate adapter for each package
-    for identifier in &order {
-        let c = id_to_package.get(identifier).ok_or_else(|| {
-            SampoError::Publish(format!(
-                "internal error: crate '{}' not found in workspace",
-                identifier
-            ))
-        })?;
-        let adapter = match c.kind {
+        let package = id_to_package
+            .get(identifier)
+            .copied()
+            .ok_or_else(|| {
+                SampoError::Publish(format!(
+                    "internal error: crate '{}' not found in workspace",
+                    identifier
+                ))
+            })?;
+        println!("  - {}", package.display_name(true));
+        let adapter = match package.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
             crate::types::PackageKind::Npm => PackageAdapter::Npm,
             crate::types::PackageKind::Hex => PackageAdapter::Hex,
         };
-        let manifest = adapter.manifest_path(&c.path);
+        let manifest = adapter.manifest_path(&package.path);
+        publish_targets.push((package, adapter, manifest));
+    }
 
+    if !dry_run {
+        println!("Validating publish commands (dry-run)…");
+        for (package, adapter, manifest) in &publish_targets {
+            let display_name = package.display_name(true);
+            if adapter.supports_publish_dry_run() {
+                adapter
+                    .publish(manifest.as_path(), true, publish_args)
+                    .map_err(|err| match err {
+                        SampoError::Publish(message) => SampoError::Publish(format!(
+                            "Dry-run publish failed for {}: {}",
+                            display_name, message
+                        )),
+                        other => other,
+                    })?;
+            } else {
+                println!(
+                    "  - Skipping dry-run for {} ({} does not support dry-run publish)",
+                    display_name,
+                    package.kind.display_name()
+                );
+            }
+        }
+        println!("Dry-run validation passed.");
+    }
+
+    // Execute publish in order using the appropriate adapter for each package
+    for (package, adapter, manifest) in &publish_targets {
         // Skip if the exact version already exists on the registry
-        match adapter.version_exists(&c.name, &c.version, Some(&manifest)) {
+        match adapter.version_exists(
+            &package.name,
+            &package.version,
+            Some(manifest.as_path()),
+        ) {
             Ok(true) => {
                 println!(
                     "Skipping {}@{} (already exists on {})",
-                    c.display_name(true),
-                    c.version,
-                    c.kind.display_name()
+                    package.display_name(true),
+                    package.version,
+                    package.kind.display_name()
                 );
                 continue;
             }
@@ -143,22 +172,24 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
             Err(e) => {
                 eprintln!(
                     "Warning: could not check {} registry for {}@{}: {}. Attempting publish…",
-                    c.kind.display_name(),
-                    c.name,
-                    c.version,
+                    package.kind.display_name(),
+                    package.name,
+                    package.version,
                     e
                 );
             }
         }
 
         // Publish using the adapter
-        adapter.publish(&manifest, dry_run, publish_args)?;
+        adapter.publish(manifest.as_path(), dry_run, publish_args)?;
 
         // Create an annotated git tag after successful publish (not in dry-run)
-        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &c.name, &c.version) {
+        if !dry_run
+            && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version)
+        {
             eprintln!(
                 "Warning: failed to create tag for {}@{}: {}",
-                c.name, c.version, e
+                package.name, package.version, e
             );
         }
     }
@@ -319,8 +350,10 @@ mod tests {
     use crate::types::{PackageInfo, PackageKind, Workspace};
     use rustc_hash::FxHashMap;
     use std::{
+        ffi::OsString,
         fs,
         path::PathBuf,
+        process::Command,
         sync::{Mutex, MutexGuard, OnceLock},
     };
 
@@ -367,6 +400,149 @@ mod tests {
                     std::env::remove_var(self.key);
                 }
             }
+        }
+    }
+
+    struct ScopedEnv {
+        original: Vec<(&'static str, Option<OsString>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ScopedEnv {
+        fn set(overrides: &[(&'static str, OsString)]) -> Self {
+            let lock = env_lock().lock().unwrap();
+            let mut original = Vec::with_capacity(overrides.len());
+            for (key, _) in overrides {
+                original.push((*key, std::env::var_os(key)));
+            }
+
+            for (key, value) in overrides {
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+            }
+
+            Self {
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.original {
+                unsafe {
+                    if let Some(v) = value {
+                        std::env::set_var(key, v);
+                    } else {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        }
+    }
+
+    const FAKE_CARGO_SRC: &str = r#"
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process;
+
+fn main() {
+    let log_path = env::var("SAMPO_FAKE_CARGO_LOG").expect("SAMPO_FAKE_CARGO_LOG not set");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .expect("failed to open SAMPO_FAKE_CARGO_LOG");
+
+    let args: Vec<String> = env::args().skip(1).collect();
+    writeln!(file, "{}", args.join(" ")).expect("failed to write fake cargo log");
+
+    let is_dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let should_fail = if is_dry_run {
+        matches!(env::var("SAMPO_FAKE_CARGO_FAIL_DRY_RUN"), Ok(val) if val == "1")
+    } else {
+        matches!(env::var("SAMPO_FAKE_CARGO_FAIL_ACTUAL"), Ok(val) if val == "1")
+    };
+
+    if should_fail {
+        process::exit(1);
+    }
+}
+"#;
+
+    struct FakeCargo {
+        log_path: PathBuf,
+        _env: ScopedEnv,
+        _temp: tempfile::TempDir,
+    }
+
+    impl FakeCargo {
+        fn install(fail_dry_run: bool, fail_actual: bool) -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let bin_dir = temp_dir.path().join("bin");
+            fs::create_dir_all(&bin_dir).unwrap();
+
+            let src_path = bin_dir.join("cargo_stub.rs");
+            fs::write(&src_path, FAKE_CARGO_SRC).unwrap();
+
+            let cargo_bin = if cfg!(windows) {
+                bin_dir.join("cargo.exe")
+            } else {
+                bin_dir.join("cargo")
+            };
+
+            let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"));
+            let status = Command::new(&rustc)
+                .arg(&src_path)
+                .arg("-Cdebuginfo=0")
+                .arg("-Copt-level=0")
+                .arg("-o")
+                .arg(&cargo_bin)
+                .status()
+                .expect("failed to compile fake cargo binary");
+            assert!(
+                status.success(),
+                "rustc failed to compile fake cargo binary: {:?}",
+                status
+            );
+
+            let log_path = temp_dir.path().join("fake_cargo.log");
+
+            let mut path_override = OsString::from(bin_dir.as_os_str());
+            if let Some(existing) = std::env::var_os("PATH") {
+                let separator_value = if cfg!(windows) { ";" } else { ":" };
+                let separator = OsString::from(separator_value);
+                path_override.push(&separator);
+                path_override.push(&existing);
+            }
+
+            let overrides = vec![
+                ("PATH", path_override),
+                ("SAMPO_FAKE_CARGO_LOG", log_path.clone().into_os_string()),
+                (
+                    "SAMPO_FAKE_CARGO_FAIL_DRY_RUN",
+                    OsString::from(if fail_dry_run { "1" } else { "0" }),
+                ),
+                (
+                    "SAMPO_FAKE_CARGO_FAIL_ACTUAL",
+                    OsString::from(if fail_actual { "1" } else { "0" }),
+                ),
+            ];
+
+            let env_guard = ScopedEnv::set(&overrides);
+
+            Self {
+                log_path,
+                _env: env_guard,
+                _temp: temp_dir,
+            }
+        }
+
+        fn log_path(&self) -> &std::path::Path {
+            &self.log_path
         }
     }
 
@@ -644,6 +820,62 @@ mod tests {
         // Dry run should succeed and show correct order
         let result = workspace.run_publish(true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_publish_performs_preflight_dry_runs() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("sampo-preflight", "0.0.1");
+
+        let fake_cargo = FakeCargo::install(false, false);
+
+        workspace
+            .run_publish(false)
+            .expect("publish should succeed with fake cargo");
+
+        let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected dry-run validation followed by real publish"
+        );
+        assert!(
+            lines[0].contains("--dry-run"),
+            "first invocation should include --dry-run: {:?}",
+            lines[0]
+        );
+        assert!(
+            !lines[1].contains("--dry-run"),
+            "second invocation should omit --dry-run: {:?}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn dry_run_validation_failure_blocks_publish() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("sampo-preflight-failure", "0.0.1");
+
+        let fake_cargo = FakeCargo::install(true, false);
+
+        let err = workspace
+            .run_publish(false)
+            .expect_err("dry-run failure should stop publish");
+        let message = format!("{err}");
+        assert!(
+            message.contains("Dry-run publish failed for"),
+            "expected dry-run failure context, got {message}"
+        );
+
+        let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 1, "expected only dry-run invocation");
+        assert!(
+            lines[0].contains("--dry-run"),
+            "dry-run invocation should include --dry-run: {:?}",
+            lines[0]
+        );
     }
 
     #[test]
