@@ -2,6 +2,10 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
+**In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and use changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVers).
+
+If you’ve ever struggled with keeping user-facing changelogs updated, coordinating version bumps across dependent packages, or automating your publishing process... Sampo might be the tool you were looking for!
+
 ## Getting Started
 
 Install Sampo using Cargo:
@@ -201,6 +205,16 @@ All commands should be run from the root of the repository:
 | `sampo publish` | Publish packages to registries and tag current versions                   |
 
 For detailed command options, use `sampo help <command>` or `sampo <command> --help`.
+
+## Alternatives
+
+Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), from which we borrow the changeset format and monorepo release workflows. But our project goes beyond the JavaScript/TypeScript ecosystem, as it is made with Rust, and designed to support multiple mixed ecosystems. Other <abbr title="Node Package Manager">npm</abbr>-limited tools include [Rush](https://github.com/microsoft/rushstack), [Ship.js](https://github.com/algolia/shipjs), [Release It!](https://github.com/release-it/release-it), and [beachball](https://github.com/microsoft/beachball).
+
+Google's [Release Please](https://github.com/googleapis/release-please) is ecosystem-agnostic, but lacks publishing capabilities, and is not monorepo-focused. Also, it uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) messages to infer changes instead of explicit changesets, which confuses the technical history (used and written by contributors) with the <abbr title="Application Programming Interface">API</abbr> changelog (used by users, can be writen/reviewed by product/docs owner). Other commit-based tools include [semantic-release](https://github.com/semantic-release/semantic-release) and [auto](https://github.com/intuit/auto).
+
+[Knope](https://github.com/knope-dev/knope) is an ecosystem-agnostic tool inspired by Changesets, but lacks publishing capabilities, and is more config-heavy. But we are thankful for their open-source [changeset parser](https://github.com/knope-dev/changesets) that we reused in Sampo!
+
+To our knowledge, no other tool automates versioning, changelogs, and publishing, with explicit changesets, and multi-ecosystem support. That's the gap Sampo aims to fill!
 
 ## Development
 
