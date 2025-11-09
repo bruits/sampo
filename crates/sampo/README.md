@@ -2,7 +2,7 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
-**In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and use changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVers).
+**In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
 If you’ve ever struggled with keeping user-facing changelogs updated, coordinating version bumps across dependent packages, or automating your publishing process... Sampo might be the tool you were looking for!
 
@@ -41,11 +41,11 @@ Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate t
 
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
 
-Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). While a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` -> `alpha.2` -> etc). If a higher bump is required, the base version advances and numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
+Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). While a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
 
 #### Changesets
 
-A markdown file describing what changed, which packages are affected, and the type of version bump required :
+A markdown file describing what changed, which packages are affected, and the type of version bump required:
 
 ```
 ---
@@ -110,7 +110,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 
 Run `sampo pre` to manage pre-release versions for one or more packages.
 
-While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual, Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
+While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
 
 ## Configuration
 
@@ -165,7 +165,7 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `release_date_format`: [`chrono` strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) pattern used for the heading date (default: `%Y-%m-%d`).
 
-`release_date_timezone`: Optional timezone for the stamp. Accepts `local`, `UTC`, numeric offsets such as `+02:00`, or any IANA name (for example `Europe/Paris`).
+`release_date_timezone`: Optional timezone for the stamp. Accepts `local`, `UTC`, numeric offsets such as `+02:00`, or any IANA name (for example, `Europe/Paris`).
 
 ### `[packages]` section
 
@@ -210,7 +210,7 @@ For detailed command options, use `sampo help <command>` or `sampo <command> --h
 
 Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), from which we borrow the changeset format and monorepo release workflows. But our project goes beyond the JavaScript/TypeScript ecosystem, as it is made with Rust, and designed to support multiple mixed ecosystems. Other <abbr title="Node Package Manager">npm</abbr>-limited tools include [Rush](https://github.com/microsoft/rushstack), [Ship.js](https://github.com/algolia/shipjs), [Release It!](https://github.com/release-it/release-it), and [beachball](https://github.com/microsoft/beachball).
 
-Google's [Release Please](https://github.com/googleapis/release-please) is ecosystem-agnostic, but lacks publishing capabilities, and is not monorepo-focused. Also, it uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) messages to infer changes instead of explicit changesets, which confuses the technical history (used and written by contributors) with the <abbr title="Application Programming Interface">API</abbr> changelog (used by users, can be writen/reviewed by product/docs owner). Other commit-based tools include [semantic-release](https://github.com/semantic-release/semantic-release) and [auto](https://github.com/intuit/auto).
+Google's [Release Please](https://github.com/googleapis/release-please) is ecosystem-agnostic, but lacks publishing capabilities, and is not monorepo-focused. Also, it uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) messages to infer changes instead of explicit changesets, which confuses the technical history (used and written by contributors) with the <abbr title="Application Programming Interface">API</abbr> changelog (used by users, can be written/reviewed by product/docs owner). Other commit-based tools include [semantic-release](https://github.com/semantic-release/semantic-release) and [auto](https://github.com/intuit/auto).
 
 [Knope](https://github.com/knope-dev/knope) is an ecosystem-agnostic tool inspired by Changesets, but lacks publishing capabilities, and is more config-heavy. But we are thankful for their open-source [changeset parser](https://github.com/knope-dev/changesets) that we reused in Sampo!
 
