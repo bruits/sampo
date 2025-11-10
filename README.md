@@ -7,7 +7,7 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
-Don't know where to start? Check out Sampo's [Getting Started](./crates/sampo/README.md#getting-started) guide.
+Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md).
 
 ## Crates
 
@@ -22,10 +22,10 @@ Sampo is a monorepo that contains the following crates (Rust packages):
 
 ## Acknowledgements
 
-Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), but made with Rust and designed for multi-ecosystems monorepos.
+Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), but made with Rust and designed for multi-ecosystems monorepos. Read more about Sampo's [alternatives](./crates/sampo/README.md#alternatives).
 
 Sampo uses Knope's [changesets](https://github.com/knope-dev/changesets) crate to parse changeset files. [Knope](https://github.com/knope-dev/knope) is another Rust project inspired by Changesets, we highly recommend checking it out!
 
 Sampo uses and enforces [Semantic Versioning](https://semver.org/) (SemVer), like their standard `MAJOR.MINOR.PATCH` version format and the "Version Bumps" concepts.
 
-Sampo is an open-source project born from [Bruits](https://github.com/bruits), a Rust-focused collective, and lives thanks to its [contributors](https://github.com/bruits/sampo/graphs/contributors) 💛
+Sampo is an open-source project born from [Bruits](https://bruits.org/), a Rust-focused collective 💛
