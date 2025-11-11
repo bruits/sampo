@@ -773,11 +773,13 @@ fn main() {
     fn dry_run_publishes_in_dependency_order() {
         let mut workspace = TestWorkspace::new();
         workspace
-            .add_crate("foundation", "0.1.0")
-            .add_crate("middleware", "0.1.0")
-            .add_crate("app", "0.1.0")
-            .add_dependency("middleware", "foundation", "0.1.0")
-            .add_dependency("app", "middleware", "0.1.0");
+            .add_crate("sampo-test-foundation", "0.1.0")
+            .add_crate("sampo-test-middleware", "0.1.0")
+            .add_crate("sampo-test-app", "0.1.0")
+            .add_dependency("sampo-test-middleware", "sampo-test-foundation", "0.1.0")
+            .add_dependency("sampo-test-app", "sampo-test-middleware", "0.1.0");
+
+        let _fake_cargo = FakeCargo::install(false, false);
 
         // Dry run should succeed and show correct order
         let result = workspace.run_publish(true);
@@ -797,10 +799,12 @@ fn main() {
 
         let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
         let lines: Vec<&str> = log.lines().collect();
+
         assert_eq!(
             lines.len(),
             2,
-            "expected dry-run validation followed by real publish"
+            "expected dry-run validation followed by real publish, got: {:?}",
+            lines
         );
         assert!(
             lines[0].contains("--dry-run"),
