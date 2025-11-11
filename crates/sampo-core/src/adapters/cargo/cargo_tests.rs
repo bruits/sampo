@@ -93,6 +93,26 @@ fn cargo_discoverer_discovers_packages() {
 }
 
 #[test]
+fn cargo_discoverer_discovers_single_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"single-crate\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "single-crate");
+    assert_eq!(packages[0].version, "0.1.0");
+    assert_eq!(packages[0].kind, PackageKind::Cargo);
+    assert_eq!(packages[0].path, root);
+    assert!(packages[0].internal_deps.is_empty());
+}
+
+#[test]
 fn cargo_discoverer_detects_internal_deps() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
