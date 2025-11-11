@@ -1,6 +1,6 @@
 [package]
 name = "sampo-core"
-version = "0.9.0"
+version = "0.9.1"
 license = "MIT"
 authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
 edition = "2024"
