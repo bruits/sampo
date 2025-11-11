@@ -82,7 +82,7 @@ pub fn select_packages(
 ) -> Result<Vec<String>> {
     if available.is_empty() {
         return Err(SampoError::InvalidData(
-            "No workspace packages detected. Run this command inside a Cargo workspace.".into(),
+            "No packages detected in the current directory.".into(),
         ));
     }
 
@@ -160,7 +160,7 @@ mod tests {
         let err = select_packages(&[], "prompt", "Packages").unwrap_err();
         match err {
             SampoError::InvalidData(msg) => {
-                assert!(msg.contains("No workspace packages"));
+                assert!(msg.contains("No packages detected"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

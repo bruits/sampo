@@ -191,6 +191,25 @@ mod tests {
     }
 
     #[test]
+    fn discover_workspace_discovers_single_cargo_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"standalone-crate\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let ws = discover_workspace(root).unwrap();
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name, "standalone-crate");
+        assert_eq!(ws.members[0].version, "1.0.0");
+        assert_eq!(ws.members[0].kind, PackageKind::Cargo);
+        assert_eq!(ws.members[0].path, root);
+    }
+
+    #[test]
     fn discover_workspace_discovers_npm_packages() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();

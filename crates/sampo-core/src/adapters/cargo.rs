@@ -628,28 +628,6 @@ fn clean_path(path: &Path) -> PathBuf {
     result
 }
 
-/// Find the workspace root starting from a directory
-fn find_cargo_workspace_root(
-    start_dir: &Path,
-) -> std::result::Result<(PathBuf, toml::Value), WorkspaceError> {
-    let mut current = start_dir;
-    loop {
-        let toml_path = current.join("Cargo.toml");
-        if toml_path.exists() {
-            let text = fs::read_to_string(&toml_path).map_err(|e| {
-                WorkspaceError::Io(crate::errors::io_error_with_path(e, &toml_path))
-            })?;
-            let value: toml::Value = text.parse().map_err(|e| {
-                WorkspaceError::InvalidManifest(format!("{}: {}", toml_path.display(), e))
-            })?;
-            if value.get("workspace").is_some() {
-                return Ok((current.to_path_buf(), value));
-            }
-        }
-        current = current.parent().ok_or(WorkspaceError::NotFound)?;
-    }
-}
-
 /// Parse workspace members from the root Cargo.toml
 fn parse_cargo_workspace_members(
     root: &Path,
@@ -763,13 +741,27 @@ fn is_cargo_internal_dep(
 }
 
 fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
-    let (workspace_root, root_toml) = find_cargo_workspace_root(root)?;
-    let members = parse_cargo_workspace_members(&workspace_root, &root_toml)?;
-    let mut crates = Vec::new();
+    let cargo_toml_path = root.join("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        return Err(WorkspaceError::NotFound);
+    }
 
-    // First pass: parse per-crate metadata (name, version)
+    let text = fs::read_to_string(&cargo_toml_path)
+        .map_err(|e| WorkspaceError::Io(crate::errors::io_error_with_path(e, &cargo_toml_path)))?;
+    let root_toml: toml::Value = text.parse().map_err(|e| {
+        WorkspaceError::InvalidManifest(format!("{}: {}", cargo_toml_path.display(), e))
+    })?;
+
+    let member_dirs = if root_toml.get("workspace").is_some() {
+        parse_cargo_workspace_members(root, &root_toml)?
+    } else {
+        vec![root.to_path_buf()]
+    };
+
+    let mut crates = Vec::new();
     let mut name_to_path: BTreeMap<String, PathBuf> = BTreeMap::new();
-    for member_dir in &members {
+
+    for member_dir in &member_dirs {
         let manifest_path = member_dir.join("Cargo.toml");
         let text = fs::read_to_string(&manifest_path).map_err(|e| {
             WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
@@ -805,7 +797,6 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
         crates.push((name, version, member_dir.clone(), value));
     }
 
-    // Second pass: compute internal dependencies
     let mut out: Vec<PackageInfo> = Vec::new();
     for (name, version, path, manifest) in crates {
         let identifier = PackageInfo::dependency_identifier(PackageKind::Cargo, &name);
