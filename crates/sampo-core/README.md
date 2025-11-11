@@ -2,7 +2,7 @@
 
 Provides core logic, common types, and internal utilities shared across all Sampo crates.
 
-Not sure what Sampo is? Don't know where to start? Check out Sampo's [Getting Started](./crates/sampo/README.md#getting-started) guide.
+Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md).
 
 ## Development
 

@@ -2,7 +2,7 @@
 
 GitHub Action to run Sampo (release and/or publish) in GitHub Actions.
 
-Not sure what Sampo is? Don't know where to start? Check out Sampo's [Getting Started](./crates/sampo/README.md#getting-started) guide.
+Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md).
 
 ## Usages
 

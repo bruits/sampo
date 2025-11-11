@@ -103,8 +103,9 @@ fn build_missing_changeset_comment(issues: &[ChangesetIssue]) -> String {
     out.push_str("- run `sampo add`\n");
     out.push_str("- follow the prompts to pick the affected packages and describe the change\n");
     out.push_str(
-        "- commit the generated file to this pull request, and it will be detected automatically\n",
+        "- commit the generated file to this pull request, and it will be detected automatically\n\n",
     );
+    out.push_str("If this PR isn't supposed to introduce any changes (e.g., documentation updates), you can ignore this message.\n");
 
     append_issue_section(&mut out, issues);
     out
