@@ -1,5 +1,42 @@
 use crate::errors::{Result, SampoError};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::process::Command;
+
+#[cfg(test)]
+thread_local! {
+    static BRANCH_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct BranchOverrideGuard {
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+pub(crate) fn override_current_branch_for_tests(branch: &str) -> BranchOverrideGuard {
+    let previous = BRANCH_OVERRIDE.with(|cell| cell.borrow_mut().replace(branch.to_string()));
+    BranchOverrideGuard { previous }
+}
+
+#[cfg(test)]
+impl Drop for BranchOverrideGuard {
+    fn drop(&mut self) {
+        BRANCH_OVERRIDE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if let Some(prev) = self.previous.take() {
+                slot.replace(prev);
+            } else {
+                slot.take();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+fn branch_override() -> Option<String> {
+    BRANCH_OVERRIDE.with(|cell| cell.borrow().clone())
+}
 
 fn read_env_branch(key: &str) -> Option<String> {
     std::env::var(key)
@@ -15,6 +52,11 @@ fn read_env_branch(key: &str) -> Option<String> {
 /// 2. `GITHUB_REF_NAME`
 /// 3. `git rev-parse --abbrev-ref HEAD`
 pub fn current_branch() -> Result<String> {
+    #[cfg(test)]
+    if let Some(branch) = branch_override() {
+        return Ok(branch);
+    }
+
     if let Some(branch) = read_env_branch("SAMPO_RELEASE_BRANCH") {
         return Ok(branch);
     }

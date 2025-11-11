@@ -93,6 +93,15 @@ impl PackageAdapter {
         }
     }
 
+    /// Whether this adapter supports invoking publish commands with a dry-run flag.
+    pub fn supports_publish_dry_run(&self) -> bool {
+        match self {
+            Self::Cargo => true,
+            Self::Npm => true,
+            Self::Hex => true,
+        }
+    }
+
     /// Regenerate the workspace lockfile after version updates.
     pub fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         match self {
