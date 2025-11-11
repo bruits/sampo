@@ -338,9 +338,9 @@ pub fn topo_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::override_current_branch_for_tests;
     use crate::types::{PackageInfo, PackageKind, Workspace};
     use rustc_hash::FxHashMap;
-    use serial_test::serial;
     use std::{
         ffi::OsString,
         fs,
@@ -354,45 +354,13 @@ mod tests {
         root: PathBuf,
         _temp_dir: tempfile::TempDir,
         crates: FxHashMap<String, PathBuf>,
+        branch: String,
     }
 
     static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn env_lock() -> &'static Mutex<()> {
         ENV_MUTEX.get_or_init(|| Mutex::new(()))
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        original: Option<String>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let lock = env_lock().lock().unwrap();
-            let original = std::env::var(key).ok();
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self {
-                key,
-                original,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            unsafe {
-                if let Some(ref value) = self.original {
-                    std::env::set_var(self.key, value);
-                } else {
-                    std::env::remove_var(self.key);
-                }
-            }
-        }
     }
 
     struct ScopedEnv {
@@ -543,13 +511,6 @@ fn main() {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
 
-            {
-                let _lock = env_lock().lock().unwrap();
-                unsafe {
-                    std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
-                }
-            }
-
             // Create basic workspace structure
             fs::write(
                 root.join("Cargo.toml"),
@@ -561,7 +522,13 @@ fn main() {
                 root,
                 _temp_dir: temp_dir,
                 crates: FxHashMap::default(),
+                branch: "main".to_string(),
             }
+        }
+
+        fn set_branch(&mut self, branch: &str) -> &mut Self {
+            self.branch = branch.to_string();
+            self
         }
 
         fn add_crate(&mut self, name: &str, version: &str) -> &mut Self {
@@ -622,7 +589,8 @@ fn main() {
         }
 
         fn run_publish(&self, dry_run: bool) -> Result<()> {
-            run_publish(&self.root, dry_run, &[])
+            let _branch_guard = override_current_branch_for_tests(&self.branch);
+            super::run_publish(&self.root, dry_run, &[])
         }
 
         fn assert_publishable_crates(&self, expected: &[&str]) {
@@ -646,16 +614,13 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn run_publish_rejects_unconfigured_branch() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("foo", "0.1.0");
         workspace.set_publishable("foo", false);
         workspace.set_config("[git]\nrelease_branches = [\"main\"]\n");
 
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "feature");
-        let branch = current_branch().expect("branch should be readable");
-        assert_eq!(branch, "feature");
+        workspace.set_branch("feature");
         let err = workspace.run_publish(true).unwrap_err();
         match err {
             SampoError::Release(message) => {
@@ -663,20 +628,23 @@ fn main() {
                     message.contains("not configured for publishing"),
                     "unexpected message: {message}"
                 );
+                assert!(
+                    message.contains("feature"),
+                    "branch name should be mentioned in error: {message}"
+                );
             }
             other => panic!("expected Release error, got {other:?}"),
         }
     }
 
     #[test]
-    #[serial]
     fn run_publish_allows_configured_branch() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("foo", "0.1.0");
         workspace.set_publishable("foo", false);
         workspace.set_config("[git]\nrelease_branches = [\"3.x\"]\n");
 
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "3.x");
+        workspace.set_branch("3.x");
         workspace
             .run_publish(true)
             .expect("publish should succeed on configured branch");
@@ -767,7 +735,6 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn identifies_publishable_crates() {
         let mut workspace = TestWorkspace::new();
         workspace
@@ -779,7 +746,6 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn handles_empty_workspace() {
         let workspace = TestWorkspace::new();
 
@@ -789,7 +755,6 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn rejects_invalid_internal_dependencies() {
         let mut workspace = TestWorkspace::new();
         workspace
@@ -805,7 +770,6 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn dry_run_publishes_in_dependency_order() {
         let mut workspace = TestWorkspace::new();
         workspace
@@ -821,7 +785,6 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn run_publish_performs_preflight_dry_runs() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("sampo-preflight", "0.0.1");
@@ -852,7 +815,6 @@ fn main() {
     }
 
     #[test]
-    #[serial]
     fn dry_run_validation_failure_blocks_publish() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("sampo-preflight-failure", "0.0.1");
