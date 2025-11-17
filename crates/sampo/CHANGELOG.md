@@ -1,5 +1,14 @@
 # sampo
 
+## 0.12.2 — 2025-11-17
+
+### Patch changes
+
+- [253334b](https://github.com/bruits/sampo/commit/253334be5285a79ae3cc411f1c5eab3a3d346c14) Elixir packages without a `package()` function in `mix.exs` are now correctly identified as private and excluded from publishing. — Thanks @goulvenclech!
+- [d7979c5](https://github.com/bruits/sampo/commit/d7979c5e720398bf18fc2d1af042ee0b7621699f) When the ecosystem allows it, `sampo publish` now performs a dry-run publish for each package, before proceeding with the actual publish. If any package fails the dry-run, the publish process is aborted, avoiding partial releases. — Thanks @goulvenclech!
+- [7b95c43](https://github.com/bruits/sampo/commit/7b95c4368e43596f7d9b539cf200c3112a2cbbcf) Sampo now supports single-package Rust repositories, in addition to Cargo workspaces. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.9.1
+
 ## 0.12.1 — 2025-10-27
 
 ### Patch changes
