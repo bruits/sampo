@@ -239,6 +239,67 @@ end
 }
 
 #[test]
+fn is_publishable_requires_package_function() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("mix.exs");
+
+    // Package without package() function is not publishable
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+    assert!(!is_publishable(&manifest).unwrap());
+
+    // Package with package() function is publishable
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0",
+      package: package(),
+      deps: deps()
+    ]
+  end
+
+  defp package do
+    [
+      description: "A test package",
+      licenses: ["MIT"],
+      links: %{"GitHub" => "https://github.com/example/example"}
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+    assert!(is_publishable(&manifest).unwrap());
+}
+
+#[test]
 fn regenerate_lockfile_requires_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let err = regenerate_lockfile(temp.path()).expect_err("expected missing manifest to fail");
