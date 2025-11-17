@@ -119,7 +119,12 @@ pub(super) fn manifest_path(package_dir: &Path) -> PathBuf {
 pub(super) fn is_publishable(manifest_path: &Path) -> Result<bool> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let ProjectMetadata { app, version, .. } = parse_project_metadata(&text);
+    let ProjectMetadata {
+        app,
+        version,
+        has_package_config,
+        ..
+    } = parse_project_metadata(&text);
 
     let Some(app) = app else {
         return Err(SampoError::Publish(format!(
@@ -145,6 +150,10 @@ pub(super) fn is_publishable(manifest_path: &Path) -> Result<bool> {
             "Manifest {} declares an empty version",
             manifest_path.display()
         )));
+    }
+
+    if !has_package_config {
+        return Ok(false);
     }
 
     Ok(true)
@@ -335,6 +344,7 @@ struct ProjectMetadata {
     app: Option<String>,
     version: Option<String>,
     apps_path: Option<PathBuf>,
+    has_package_config: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -404,7 +414,14 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
         }
     }
 
+    metadata.has_package_config = has_package_function(source_bytes, &tree);
+
     metadata
+}
+
+fn has_package_function(source_bytes: &[u8], tree: &Tree) -> bool {
+    let calls = find_function_calls(tree, source_bytes, "package");
+    !calls.is_empty()
 }
 
 fn locate_project_version_literal(source: &str) -> Option<ValueLiteral> {
