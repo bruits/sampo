@@ -16,8 +16,7 @@ use std::process::Command;
 /// them in topological order (dependencies first).
 ///
 /// After publishing, git tags are created for all packages that have been released
-/// (including non-publishable packages like those with `publish = false`), as long as
-/// they are not ignored by the configuration.
+/// (including non-publishable packages), as long as they are not ignored by the configuration.
 ///
 /// # Arguments
 /// * `root` - Path to the workspace root directory
@@ -52,7 +51,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     let mut id_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     let mut all_non_ignored: Vec<&PackageInfo> = Vec::new();
-    
+
     for c in &ws.members {
         // Skip ignored packages
         if should_ignore_package(&config, &ws, c)? {
@@ -176,12 +175,24 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
 
         // Publish using the adapter
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
+
+        // Tag immediately after successful publish to ensure partial failures still tag what succeeded
+        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
+            eprintln!(
+                "Warning: failed to create tag for {}@{}: {}",
+                package.name, package.version, e
+            );
+        }
     }
 
-    // Create tags for all non-ignored packages (including non-publishable ones)
-    // This ensures that private packages also get version tags for Git tracking
+    // Create tags for all non-publishable but non-ignored packages
+    // This ensures that private packages (publish = false) also get version tags for Git tracking
     if !dry_run {
         for package in all_non_ignored {
+            // Skip packages that were already tagged in the publish loop
+            if publishable.contains(package.canonical_identifier()) {
+                continue;
+            }
             if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
                 eprintln!(
                     "Warning: failed to create tag for {}@{}: {}",
@@ -1073,5 +1084,101 @@ edition = "2021"
         assert_eq!(publishable.len(), 1);
         assert!(publishable.contains("main-package"));
         assert!(!publishable.contains("examples-demo"));
+    }
+
+    #[test]
+    fn tags_each_package_only_once() {
+        fn init_git_repo_for_test(path: &Path) {
+            let status = Command::new("git")
+                .arg("init")
+                .current_dir(path)
+                .status()
+                .expect("failed to run git init");
+            assert!(status.success(), "git init failed");
+
+            let email_status = Command::new("git")
+                .args(["config", "user.email", "test@example.com"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user email");
+            assert!(email_status.success(), "git config user.email failed");
+
+            let name_status = Command::new("git")
+                .args(["config", "user.name", "Test User"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user name");
+            assert!(name_status.success(), "git config user.name failed");
+
+            // Create initial commit so HEAD exists
+            let add_status = Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git add");
+            assert!(add_status.success(), "git add failed");
+
+            let commit_status = Command::new("git")
+                .args(["commit", "-m", "Initial commit"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git commit");
+            assert!(commit_status.success(), "git commit failed");
+        }
+
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("publishable-crate", "1.0.0")
+            .add_crate("private-crate", "1.0.0")
+            .set_publishable("private-crate", false);
+
+        // Initialize git repository
+        init_git_repo_for_test(&workspace.root);
+
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        // Run publish (not dry-run to actually create tags)
+        workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        // List all tags
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&workspace.root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+
+        // Should have exactly 2 tags (one per package)
+        assert_eq!(
+            tag_lines.len(),
+            2,
+            "Expected exactly 2 tags, got: {:?}",
+            tag_lines
+        );
+
+        // Verify each tag exists once
+        assert!(
+            tag_lines.contains(&"publishable-crate-v1.0.0"),
+            "Missing tag for publishable crate"
+        );
+        assert!(
+            tag_lines.contains(&"private-crate-v1.0.0"),
+            "Missing tag for private crate"
+        );
+
+        // Verify no duplicate tags (already checked by length, but be explicit)
+        let unique_tags: BTreeSet<&str> = tag_lines.iter().copied().collect();
+        assert_eq!(
+            unique_tags.len(),
+            tag_lines.len(),
+            "Duplicate tags detected: {:?}",
+            tag_lines
+        );
     }
 }
