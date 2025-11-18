@@ -114,37 +114,30 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
             ))
         })?;
         println!("  - {}", package.display_name(true));
-        let adapter = match package.kind {
-            crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
-            crate::types::PackageKind::Npm => PackageAdapter::Npm,
-            crate::types::PackageKind::Hex => PackageAdapter::Hex,
-        };
+        let adapter = PackageAdapter::from_kind(package.kind);
         let manifest = adapter.manifest_path(&package.path);
         publish_targets.push((package, adapter, manifest));
     }
 
     if !dry_run {
         println!("Validating publish commands (dry-run)…");
-        for (package, adapter, manifest) in &publish_targets {
-            let display_name = package.display_name(true);
-            if adapter.supports_publish_dry_run() {
-                adapter
-                    .publish(manifest.as_path(), true, publish_args)
-                    .map_err(|err| match err {
-                        SampoError::Publish(message) => SampoError::Publish(format!(
-                            "Dry-run publish failed for {}: {}",
-                            display_name, message
-                        )),
-                        other => other,
-                    })?;
-            } else {
-                println!(
-                    "  - Skipping dry-run for {} ({} does not support dry-run publish)",
-                    display_name,
-                    package.kind.display_name()
-                );
-            }
+
+        let mut packages_by_kind: BTreeMap<
+            crate::types::PackageKind,
+            Vec<(&PackageInfo, &std::path::Path)>,
+        > = BTreeMap::new();
+        for (package, _, manifest) in &publish_targets {
+            packages_by_kind
+                .entry(package.kind)
+                .or_default()
+                .push((*package, manifest.as_path()));
         }
+
+        for (kind, packages) in &packages_by_kind {
+            let adapter = PackageAdapter::from_kind(*kind);
+            adapter.publish_dry_run(&ws.root, packages, publish_args)?;
+        }
+
         println!("Dry-run validation passed.");
     }
 
@@ -420,6 +413,12 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     writeln!(file, "{}", args.join(" ")).expect("failed to write fake cargo log");
 
+    if args.len() == 1 && args[0] == "--version" {
+        let version = env::var("SAMPO_FAKE_CARGO_VERSION").unwrap_or_else(|_| "1.91.0".to_string());
+        println!("cargo {} (fake)", version);
+        return;
+    }
+
     let is_dry_run = args.iter().any(|arg| arg == "--dry-run");
     let should_fail = if is_dry_run {
         matches!(env::var("SAMPO_FAKE_CARGO_FAIL_DRY_RUN"), Ok(val) if val == "1")
@@ -440,7 +439,7 @@ fn main() {
     }
 
     impl FakeCargo {
-        fn install(fail_dry_run: bool, fail_actual: bool) -> Self {
+        fn install(fail_dry_run: bool, fail_actual: bool, version: &str) -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
             let bin_dir = temp_dir.path().join("bin");
             fs::create_dir_all(&bin_dir).unwrap();
@@ -490,6 +489,7 @@ fn main() {
                     "SAMPO_FAKE_CARGO_FAIL_ACTUAL",
                     OsString::from(if fail_actual { "1" } else { "0" }),
                 ),
+                ("SAMPO_FAKE_CARGO_VERSION", OsString::from(version)),
             ];
 
             let env_guard = ScopedEnv::set(&overrides);
@@ -779,7 +779,7 @@ fn main() {
             .add_dependency("sampo-test-middleware", "sampo-test-foundation", "0.1.0")
             .add_dependency("sampo-test-app", "sampo-test-middleware", "0.1.0");
 
-        let _fake_cargo = FakeCargo::install(false, false);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
 
         // Dry run should succeed and show correct order
         let result = workspace.run_publish(true);
@@ -791,30 +791,38 @@ fn main() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("sampo-preflight", "0.0.1");
 
-        let fake_cargo = FakeCargo::install(false, false);
+        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
 
         workspace
             .run_publish(false)
             .expect("publish should succeed with fake cargo");
 
         let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
-        let lines: Vec<&str> = log.lines().collect();
+        let publish_lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.starts_with("publish "))
+            .collect();
 
         assert_eq!(
-            lines.len(),
+            publish_lines.len(),
             2,
             "expected dry-run validation followed by real publish, got: {:?}",
-            lines
+            publish_lines
         );
         assert!(
-            lines[0].contains("--dry-run"),
+            publish_lines[0].contains("--dry-run"),
             "first invocation should include --dry-run: {:?}",
-            lines[0]
+            publish_lines[0]
         );
         assert!(
-            !lines[1].contains("--dry-run"),
+            publish_lines[0].contains("--workspace"),
+            "workspace dry-run should leverage --workspace flag: {:?}",
+            publish_lines[0]
+        );
+        assert!(
+            !publish_lines[1].contains("--dry-run"),
             "second invocation should omit --dry-run: {:?}",
-            lines[1]
+            publish_lines[1]
         );
     }
 
@@ -823,24 +831,77 @@ fn main() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("sampo-preflight-failure", "0.0.1");
 
-        let fake_cargo = FakeCargo::install(true, false);
+        let fake_cargo = FakeCargo::install(true, false, "1.91.0");
 
         let err = workspace
             .run_publish(false)
             .expect_err("dry-run failure should stop publish");
         let message = format!("{err}");
         assert!(
-            message.contains("Dry-run publish failed for"),
+            message.contains("Cargo workspace dry-run failed"),
             "expected dry-run failure context, got {message}"
         );
 
         let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
-        let lines: Vec<&str> = log.lines().collect();
-        assert_eq!(lines.len(), 1, "expected only dry-run invocation");
+        let publish_lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.starts_with("publish "))
+            .collect();
+        assert_eq!(publish_lines.len(), 1, "expected only dry-run invocation");
         assert!(
-            lines[0].contains("--dry-run"),
+            publish_lines[0].contains("--dry-run"),
             "dry-run invocation should include --dry-run: {:?}",
-            lines[0]
+            publish_lines[0]
+        );
+    }
+
+    #[test]
+    fn skips_dependent_dry_runs_on_old_cargo_versions() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("sampo-base", "0.1.0")
+            .add_crate("sampo-app", "0.1.0")
+            .add_dependency("sampo-app", "sampo-base", "0.1.0");
+
+        let fake_cargo = FakeCargo::install(false, false, "1.80.0");
+
+        workspace
+            .run_publish(false)
+            .expect("publish should succeed when dependent dry-runs are skipped");
+
+        let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
+        let publish_lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.starts_with("publish "))
+            .collect();
+
+        assert_eq!(
+            publish_lines.len(),
+            3,
+            "expected dry-run + two actual publishes: {:?}",
+            publish_lines
+        );
+        assert!(
+            publish_lines[0].contains("--dry-run"),
+            "first invocation should dry-run the dependency crate: {:?}",
+            publish_lines[0]
+        );
+        assert!(
+            !publish_lines[1].contains("--dry-run"),
+            "second invocation should be the first real publish: {:?}",
+            publish_lines[1]
+        );
+        assert!(
+            !publish_lines[2].contains("--dry-run"),
+            "dependent crate should skip dry-run when workspace publish is unavailable: {:?}",
+            publish_lines[2]
+        );
+        assert!(
+            !publish_lines
+                .iter()
+                .any(|line| line.contains("--workspace")),
+            "legacy fallback should not invoke --workspace: {:?}",
+            publish_lines
         );
     }
 

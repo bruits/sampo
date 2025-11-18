@@ -77,6 +77,164 @@ impl CargoAdapter {
     }
 }
 
+/// Detect the version of the `cargo` binary available on the PATH.
+pub fn detect_version() -> Result<Option<Version>> {
+    let output = match Command::new("cargo").arg("--version").output() {
+        Ok(value) => value,
+        Err(err) => return Err(SampoError::Io(err)),
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut parts = stdout.split_whitespace();
+    // First token is the binary name, second token is the version string.
+    let _ = parts.next();
+    let version_str = match parts.next() {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    match Version::parse(version_str) {
+        Ok(version) => Ok(Some(version)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Run `cargo publish --workspace --dry-run` for a subset of workspace members.
+pub fn workspace_publish_dry_run(
+    workspace_root: &Path,
+    packages: &[&str],
+    extra_args: &[String],
+) -> Result<()> {
+    if packages.is_empty() {
+        return Ok(());
+    }
+
+    let manifest_path = workspace_root.join("Cargo.toml");
+    let mut cmd = Command::new("cargo");
+    cmd.arg("publish")
+        .arg("--workspace")
+        .arg("--dry-run")
+        .arg("--manifest-path")
+        .arg(&manifest_path);
+
+    for pkg in packages {
+        cmd.arg("--package").arg(pkg);
+    }
+
+    if !extra_args.is_empty() {
+        cmd.args(extra_args);
+    }
+
+    println!(
+        "Running: {}",
+        format_command_display(cmd.get_program(), cmd.get_args())
+    );
+
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(SampoError::Publish(format!(
+            "cargo publish --workspace --dry-run failed with status {}",
+            status
+        )));
+    }
+
+    Ok(())
+}
+
+pub(super) fn publish_dry_run(
+    workspace_root: &Path,
+    packages: &[(&PackageInfo, &Path)],
+    extra_args: &[String],
+) -> Result<()> {
+    if packages.is_empty() {
+        return Ok(());
+    }
+
+    let has_dependent_packages = packages
+        .iter()
+        .any(|(package, _)| !package.internal_deps.is_empty());
+
+    let mut skip_dependent_packages = false;
+
+    match detect_version() {
+        Ok(Some(version)) => {
+            let min_supported = Version::new(1, 91, 0);
+            if version >= min_supported {
+                let package_names: Vec<&str> = packages
+                    .iter()
+                    .map(|(package, _)| package.name.as_str())
+                    .collect();
+                return workspace_publish_dry_run(workspace_root, &package_names, extra_args)
+                    .map_err(|err| match err {
+                        SampoError::Publish(message) => SampoError::Publish(format!(
+                            "Cargo workspace dry-run failed: {}",
+                            message
+                        )),
+                        other => other,
+                    });
+            }
+
+            if has_dependent_packages {
+                skip_dependent_packages = true;
+                eprintln!(
+                    "Warning: Cargo {version} does not support workspace dry-run publish; skipping dry-run for crates that depend on internal workspace packages."
+                );
+            }
+        }
+        Ok(None) => {
+            if has_dependent_packages {
+                skip_dependent_packages = true;
+                eprintln!(
+                    "Warning: could not determine Cargo version. Skipping dry-run for crates that depend on internal workspace packages."
+                );
+            }
+        }
+        Err(err) => {
+            if has_dependent_packages {
+                skip_dependent_packages = true;
+                eprintln!(
+                    "Warning: failed to determine Cargo version: {err}. Skipping dry-run for crates that depend on internal workspace packages."
+                );
+            }
+        }
+    }
+
+    for (package, manifest) in packages {
+        if skip_dependent_packages && !package.internal_deps.is_empty() {
+            println!(
+                "  - Skipping dry-run for {} (requires workspace-aware Cargo to validate dependencies)",
+                package.display_name(true)
+            );
+            continue;
+        }
+
+        run_cargo_dry_run(package, manifest, extra_args)?;
+    }
+
+    Ok(())
+}
+
+fn run_cargo_dry_run(
+    package: &PackageInfo,
+    manifest_path: &Path,
+    extra_args: &[String],
+) -> Result<()> {
+    CargoAdapter
+        .publish(manifest_path, true, extra_args)
+        .map_err(|err| match err {
+            SampoError::Publish(message) => SampoError::Publish(format!(
+                "Dry-run publish failed for {}: {}",
+                package.display_name(true),
+                message
+            )),
+            other => other,
+        })
+}
+
 /// Check Cargo.toml `publish` field per Cargo rules (false, array of registries, or default true).
 fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
     let text = fs::read_to_string(manifest_path)
