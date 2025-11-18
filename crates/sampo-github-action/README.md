@@ -75,7 +75,7 @@ Example:
 The action exposes two outputs:
 
 - `released`: `"true"` when release automation ran (release PR prepared, stabilize PR prepared, or `sampo release` executed).
-- `published`: `"true"` when new tags were pushed (i.e. packages were published in non-dry runs).
+- `published`: `"true"` when `sampo publish` completed successfully and created version tags.
 
 These outputs can be used to gate subsequent steps, example:
 
