@@ -181,9 +181,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         any_published = true;
 
         // Tag immediately after successful publish to ensure partial failures still tag what succeeded
-        if !dry_run
-            && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version)
-        {
+        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
             eprintln!(
                 "Warning: failed to create tag for {}@{}: {}",
                 package.name, package.version, e
