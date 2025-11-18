@@ -148,6 +148,9 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         println!("Dry-run validation passed.");
     }
 
+    // Track whether at least one package was actually published (not skipped)
+    let mut any_published = false;
+
     // Execute publish in order using the appropriate adapter for each package
     for (package, adapter, manifest) in &publish_targets {
         // Skip if the exact version already exists on the registry
@@ -175,6 +178,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
 
         // Publish using the adapter
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
+        any_published = true;
 
         // Tag immediately after successful publish to ensure partial failures still tag what succeeded
         if !dry_run && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
@@ -187,7 +191,13 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
 
     // Create tags for all non-publishable but non-ignored packages
     // This ensures that private packages (publish = false) also get version tags for Git tracking
-    if !dry_run {
+    // Only create these tags if:
+    //   1. At least one publishable package was actually published (any_published = true), OR
+    //   2. There are no publishable packages at all (workspace contains only private packages)
+    // This prevents creating tags on fresh repos without a release while still supporting
+    // repositories that exclusively use private packages for versioning and changelogs.
+    let should_tag_private = any_published || publishable.is_empty();
+    if !dry_run && should_tag_private {
         for package in all_non_ignored {
             // Skip packages that were already tagged in the publish loop
             if publishable.contains(package.canonical_identifier()) {
@@ -1179,6 +1189,277 @@ edition = "2021"
             tag_lines.len(),
             "Duplicate tags detected: {:?}",
             tag_lines
+        );
+    }
+
+    #[test]
+    fn private_packages_not_tagged_without_publish() {
+        fn init_git_repo_for_test(path: &Path) {
+            let status = Command::new("git")
+                .arg("init")
+                .current_dir(path)
+                .status()
+                .expect("failed to run git init");
+            assert!(status.success(), "git init failed");
+
+            let email_status = Command::new("git")
+                .args(["config", "user.email", "test@example.com"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user email");
+            assert!(email_status.success(), "git config user.email failed");
+
+            let name_status = Command::new("git")
+                .args(["config", "user.name", "Test User"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user name");
+            assert!(name_status.success(), "git config user.name failed");
+
+            // Create initial commit so HEAD exists
+            let add_status = Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git add");
+            assert!(add_status.success(), "git add failed");
+
+            let commit_status = Command::new("git")
+                .args(["commit", "-m", "Initial commit"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git commit");
+            assert!(commit_status.success(), "git commit failed");
+        }
+
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("publishable-crate", "1.0.0")
+            .add_crate("private-crate", "1.0.0")
+            .set_publishable("private-crate", false);
+
+        // Initialize git repository
+        init_git_repo_for_test(&workspace.root);
+
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        // First publish creates tags
+        workspace
+            .run_publish(false)
+            .expect("first publish should succeed");
+
+        // List tags after first publish
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&workspace.root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+        assert_eq!(tag_lines.len(), 2, "Expected 2 tags after first publish");
+
+        // Run publish again without any version changes (simulates fresh auto mode call)
+        // This should NOT create new tags
+        workspace
+            .run_publish(false)
+            .expect("second publish should succeed");
+
+        // List tags after second publish
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&workspace.root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+
+        // Should still have exactly 2 tags (no duplicates created)
+        assert_eq!(
+            tag_lines.len(),
+            2,
+            "Expected still 2 tags after second publish without version changes"
+        );
+    }
+
+    #[test]
+    fn private_only_workspace_creates_tags() {
+        fn init_git_repo_for_test(path: &Path) {
+            let status = Command::new("git")
+                .arg("init")
+                .current_dir(path)
+                .status()
+                .expect("failed to run git init");
+            assert!(status.success(), "git init failed");
+
+            let email_status = Command::new("git")
+                .args(["config", "user.email", "test@example.com"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user email");
+            assert!(email_status.success(), "git config user.email failed");
+
+            let name_status = Command::new("git")
+                .args(["config", "user.name", "Test User"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user name");
+            assert!(name_status.success(), "git config user.name failed");
+
+            // Create initial commit so HEAD exists
+            let add_status = Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git add");
+            assert!(add_status.success(), "git add failed");
+
+            let commit_status = Command::new("git")
+                .args(["commit", "-m", "Initial commit"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git commit");
+            assert!(commit_status.success(), "git commit failed");
+        }
+
+        let mut workspace = TestWorkspace::new();
+        // Create workspace with ONLY private packages
+        workspace
+            .add_crate("private-one", "1.0.0")
+            .add_crate("private-two", "1.0.0")
+            .set_publishable("private-one", false)
+            .set_publishable("private-two", false);
+
+        // Initialize git repository
+        init_git_repo_for_test(&workspace.root);
+
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        // Run publish
+        workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        // List all tags
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&workspace.root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+
+        // Should have 2 tags (one per private package)
+        // This is the edge case: workspace with ONLY private packages should still create tags
+        assert_eq!(
+            tag_lines.len(),
+            2,
+            "Expected 2 tags for private-only workspace, got: {:?}",
+            tag_lines
+        );
+
+        assert!(
+            tag_lines.contains(&"private-one-v1.0.0"),
+            "Missing tag for private-one"
+        );
+        assert!(
+            tag_lines.contains(&"private-two-v1.0.0"),
+            "Missing tag for private-two"
+        );
+    }
+
+    #[test]
+    fn mixed_workspace_after_publish_creates_all_tags() {
+        fn init_git_repo_for_test(path: &Path) {
+            let status = Command::new("git")
+                .arg("init")
+                .current_dir(path)
+                .status()
+                .expect("failed to run git init");
+            assert!(status.success(), "git init failed");
+
+            let email_status = Command::new("git")
+                .args(["config", "user.email", "test@example.com"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user email");
+            assert!(email_status.success(), "git config user.email failed");
+
+            let name_status = Command::new("git")
+                .args(["config", "user.name", "Test User"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user name");
+            assert!(name_status.success(), "git config user.name failed");
+
+            // Create initial commit so HEAD exists
+            let add_status = Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git add");
+            assert!(add_status.success(), "git add failed");
+
+            let commit_status = Command::new("git")
+                .args(["commit", "-m", "Initial commit"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git commit");
+            assert!(commit_status.success(), "git commit failed");
+        }
+
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("publishable-crate", "1.0.0")
+            .add_crate("private-crate", "1.0.0")
+            .set_publishable("private-crate", false);
+
+        // Initialize git repository
+        init_git_repo_for_test(&workspace.root);
+
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        // Run publish - should create tags for both publishable AND private packages
+        workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        // List all tags
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&workspace.root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+
+        // Should have 2 tags: one for publishable-crate, one for private-crate
+        // This verifies that when a publishable package is published, private packages also get tagged
+        assert_eq!(
+            tag_lines.len(),
+            2,
+            "Expected 2 tags (publishable + private), got: {:?}",
+            tag_lines
+        );
+
+        assert!(
+            tag_lines.contains(&"publishable-crate-v1.0.0"),
+            "Missing tag for publishable crate"
+        );
+        assert!(
+            tag_lines.contains(&"private-crate-v1.0.0"),
+            "Private tag should have been created because publishable package was published"
         );
     }
 }
