@@ -1,5 +1,12 @@
 # sampo-github-action
 
+## 0.11.2 — 2025-11-18
+
+### Patch changes
+
+- [b6fe0c2](https://github.com/bruits/sampo/commit/b6fe0c2365156c3acaa1fec8269b3346db261c67) Private packages now receive git version tags during `sampo publish`, ensuring the GitHub Action's published output correctly triggers subsequent workflow steps, even for projects that don't publish to package registries. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.9.2
+
 ## 0.11.1 — 2025-11-18
 
 ### Patch changes
