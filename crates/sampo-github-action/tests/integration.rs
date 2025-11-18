@@ -431,6 +431,84 @@ fn test_publish_dry_run_with_private_packages() {
 }
 
 #[test]
+fn test_publish_private_packages_creates_tags_and_reports_published() {
+    let ws = TestWorkspace::new();
+    setup_publish_workspace(&ws);
+
+    // Create a bare git repository to act as the "origin" remote
+    let remote_dir = TempDir::new().expect("Failed to create remote dir");
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote_dir.path())
+        .status()
+        .expect("failed to init bare remote repo");
+
+    // Add the bare repo as a remote origin
+    Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            remote_dir.path().to_str().unwrap(),
+        ])
+        .current_dir(ws.path())
+        .status()
+        .expect("failed to add remote origin");
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    // Non-dry-run mode to actually create tags
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "false".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success(), "publish command should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Publish complete."),
+        "Expected non-dry-run publish to complete, got stdout: {}",
+        stdout
+    );
+
+    // Verify outputs - this is the regression test for the original bug
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(outputs.get("released").map(String::as_str), Some("false"));
+    assert_eq!(
+        outputs.get("published").map(String::as_str),
+        Some("true"),
+        "published should be true when private packages are versioned and tagged"
+    );
+
+    // Verify that git tags were actually created for the private package
+    let tag_output = Command::new("git")
+        .args(["tag", "--list", "foo-v*"])
+        .current_dir(ws.path())
+        .output()
+        .expect("failed to list git tags");
+
+    let tags = String::from_utf8_lossy(&tag_output.stdout);
+    assert!(
+        tags.contains("foo-v0.1.0"),
+        "Expected git tag for private package foo@0.1.0, got tags: {}",
+        tags
+    );
+}
+
+#[test]
 fn test_auto_mode_detects_changesets() {
     let ws = TestWorkspace::new();
     WorkspaceBuilder::new().with_changesets().build(&ws);
