@@ -189,6 +189,26 @@ impl NpmAdapter {
     }
 }
 
+pub(super) fn publish_dry_run(
+    packages: &[(&PackageInfo, &Path)],
+    extra_args: &[String],
+) -> Result<()> {
+    for (package, manifest) in packages {
+        NpmAdapter
+            .publish(manifest, true, extra_args)
+            .map_err(|err| match err {
+                SampoError::Publish(message) => SampoError::Publish(format!(
+                    "Dry-run publish failed for {}: {}",
+                    package.display_name(true),
+                    message
+                )),
+                other => other,
+            })?;
+    }
+
+    Ok(())
+}
+
 fn parse_manifest_info(manifest_path: &Path, manifest: &JsonValue) -> Result<NpmManifestInfo> {
     let name = manifest
         .get("name")

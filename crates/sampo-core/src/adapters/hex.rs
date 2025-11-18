@@ -121,6 +121,26 @@ impl HexAdapter {
     }
 }
 
+pub(super) fn publish_dry_run(
+    packages: &[(&PackageInfo, &Path)],
+    extra_args: &[String],
+) -> Result<()> {
+    for (package, manifest) in packages {
+        HexAdapter
+            .publish(manifest, true, extra_args)
+            .map_err(|err| match err {
+                SampoError::Publish(message) => SampoError::Publish(format!(
+                    "Dry-run publish failed for {}: {}",
+                    package.display_name(true),
+                    message
+                )),
+                other => other,
+            })?;
+    }
+
+    Ok(())
+}
+
 fn enforce_hex_rate_limit() {
     let lock = HEX_LAST_CALL.get_or_init(|| Mutex::new(None));
     let mut guard = match lock.lock() {

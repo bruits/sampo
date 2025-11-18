@@ -6,7 +6,7 @@ pub mod npm;
 pub use cargo::ManifestMetadata;
 
 use crate::errors::{Result, WorkspaceError};
-use crate::types::PackageInfo;
+use crate::types::{PackageInfo, PackageKind};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -93,12 +93,18 @@ impl PackageAdapter {
         }
     }
 
-    /// Whether this adapter supports invoking publish commands with a dry-run flag.
-    pub fn supports_publish_dry_run(&self) -> bool {
+    /// Execute dry-run publish validation for the provided packages.
+    /// Adapters can choose the most appropriate strategy (workspace-level or per-package).
+    pub fn publish_dry_run(
+        &self,
+        workspace_root: &Path,
+        packages: &[(&PackageInfo, &Path)],
+        extra_args: &[String],
+    ) -> Result<()> {
         match self {
-            Self::Cargo => true,
-            Self::Npm => true,
-            Self::Hex => true,
+            Self::Cargo => cargo::publish_dry_run(workspace_root, packages, extra_args),
+            Self::Npm => npm::publish_dry_run(packages, extra_args),
+            Self::Hex => hex::publish_dry_run(packages, extra_args),
         }
     }
 
@@ -152,6 +158,15 @@ impl PackageAdapter {
                     new_version_by_name,
                 )
             }
+        }
+    }
+
+    /// Adapter helper for matching from a PackageKind.
+    pub fn from_kind(kind: PackageKind) -> Self {
+        match kind {
+            PackageKind::Cargo => Self::Cargo,
+            PackageKind::Npm => Self::Npm,
+            PackageKind::Hex => Self::Hex,
         }
     }
 }
