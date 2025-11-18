@@ -15,6 +15,10 @@ use std::process::Command;
 /// publishable for their respective ecosystems, validates their dependencies, and publishes
 /// them in topological order (dependencies first).
 ///
+/// After publishing, git tags are created for all packages that have been released
+/// (including non-publishable packages like those with `publish = false`), as long as
+/// they are not ignored by the configuration.
+///
 /// # Arguments
 /// * `root` - Path to the workspace root directory
 /// * `dry_run` - If true, performs validation and shows what would be published without actually publishing
@@ -47,11 +51,15 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     // Determine which packages are publishable and not ignored
     let mut id_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
+    let mut all_non_ignored: Vec<&PackageInfo> = Vec::new();
+    
     for c in &ws.members {
         // Skip ignored packages
         if should_ignore_package(&config, &ws, c)? {
             continue;
         }
+
+        all_non_ignored.push(c);
 
         let adapter = match c.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
@@ -69,7 +77,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         id_to_package.insert(identifier, c);
     }
 
-    if publishable.is_empty() {
+    if publishable.is_empty() && all_non_ignored.is_empty() {
         println!("No publishable packages were found in the workspace.");
         return Ok(());
     }
@@ -168,13 +176,18 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
 
         // Publish using the adapter
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
+    }
 
-        // Create an annotated git tag after successful publish (not in dry-run)
-        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
-            eprintln!(
-                "Warning: failed to create tag for {}@{}: {}",
-                package.name, package.version, e
-            );
+    // Create tags for all non-ignored packages (including non-publishable ones)
+    // This ensures that private packages also get version tags for Git tracking
+    if !dry_run {
+        for package in all_non_ignored {
+            if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
+                eprintln!(
+                    "Warning: failed to create tag for {}@{}: {}",
+                    package.name, package.version, e
+                );
+            }
         }
     }
 

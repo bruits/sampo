@@ -396,7 +396,7 @@ fn test_release_updates_versions_and_outputs() {
 }
 
 #[test]
-fn test_publish_dry_run_reports_no_publishable_crates() {
+fn test_publish_dry_run_with_private_packages() {
     let ws = TestWorkspace::new();
     setup_publish_workspace(&ws);
 
@@ -417,10 +417,12 @@ fn test_publish_dry_run_reports_no_publishable_crates() {
     let output = run_action(&[], &env_vars, ws.path());
     assert!(output.status.success(), "publish command should succeed");
 
+    // With private packages (publish = false), sampo publish should still work
+    // and create tags for these packages in non-dry-run mode
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("No publishable packages were found in the workspace."),
-        "Expected dry-run publish to report missing crates"
+        stdout.contains("Dry-run complete."),
+        "Expected dry-run to complete successfully"
     );
 
     let outputs = parse_outputs(&output_file);
