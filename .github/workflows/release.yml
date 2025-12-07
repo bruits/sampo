@@ -92,7 +92,7 @@ jobs:
             dist/{{crate}}-x86_64-unknown-linux-gnu.tar.gz => {{crate}}-{{version}}-x86_64-unknown-linux-gnu.tar.gz
             dist/{{crate}}-x86_64-apple-darwin.tar.gz => {{crate}}-{{version}}-x86_64-apple-darwin.tar.gz
             dist/{{crate}}-x86_64-pc-windows-msvc.tar.gz => {{crate}}-{{version}}-x86_64-pc-windows-msvc.tar.gz
-          open-discussion: true
+          open-discussion: "sampo,sampo-github-action,sampo-github-bot"
           discussion-category: announcements
           use-local-build: true
         env:
