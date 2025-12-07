@@ -68,6 +68,9 @@ mod tests {
                 }
             }
 
+            // Create .sampo/ directory (required for discover_workspace)
+            fs::create_dir_all(root.join(".sampo")).unwrap();
+
             // Create basic workspace structure
             fs::write(
                 root.join("Cargo.toml"),

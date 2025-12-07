@@ -1,4 +1,4 @@
-use sampo_core::discover_workspace;
+use sampo_core::discover_packages_at;
 use sampo_core::errors::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,12 +10,19 @@ pub struct InitReport {
     pub created_config: bool,
 }
 
+/// Initialize Sampo in the current working directory.
+///
+/// Unlike other commands, `init` works directly in `cwd` without walking up
+/// the directory tree. The user must run it from their project root.
 pub fn init_from_cwd(cwd: &Path) -> Result<InitReport> {
-    let root = match discover_workspace(cwd) {
-        Ok(ws) => ws.root,
-        Err(_) => cwd.to_path_buf(),
-    };
-    init_at_root(&root)
+    // Check if there's a manifest in cwd (Cargo.toml, package.json, mix.exs)
+    let packages = discover_packages_at(cwd)?;
+    if packages.is_empty() {
+        return Err(sampo_core::errors::SampoError::Workspace(
+            sampo_core::errors::WorkspaceError::NotFound,
+        ));
+    }
+    init_at_root(cwd)
 }
 
 fn init_at_root(root: &Path) -> Result<InitReport> {

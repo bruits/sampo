@@ -1035,6 +1035,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
+        // Create .sampo/ directory (required for discover_workspace)
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+
         fs::write(
             root.join("Cargo.toml"),
             "[workspace]\nmembers=[\"crates/foo\", \"crates/bar\"]\n",
