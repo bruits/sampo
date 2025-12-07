@@ -1232,7 +1232,7 @@ tempfile = "3.0"
             changelog_show_release_date: true,
             changelog_release_date_format: "%Y-%m-%d".to_string(),
             changelog_release_date_timezone: None,
-            changelog_tags: vec![],
+            changesets_tags: vec![],
             fixed_dependencies: vec![vec!["pkg-a".to_string(), "pkg-c".to_string()]],
             linked_dependencies: vec![],
             ignore_unpublished: false,

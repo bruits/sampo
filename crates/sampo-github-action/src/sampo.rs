@@ -122,7 +122,7 @@ pub fn build_release_pr_body(
     }
 
     let changesets_dir = workspace.join(".sampo").join("changesets");
-    let changesets = load_changesets(&changesets_dir, &config.changelog_tags)?;
+    let changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
 
     // Load workspace for dependency explanations
     let ws = discover_workspace(workspace).map_err(|e| ActionError::SampoCommandFailed {

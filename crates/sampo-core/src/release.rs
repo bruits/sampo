@@ -489,8 +489,8 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let changesets_dir = workspace.root.join(".sampo").join("changesets");
     let prerelease_dir = workspace.root.join(".sampo").join("prerelease");
 
-    let current_changesets = load_changesets(&changesets_dir, &config.changelog_tags)?;
-    let preserved_changesets = load_changesets(&prerelease_dir, &config.changelog_tags)?;
+    let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
+    let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
 
     let mut using_preserved = false;
     let mut cached_plan_state: Option<PlanState> = None;
@@ -547,7 +547,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             final_changesets.extend(preserved_changesets);
         } else {
             restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
-            final_changesets = load_changesets(&changesets_dir, &config.changelog_tags)?;
+            final_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
         }
 
         match compute_plan_state(&final_changesets, &workspace, &config)? {

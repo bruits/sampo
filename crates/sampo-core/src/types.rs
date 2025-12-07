@@ -448,7 +448,7 @@ impl ParsedChangeType {
     /// - `minor (Added)` - semver bump with custom tag for changelog categorization
     ///
     /// The tag must be enclosed in parentheses at the end of the string.
-    /// Tags are only allowed if `allowed_tags` is non-empty (configured via changelog.tags).
+    /// Tags are only allowed if `allowed_tags` is non-empty (configured via changesets.tags).
     pub fn parse(input: &str, allowed_tags: &[String]) -> Result<Self, String> {
         let trimmed = input.trim();
 
@@ -469,10 +469,10 @@ impl ParsedChangeType {
             })?;
 
             if !tag_part.is_empty() {
-                // Tags require configuration via changelog.tags
+                // Tags require configuration via changesets.tags
                 if allowed_tags.is_empty() {
                     return Err(format!(
-                        "Tag '{}' found, but no tags are configured. Please configure changelog.tags in your config file.",
+                        "Tag '{}' found, but no tags are configured. Please configure changesets.tags in your config file.",
                         tag_part
                     ));
                 }
@@ -491,7 +491,7 @@ impl ParsedChangeType {
                     }
                     None => {
                         return Err(format!(
-                            "Tag '{}' is not in the configured changelog.tags list. Allowed tags: {:?}",
+                            "Tag '{}' is not in the configured changesets.tags list. Allowed tags: {:?}",
                             tag_part, allowed_tags
                         ));
                     }
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(result.tag, Some("Fixed".to_string()));
 
         let err = ParsedChangeType::parse("patch (Unknown)", &allowed).unwrap_err();
-        assert!(err.contains("not in the configured changelog.tags list"));
+        assert!(err.contains("not in the configured changesets.tags list"));
     }
 
     #[test]

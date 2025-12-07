@@ -106,7 +106,7 @@ fn parse_change_type(
                         // No custom tags configured, reject custom type
                         Err(SampoError::Changeset(format!(
                             "Unsupported change type '{}' for package '{}'. Only 'patch', 'minor', and 'major' are supported. \
-                             To use custom tags like 'minor (Added)', configure changelog.tags in .sampo/config.toml.",
+                             To use custom tags like 'minor (Added)', configure changesets.tags in .sampo/config.toml.",
                             custom_str, package_name
                         )))
                     }
@@ -288,7 +288,7 @@ mod tests {
         let result = parse_changeset(text, path, &allowed);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("not in the configured changelog.tags list"));
+        assert!(err.contains("not in the configured changesets.tags list"));
     }
 
     #[test]
@@ -298,7 +298,7 @@ mod tests {
         let result = parse_changeset(text, path, &[]);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("configure changelog.tags"));
+        assert!(err.contains("configure changesets.tags"));
     }
 
     #[test]
