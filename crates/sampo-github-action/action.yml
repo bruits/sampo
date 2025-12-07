@@ -40,7 +40,7 @@ inputs:
     required: false
     default: "false"
   open-discussion:
-    description: "If true, also open a GitHub Discussion for each created release (requires GitHub releases)"
+    description: "Open GitHub Discussion for releases. Either 'true' (all packages), 'false' (none), or a comma-separated list of package names (e.g. 'sampo,sampo-github-action')"
     required: false
     default: "false"
   discussion-category:
