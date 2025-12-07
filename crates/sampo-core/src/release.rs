@@ -2,8 +2,8 @@ use crate::adapters::{ManifestMetadata, PackageAdapter};
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::types::{
-    Bump, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier, ReleaseOutput,
-    ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
+    Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier,
+    ReleaseOutput, ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
 };
 use crate::{
     changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
@@ -238,14 +238,14 @@ pub fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
 /// * `releases` - Map of package name to (old_version, new_version) for all planned releases
 ///
 /// # Returns
-/// A map of package name to list of (message, bump_type) explanations to add to changelogs
+/// A map of package name to list of (message, category) explanations to add to changelogs
 pub fn detect_all_dependency_explanations(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
     config: &Config,
     releases: &BTreeMap<String, (String, String)>,
-) -> Result<BTreeMap<String, Vec<(String, Bump)>>> {
-    let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+) -> Result<BTreeMap<String, Vec<(String, ChangelogCategory)>>> {
+    let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
     let include_kind = workspace.has_multiple_package_kinds();
 
     // 1. Detect packages bumped due to fixed dependency group policy
@@ -265,7 +265,7 @@ pub fn detect_all_dependency_explanations(
         messages_by_pkg
             .entry(pkg_name)
             .or_default()
-            .push((msg, bump_type));
+            .push((msg, ChangelogCategory::Bump(bump_type)));
     }
 
     // 2. Detect packages bumped due to internal dependency updates
@@ -313,7 +313,7 @@ pub fn detect_all_dependency_explanations(
                     messages_by_pkg
                         .entry(crate_id.clone())
                         .or_default()
-                        .push((msg, bump));
+                        .push((msg, ChangelogCategory::Bump(bump)));
                 }
             }
         }
@@ -336,7 +336,7 @@ pub fn detect_fixed_dependency_policy_packages(
     // Build set of packages with direct changesets
     let mut packages_with_changesets: BTreeSet<String> = BTreeSet::new();
     for cs in changesets {
-        for (spec, _) in &cs.entries {
+        for (spec, _, _) in &cs.entries {
             let info = resolve_package_spec(workspace, spec)?;
             packages_with_changesets.insert(info.canonical_identifier().to_string());
         }
@@ -422,7 +422,7 @@ pub fn detect_fixed_dependency_policy_packages(
                     changesets
                         .iter()
                         .filter_map(|cs| {
-                            cs.entries.iter().find_map(|(spec, bump)| {
+                            cs.entries.iter().find_map(|(spec, bump, _)| {
                                 let info = resolve_package_spec(workspace, spec).ok()?;
                                 if info.canonical_identifier() == member_id.as_str() {
                                     Some(*bump)
@@ -446,9 +446,9 @@ pub fn detect_fixed_dependency_policy_packages(
 
 /// Type alias for initial bumps computation result
 type InitialBumpsResult = (
-    BTreeMap<String, Bump>,                // bump_by_pkg
-    BTreeMap<String, Vec<(String, Bump)>>, // messages_by_pkg
-    BTreeSet<std::path::PathBuf>,          // used_paths
+    BTreeMap<String, Bump>,                             // bump_by_pkg
+    BTreeMap<String, Vec<(String, ChangelogCategory)>>, // messages_by_pkg
+    BTreeSet<std::path::PathBuf>,                       // used_paths
 );
 
 /// Type alias for release plan
@@ -456,7 +456,7 @@ type ReleasePlan = Vec<(String, String, String)>; // (name, old_version, new_ver
 
 /// Aggregated data required to apply a planned release
 struct PlanState {
-    messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>>,
+    messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>>,
     used_paths: BTreeSet<PathBuf>,
     releases: ReleasePlan,
     released_packages: Vec<ReleasedPackage>,
@@ -489,8 +489,8 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let changesets_dir = workspace.root.join(".sampo").join("changesets");
     let prerelease_dir = workspace.root.join(".sampo").join("prerelease");
 
-    let current_changesets = load_changesets(&changesets_dir)?;
-    let preserved_changesets = load_changesets(&prerelease_dir)?;
+    let current_changesets = load_changesets(&changesets_dir, &config.changelog_tags)?;
+    let preserved_changesets = load_changesets(&prerelease_dir, &config.changelog_tags)?;
 
     let mut using_preserved = false;
     let mut cached_plan_state: Option<PlanState> = None;
@@ -547,7 +547,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             final_changesets.extend(preserved_changesets);
         } else {
             restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
-            final_changesets = load_changesets(&changesets_dir)?;
+            final_changesets = load_changesets(&changesets_dir, &config.changelog_tags)?;
         }
 
         match compute_plan_state(&final_changesets, &workspace, &config)? {
@@ -855,7 +855,7 @@ fn compute_initial_bumps(
     cfg: &Config,
 ) -> Result<InitialBumpsResult> {
     let mut bump_by_pkg: BTreeMap<String, Bump> = BTreeMap::new();
-    let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+    let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
     let mut used_paths: BTreeSet<std::path::PathBuf> = BTreeSet::new();
 
     // Resolve GitHub repo slug once if available (config, env or origin remote)
@@ -866,7 +866,7 @@ fn compute_initial_bumps(
 
     for cs in changesets {
         let mut consumed_changeset = false;
-        for (spec, bump) in &cs.entries {
+        for (spec, bump, tag) in &cs.entries {
             let info = resolve_package_spec(ws, spec)?;
             if should_ignore_package(cfg, ws, info)? {
                 continue;
@@ -902,10 +902,16 @@ fn compute_initial_bumps(
                 cs.message.clone()
             };
 
+            // Determine changelog category based on tag presence
+            let category = match tag {
+                Some(t) => ChangelogCategory::Tag(t.clone()),
+                None => ChangelogCategory::Bump(*bump),
+            };
+
             messages_by_pkg
                 .entry(identifier)
                 .or_default()
-                .push((enriched, *bump));
+                .push((enriched, category));
         }
         if consumed_changeset {
             used_paths.insert(cs.path.clone());
@@ -1275,7 +1281,7 @@ fn compute_release_date_display_with_now(
 fn apply_releases(
     releases: &ReleasePlan,
     ws: &Workspace,
-    messages_by_pkg: &mut BTreeMap<String, Vec<(String, Bump)>>,
+    messages_by_pkg: &mut BTreeMap<String, Vec<(String, ChangelogCategory)>>,
     changesets: &[ChangesetInfo],
     cfg: &Config,
 ) -> Result<()> {
@@ -1570,7 +1576,7 @@ fn update_changelog(
     package: &str,
     old_version: &str,
     new_version: &str,
-    entries: &[(String, Bump)],
+    entries: &[(String, ChangelogCategory)],
     release_date_display: Option<&str>,
 ) -> Result<()> {
     let path = crate_dir.join("CHANGELOG.md");
@@ -1588,35 +1594,37 @@ fn update_changelog(
         intro = format!("# {}\n\n", package);
     }
 
-    // Parse and merge the current top section only if it's an unpublished section.
-    // Heuristic: if the top section header equals the current (old) version, it is published
-    // and must be preserved. Otherwise, treat it as in-progress and merge its bullets.
-    let mut merged_major: Vec<String> = Vec::new();
-    let mut merged_minor: Vec<String> = Vec::new();
-    let mut merged_patch: Vec<String> = Vec::new();
+    // Determine if we're using custom tags (any entry has a Tag category)
+    let uses_custom_tags = entries
+        .iter()
+        .any(|(_, cat)| matches!(cat, ChangelogCategory::Tag(_)));
 
-    // helper to push without duplicates (preserve append order)
-    let push_unique = |list: &mut Vec<String>, msg: &str| {
-        if !list.iter().any(|m| m == msg) {
-            list.push(msg.to_string());
-        }
-    };
+    // Group entries by heading. Use IndexMap-like behavior to preserve insertion order.
+    // We use a Vec of (heading, Vec<messages>) to maintain order.
+    let mut sections: Vec<(String, Vec<String>)> = Vec::new();
+
+    // helper to push without duplicates within a section
+    let push_unique_to_section =
+        |sections: &mut Vec<(String, Vec<String>)>, heading: &str, msg: &str| {
+            if let Some((_h, messages)) = sections.iter_mut().find(|(h, _)| h == heading) {
+                if !messages.iter().any(|m| m == msg) {
+                    messages.push(msg.to_string());
+                }
+            } else {
+                sections.push((heading.to_string(), vec![msg.to_string()]));
+            }
+        };
 
     // Collect new entries
-    for (msg, bump) in entries {
-        match bump {
-            Bump::Major => push_unique(&mut merged_major, msg),
-            Bump::Minor => push_unique(&mut merged_minor, msg),
-            Bump::Patch => push_unique(&mut merged_patch, msg),
-        }
+    for (msg, category) in entries {
+        let heading = category.heading();
+        push_unique_to_section(&mut sections, &heading, msg);
     }
 
-    // If body starts with a previous top section (## ...), inspect its header.
+    // Parse and merge the current top section only if it's an unpublished section.
     // If header == old_version => preserve it (do not merge or strip).
-    // Else => parse and merge its bullets, then strip that section.
     let trimmed = versions_body.trim_start();
     if trimmed.starts_with("## ") {
-        // Extract first header line text
         let mut lines_iter = trimmed.lines();
         let header_line = lines_iter.next().unwrap_or("").trim();
         let header_text = header_line.trim_start_matches("## ").trim();
@@ -1624,40 +1632,31 @@ fn update_changelog(
         let is_published_top = header_matches_release_version(header_text, old_version);
 
         if !is_published_top {
-            // Determine the extent of the first section in 'trimmed'
             let after_header_offset = header_line.len();
             let rest_after_header = &trimmed[after_header_offset..];
-            // Find next section marker starting at a new line
             let next_rel = rest_after_header.find("\n## ");
             let (section_text, remaining) = match next_rel {
                 Some(pos) => {
-                    let end = after_header_offset + pos + 1; // include leading newline
+                    let end = after_header_offset + pos + 1;
                     (&trimmed[..end], &trimmed[end..])
                 }
                 None => (trimmed, ""),
             };
 
-            let mut current = None::<&str>;
+            // Parse existing section headings - support both bump-based and custom tags
+            let mut current_heading: Option<String> = None;
             for line in section_text.lines() {
                 let t = line.trim();
-                if t.eq_ignore_ascii_case("### Major changes") {
-                    current = Some("major");
-                    continue;
-                } else if t.eq_ignore_ascii_case("### Minor changes") {
-                    current = Some("minor");
-                    continue;
-                } else if t.eq_ignore_ascii_case("### Patch changes") {
-                    current = Some("patch");
+                if t.starts_with("### ") {
+                    let heading_text = t.trim_start_matches("### ").trim();
+                    current_heading = Some(heading_text.to_string());
                     continue;
                 }
-                if t.starts_with("- ") {
+                if t.starts_with("- ")
+                    && let Some(ref heading) = current_heading
+                {
                     let msg = t.trim_start_matches("- ").trim();
-                    match current {
-                        Some("major") => push_unique(&mut merged_major, msg),
-                        Some("minor") => push_unique(&mut merged_minor, msg),
-                        Some("patch") => push_unique(&mut merged_patch, msg),
-                        _ => {}
-                    }
+                    push_unique_to_section(&mut sections, heading, msg);
                 }
             }
 
@@ -1672,26 +1671,30 @@ fn update_changelog(
         None => section.push_str(&format!("## {new_version}\n\n")),
     }
 
-    if !merged_major.is_empty() {
-        section.push_str("### Major changes\n\n");
-        for msg in &merged_major {
-            section.push_str(&crate::markdown::format_markdown_list_item(msg));
-        }
-        section.push('\n');
+    // When using bump-based sections (default), render in Major > Minor > Patch order.
+    // When using custom tags, render in order of first appearance.
+    if !uses_custom_tags {
+        // Sort sections by bump order
+        let bump_order = |heading: &str| -> u8 {
+            match heading {
+                "Major changes" => 0,
+                "Minor changes" => 1,
+                "Patch changes" => 2,
+                _ => 3, // Unknown headings go last
+            }
+        };
+        sections.sort_by(|(a, _), (b, _)| bump_order(a).cmp(&bump_order(b)));
     }
-    if !merged_minor.is_empty() {
-        section.push_str("### Minor changes\n\n");
-        for msg in &merged_minor {
-            section.push_str(&crate::markdown::format_markdown_list_item(msg));
+
+    // Render sections
+    for (heading, messages) in &sections {
+        if !messages.is_empty() {
+            section.push_str(&format!("### {}\n\n", heading));
+            for msg in messages {
+                section.push_str(&crate::markdown::format_markdown_list_item(msg));
+            }
+            section.push('\n');
         }
-        section.push('\n');
-    }
-    if !merged_patch.is_empty() {
-        section.push_str("### Patch changes\n\n");
-        for msg in &merged_patch {
-            section.push_str(&crate::markdown::format_markdown_list_item(msg));
-        }
-        section.push('\n');
     }
 
     let mut combined = String::new();
@@ -1748,7 +1751,10 @@ mod tests {
         );
         fs::write(crate_dir.join("CHANGELOG.md"), existing).unwrap();
 
-        let entries = vec![("Add new feature".to_string(), Bump::Minor)];
+        let entries = vec![(
+            "Add new feature".to_string(),
+            ChangelogCategory::Bump(Bump::Minor),
+        )];
         update_changelog(
             crate_dir,
             "my-package",
@@ -1779,7 +1785,10 @@ mod tests {
         let temp = tempdir().unwrap();
         let crate_dir = temp.path();
 
-        let entries = vec![("Initial release".to_string(), Bump::Major)];
+        let entries = vec![(
+            "Initial release".to_string(),
+            ChangelogCategory::Bump(Bump::Major),
+        )];
         update_changelog(crate_dir, "new-package", "0.1.0", "1.0.0", &entries, None).unwrap();
 
         let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
@@ -1807,7 +1816,7 @@ mod tests {
 
         let temp = tempdir().unwrap();
         let crate_dir = temp.path();
-        let entries = vec![("Bug fix".to_string(), Bump::Patch)];
+        let entries = vec![("Bug fix".to_string(), ChangelogCategory::Bump(Bump::Patch))];
 
         update_changelog(
             crate_dir,

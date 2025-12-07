@@ -169,7 +169,7 @@ fn append_issue_section(out: &mut String, issues: &[ChangesetIssue]) {
 fn summarize_packages(changesets: &[ChangesetInfo]) -> BTreeMap<String, PackagePreview> {
     let mut packages = BTreeMap::new();
     for cs in changesets {
-        for (spec, bump) in &cs.entries {
+        for (spec, bump, _tag) in &cs.entries {
             let key = spec.to_canonical_string();
             let preview = packages
                 .entry(key)
@@ -286,8 +286,12 @@ fn parse_changeset_files(files: &[ChangesetFile]) -> ParsedChangesets {
     let mut valid = Vec::new();
     let mut issues = Vec::new();
 
+    // Bot doesn't have access to config, so we pass empty allowed_tags
+    // Tags will be validated later by the actual release process
+    let allowed_tags: Vec<String> = Vec::new();
+
     for file in files {
-        match parse_changeset(&file.content, Path::new(&file.path)) {
+        match parse_changeset(&file.content, Path::new(&file.path), &allowed_tags) {
             Ok(Some(info)) => valid.push(info),
             Ok(None) => issues.push(ChangesetIssue {
                 path: file.path.clone(),
@@ -344,7 +348,7 @@ index 0000000..f1c2d3e
         };
         let info = ChangesetInfo {
             path: Path::new(".sampo/changesets/example.md").to_path_buf(),
-            entries: vec![(spec.clone(), Bump::Minor)],
+            entries: vec![(spec.clone(), Bump::Minor, None)],
             message: "feat: add new feature".to_string(),
         };
         let packages = summarize_packages(&[info.clone(), info]);
@@ -382,6 +386,7 @@ index 0000000..f1c2d3e
             entries: vec![(
                 PackageSpecifier::parse("cargo/example").expect("valid specifier"),
                 Bump::Minor,
+                None,
             )],
             message: "feat: add new capability".to_string(),
         };

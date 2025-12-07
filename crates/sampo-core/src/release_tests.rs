@@ -1232,6 +1232,7 @@ tempfile = "3.0"
             changelog_show_release_date: true,
             changelog_release_date_format: "%Y-%m-%d".to_string(),
             changelog_release_date_timezone: None,
+            changelog_tags: vec![],
             fixed_dependencies: vec![vec!["pkg-a".to_string(), "pkg-c".to_string()]],
             linked_dependencies: vec![],
             ignore_unpublished: false,
@@ -1245,6 +1246,7 @@ tempfile = "3.0"
             entries: vec![(
                 crate::types::PackageSpecifier::parse("pkg-b").unwrap(),
                 Bump::Minor,
+                None,
             )],
             message: "feat: new feature".to_string(),
             path: PathBuf::from("/test/.sampo/changesets/test.md"),
@@ -1276,7 +1278,7 @@ tempfile = "3.0"
                 .0
                 .contains("Updated dependencies: pkg-b@1.1.0")
         );
-        assert_eq!(pkg_a_messages[0].1, Bump::Patch);
+        assert_eq!(pkg_a_messages[0].1, ChangelogCategory::Bump(Bump::Patch));
 
         // pkg-c should have fixed dependency policy message (no deps but in fixed group)
         let pkg_c_messages = explanations.get("cargo/pkg-c").unwrap();
@@ -1285,7 +1287,7 @@ tempfile = "3.0"
             pkg_c_messages[0].0,
             "Bumped due to fixed dependency group policy"
         );
-        assert_eq!(pkg_c_messages[0].1, Bump::Minor); // Inferred from version change
+        assert_eq!(pkg_c_messages[0].1, ChangelogCategory::Bump(Bump::Minor)); // Inferred from version change
 
         // pkg-b should have no messages (explicit changeset)
         assert!(!explanations.contains_key("cargo/pkg-b"));

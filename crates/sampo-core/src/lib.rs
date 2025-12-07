@@ -14,7 +14,10 @@ pub mod workspace;
 
 // Re-export commonly used items
 pub use adapters::ManifestMetadata;
-pub use changeset::{ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown};
+pub use changeset::{
+    ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown,
+    render_changeset_markdown_with_tags,
+};
 pub use config::Config;
 pub use enrichment::{
     CommitInfo, GitHubUserInfo, detect_github_repo_slug, detect_github_repo_slug_with_config,
@@ -35,7 +38,8 @@ pub use release::{
     infer_bump_from_versions, run_release,
 };
 pub use types::{
-    Bump, DependencyUpdate, PackageInfo, PackageKind, ReleaseOutput, ReleasedPackage, Workspace,
+    Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageKind, ParsedChangeType,
+    ReleaseOutput, ReleasedPackage, Workspace,
 };
 pub use workspace::discover_workspace;
 
