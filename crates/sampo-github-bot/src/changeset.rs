@@ -1,7 +1,7 @@
 use crate::error::{BotError, Result};
 use octocrab::models::repos::{DiffEntry, DiffEntryStatus};
 use sampo_core::changeset::{ChangesetInfo, parse_changeset};
-use sampo_core::types::{Bump, PackageSpecifier};
+use sampo_core::types::{Bump, ChangelogCategory, PackageSpecifier};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -29,9 +29,7 @@ struct ChangesetIssue {
 struct PackagePreview {
     spec: PackageSpecifier,
     highest_bump: Bump,
-    major_changes: Vec<String>,
-    minor_changes: Vec<String>,
-    patch_changes: Vec<String>,
+    changes_by_category: BTreeMap<ChangelogCategory, Vec<String>>,
 }
 
 impl PackagePreview {
@@ -39,23 +37,22 @@ impl PackagePreview {
         Self {
             spec,
             highest_bump: Bump::Patch,
-            major_changes: Vec::new(),
-            minor_changes: Vec::new(),
-            patch_changes: Vec::new(),
+            changes_by_category: BTreeMap::new(),
         }
     }
 
-    fn register_change(&mut self, bump: Bump, message: &str) {
+    fn register_change(&mut self, bump: Bump, tag: Option<&str>, message: &str) {
         if bump_priority(bump) > bump_priority(self.highest_bump) {
             self.highest_bump = bump;
         }
-        let target = match bump {
-            Bump::Major => &mut self.major_changes,
-            Bump::Minor => &mut self.minor_changes,
-            Bump::Patch => &mut self.patch_changes,
+        let category = if let Some(t) = tag {
+            ChangelogCategory::Tag(t.to_string())
+        } else {
+            ChangelogCategory::Bump(bump)
         };
-        if !target.iter().any(|existing| existing == message) {
-            target.push(message.to_string());
+        let changes = self.changes_by_category.entry(category).or_default();
+        if !changes.iter().any(|existing| existing == message) {
+            changes.push(message.to_string());
         }
     }
 }
@@ -138,9 +135,15 @@ fn append_package_preview(out: &mut String, package: &PackagePreview) {
     };
     out.push_str(&format!("## {display_name} — {bump_label}\n\n"));
 
-    append_changes_section(out, "Major changes", &package.major_changes);
-    append_changes_section(out, "Minor changes", &package.minor_changes);
-    append_changes_section(out, "Patch changes", &package.patch_changes);
+    // Sort categories: tags alphabetically first, then bump types by severity
+    let mut categories: Vec<_> = package.changes_by_category.keys().cloned().collect();
+    categories.sort_by_key(|c| c.sort_key());
+
+    for category in categories {
+        if let Some(changes) = package.changes_by_category.get(&category) {
+            append_changes_section(out, &category.heading(), changes);
+        }
+    }
 }
 
 fn append_changes_section(out: &mut String, title: &str, changes: &[String]) {
@@ -169,12 +172,12 @@ fn append_issue_section(out: &mut String, issues: &[ChangesetIssue]) {
 fn summarize_packages(changesets: &[ChangesetInfo]) -> BTreeMap<String, PackagePreview> {
     let mut packages = BTreeMap::new();
     for cs in changesets {
-        for (spec, bump) in &cs.entries {
+        for (spec, bump, tag) in &cs.entries {
             let key = spec.to_canonical_string();
             let preview = packages
                 .entry(key)
                 .or_insert_with(|| PackagePreview::new(spec.clone()));
-            preview.register_change(*bump, &cs.message);
+            preview.register_change(*bump, tag.as_deref(), &cs.message);
         }
     }
     packages
@@ -286,8 +289,12 @@ fn parse_changeset_files(files: &[ChangesetFile]) -> ParsedChangesets {
     let mut valid = Vec::new();
     let mut issues = Vec::new();
 
+    // Bot doesn't have access to config, so we pass empty allowed_tags
+    // Tags will be validated later by the actual release process
+    let allowed_tags: Vec<String> = Vec::new();
+
     for file in files {
-        match parse_changeset(&file.content, Path::new(&file.path)) {
+        match parse_changeset(&file.content, Path::new(&file.path), &allowed_tags) {
             Ok(Some(info)) => valid.push(info),
             Ok(None) => issues.push(ChangesetIssue {
                 path: file.path.clone(),
@@ -344,7 +351,7 @@ index 0000000..f1c2d3e
         };
         let info = ChangesetInfo {
             path: Path::new(".sampo/changesets/example.md").to_path_buf(),
-            entries: vec![(spec.clone(), Bump::Minor)],
+            entries: vec![(spec.clone(), Bump::Minor, None)],
             message: "feat: add new feature".to_string(),
         };
         let packages = summarize_packages(&[info.clone(), info]);
@@ -352,7 +359,11 @@ index 0000000..f1c2d3e
             .get(&spec.to_canonical_string())
             .expect("preview present");
         assert_eq!(preview.highest_bump, Bump::Minor);
-        assert_eq!(preview.minor_changes.len(), 1);
+        let minor_changes = preview
+            .changes_by_category
+            .get(&ChangelogCategory::Bump(Bump::Minor))
+            .expect("minor category present");
+        assert_eq!(minor_changes.len(), 1);
     }
 
     #[test]
@@ -360,7 +371,7 @@ index 0000000..f1c2d3e
         let mut out = String::new();
         let mut package =
             PackagePreview::new(PackageSpecifier::parse("cargo/example").expect("valid specifier"));
-        package.register_change(Bump::Patch, "fix: bug");
+        package.register_change(Bump::Patch, None, "fix: bug");
         append_package_preview(&mut out, &package);
         assert!(out.contains("example (Cargo)"));
         assert!(out.contains("patch version bump"));
@@ -382,6 +393,7 @@ index 0000000..f1c2d3e
             entries: vec![(
                 PackageSpecifier::parse("cargo/example").expect("valid specifier"),
                 Bump::Minor,
+                None,
             )],
             message: "feat: add new capability".to_string(),
         };
@@ -404,5 +416,57 @@ index 0000000..f1c2d3e
         assert!(comment.contains("issues with these files"));
         assert!(comment.contains("`.sampo/changesets/broken.md`"));
         assert!(comment.contains("invalid frontmatter"));
+    }
+
+    #[test]
+    fn present_changeset_comment_with_tags() {
+        let info = ChangesetInfo {
+            path: Path::new(".sampo/changesets/example.md").to_path_buf(),
+            entries: vec![(
+                PackageSpecifier::parse("cargo/example").expect("valid specifier"),
+                Bump::Minor,
+                Some("Added".to_string()),
+            )],
+            message: "feat: add new capability".to_string(),
+        };
+        let packages = summarize_packages(&[info]);
+        let comment = build_present_changeset_comment(&packages, &[]);
+
+        assert!(comment.contains("Changeset detected"));
+        assert!(comment.contains("## example (Cargo) — minor version bump"));
+        // Should display tag heading instead of bump-based heading
+        assert!(comment.contains("### Added"));
+        assert!(!comment.contains("### Minor changes"));
+        assert!(comment.contains("- feat: add new capability"));
+    }
+
+    #[test]
+    fn present_changeset_comment_mixed_tags_and_bumps() {
+        let info1 = ChangesetInfo {
+            path: Path::new(".sampo/changesets/one.md").to_path_buf(),
+            entries: vec![(
+                PackageSpecifier::parse("cargo/example").expect("valid specifier"),
+                Bump::Minor,
+                Some("Added".to_string()),
+            )],
+            message: "feat: new feature".to_string(),
+        };
+        let info2 = ChangesetInfo {
+            path: Path::new(".sampo/changesets/two.md").to_path_buf(),
+            entries: vec![(
+                PackageSpecifier::parse("cargo/example").expect("valid specifier"),
+                Bump::Patch,
+                None,
+            )],
+            message: "fix: bug fix".to_string(),
+        };
+        let packages = summarize_packages(&[info1, info2]);
+        let comment = build_present_changeset_comment(&packages, &[]);
+
+        // Should have both tag-based and bump-based sections
+        assert!(comment.contains("### Added"));
+        assert!(comment.contains("- feat: new feature"));
+        assert!(comment.contains("### Patch changes"));
+        assert!(comment.contains("- fix: bug fix"));
     }
 }

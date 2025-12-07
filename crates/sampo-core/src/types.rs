@@ -363,6 +363,162 @@ impl TryFrom<changesets::ChangeType> for Bump {
     }
 }
 
+/// Represents how a changelog entry should be categorized.
+///
+/// When using custom tags (e.g., Keep a Changelog style), the tag determines
+/// the section heading. Otherwise, the bump level determines the heading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChangelogCategory {
+    /// Categorize by semver bump level (default behavior)
+    Bump(Bump),
+    /// Categorize by custom tag (e.g., "Added", "Fixed", "Changed")
+    Tag(String),
+}
+
+impl ChangelogCategory {
+    /// Returns the underlying bump level for version calculation.
+    pub fn bump(&self) -> Bump {
+        match self {
+            Self::Bump(b) => *b,
+            Self::Tag(_) => Bump::Patch, // Tags don't affect bump calculation
+        }
+    }
+
+    /// Returns the heading text to use in changelogs.
+    pub fn heading(&self) -> String {
+        match self {
+            Self::Bump(bump) => match bump {
+                Bump::Major => "Major changes".to_string(),
+                Bump::Minor => "Minor changes".to_string(),
+                Bump::Patch => "Patch changes".to_string(),
+            },
+            Self::Tag(tag) => tag.clone(),
+        }
+    }
+
+    /// Returns a sort key for ordering categories.
+    /// Tags are sorted alphabetically first, then bump types by severity (Major, Minor, Patch).
+    pub fn sort_key(&self) -> (u8, String) {
+        match self {
+            Self::Tag(tag) => (0, tag.to_lowercase()),
+            Self::Bump(Bump::Major) => (1, String::new()),
+            Self::Bump(Bump::Minor) => (2, String::new()),
+            Self::Bump(Bump::Patch) => (3, String::new()),
+        }
+    }
+}
+
+impl Ord for ChangelogCategory {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sort_key().cmp(&other.sort_key())
+    }
+}
+
+impl PartialOrd for ChangelogCategory {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::fmt::Display for ChangelogCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bump(bump) => write!(f, "{}", bump),
+            Self::Tag(tag) => write!(f, "{}", tag),
+        }
+    }
+}
+
+/// Result of parsing a change type string that may include a custom tag.
+///
+/// Parses formats like:
+/// - `minor` -> bump=Minor, tag=None
+/// - `minor (Added)` -> bump=Minor, tag=Some("Added")
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedChangeType {
+    pub bump: Bump,
+    pub tag: Option<String>,
+}
+
+impl ParsedChangeType {
+    /// Parse a change type string, optionally extracting a custom tag.
+    ///
+    /// Supports formats:
+    /// - `patch`, `minor`, `major` - standard semver bumps
+    /// - `minor (Added)` - semver bump with custom tag for changelog categorization
+    ///
+    /// The tag must be enclosed in parentheses at the end of the string.
+    /// Tags are only allowed if `allowed_tags` is non-empty (configured via changesets.tags).
+    pub fn parse(input: &str, allowed_tags: &[String]) -> Result<Self, String> {
+        let trimmed = input.trim();
+
+        // Check for tag format: "bump (Tag)"
+        if let Some(paren_start) = trimmed.rfind('(')
+            && let Some(paren_end) = trimmed.rfind(')')
+            && paren_end > paren_start
+            && paren_end == trimmed.len() - 1
+        {
+            let bump_part = trimmed[..paren_start].trim();
+            let tag_part = trimmed[paren_start + 1..paren_end].trim();
+
+            let bump = Bump::parse(bump_part).ok_or_else(|| {
+                format!(
+                    "Invalid bump level '{}'. Expected 'patch', 'minor', or 'major'.",
+                    bump_part
+                )
+            })?;
+
+            if !tag_part.is_empty() {
+                // Tags require configuration via changesets.tags
+                if allowed_tags.is_empty() {
+                    return Err(format!(
+                        "Tag '{}' found, but no tags are configured. Please configure changesets.tags in your config file.",
+                        tag_part
+                    ));
+                }
+
+                // Find matching configured tag (case-insensitive), use its casing
+                let configured_tag = allowed_tags
+                    .iter()
+                    .find(|t| t.eq_ignore_ascii_case(tag_part));
+
+                match configured_tag {
+                    Some(tag) => {
+                        return Ok(Self {
+                            bump,
+                            tag: Some(tag.clone()),
+                        });
+                    }
+                    None => {
+                        return Err(format!(
+                            "Tag '{}' is not in the configured changesets.tags list. Allowed tags: {:?}",
+                            tag_part, allowed_tags
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Standard bump format without tag
+        let bump = Bump::parse(trimmed).ok_or_else(|| {
+            format!(
+                "Invalid change type '{}'. Expected 'patch', 'minor', 'major', or 'bump (Tag)' format.",
+                trimmed
+            )
+        })?;
+
+        Ok(Self { bump, tag: None })
+    }
+
+    /// Convert to a ChangelogCategory based on whether a tag is present.
+    pub fn to_category(&self) -> ChangelogCategory {
+        match &self.tag {
+            Some(tag) => ChangelogCategory::Tag(tag.clone()),
+            None => ChangelogCategory::Bump(self.bump),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,5 +584,76 @@ mod tests {
             }
             other => panic!("expected Ambiguous, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parsed_change_type_simple_bump() {
+        let result = ParsedChangeType::parse("minor", &[]).unwrap();
+        assert_eq!(result.bump, Bump::Minor);
+        assert_eq!(result.tag, None);
+    }
+
+    #[test]
+    fn parsed_change_type_with_tag() {
+        let allowed = vec!["Added".to_string()];
+        let result = ParsedChangeType::parse("minor (Added)", &allowed).unwrap();
+        assert_eq!(result.bump, Bump::Minor);
+        assert_eq!(result.tag, Some("Added".to_string()));
+    }
+
+    #[test]
+    fn parsed_change_type_validates_tag_when_configured() {
+        let allowed = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = ParsedChangeType::parse("patch (Fixed)", &allowed).unwrap();
+        assert_eq!(result.bump, Bump::Patch);
+        assert_eq!(result.tag, Some("Fixed".to_string()));
+
+        let err = ParsedChangeType::parse("patch (Unknown)", &allowed).unwrap_err();
+        assert!(err.contains("not in the configured changesets.tags list"));
+    }
+
+    #[test]
+    fn parsed_change_type_case_insensitive_tag_validation() {
+        let allowed = vec!["Added".to_string()];
+        // User writes "added" but we normalize to configured casing "Added"
+        let result = ParsedChangeType::parse("minor (added)", &allowed).unwrap();
+        assert_eq!(result.tag, Some("Added".to_string()));
+
+        // Also test uppercase input
+        let result = ParsedChangeType::parse("minor (ADDED)", &allowed).unwrap();
+        assert_eq!(result.tag, Some("Added".to_string()));
+    }
+
+    #[test]
+    fn changelog_category_heading() {
+        assert_eq!(
+            ChangelogCategory::Bump(Bump::Major).heading(),
+            "Major changes"
+        );
+        assert_eq!(
+            ChangelogCategory::Bump(Bump::Minor).heading(),
+            "Minor changes"
+        );
+        assert_eq!(
+            ChangelogCategory::Bump(Bump::Patch).heading(),
+            "Patch changes"
+        );
+        assert_eq!(
+            ChangelogCategory::Tag("Added".to_string()).heading(),
+            "Added"
+        );
+        assert_eq!(
+            ChangelogCategory::Tag("Fixed".to_string()).heading(),
+            "Fixed"
+        );
+    }
+
+    #[test]
+    fn changelog_category_bump_extraction() {
+        assert_eq!(ChangelogCategory::Bump(Bump::Major).bump(), Bump::Major);
+        assert_eq!(
+            ChangelogCategory::Tag("Added".to_string()).bump(),
+            Bump::Patch
+        );
     }
 }

@@ -5,12 +5,12 @@ use crate::ui::{
     normalize_nonempty_string, prompt_io_error, prompt_nonempty_string, prompt_theme,
     select_packages,
 };
-use dialoguer::{MultiSelect, theme::ColorfulTheme};
+use dialoguer::{MultiSelect, Select, theme::ColorfulTheme};
 use sampo_core::{
     Bump, Config, Workspace, discover_workspace,
     errors::{Result, SampoError},
     filters::filter_members,
-    render_changeset_markdown,
+    render_changeset_markdown, render_changeset_markdown_with_tags,
     types::{PackageSpecifier, SpecResolution, format_ambiguity_options},
 };
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ pub fn run(args: &AddArgs) -> Result<()> {
         .as_ref()
         .map(|ws| ws.has_multiple_package_kinds())
         .unwrap_or(false);
-    let (root, available_packages) = if let Some(ref ws) = workspace {
+    let (root, available_packages, config) = if let Some(ref ws) = workspace {
         let cfg = Config::load(&ws.root).unwrap_or_default();
         let visible =
             filter_members(ws, &cfg).unwrap_or_else(|_| ws.members.iter().collect::<Vec<_>>());
@@ -38,9 +38,9 @@ pub fn run(args: &AddArgs) -> Result<()> {
             };
             out.push((label, spec));
         }
-        (ws.root.clone(), out)
+        (ws.root.clone(), out, cfg)
     } else {
-        (cwd.clone(), Vec::new())
+        (cwd.clone(), Vec::new(), Config::default())
     };
 
     // Create changesets directory if it doesn't exist
@@ -117,6 +117,13 @@ pub fn run(args: &AddArgs) -> Result<()> {
         package_bumps.push((spec, bump));
     }
 
+    // Prompt for tag selection when changesets.tags is configured
+    let selected_tag = if config.changesets_tags.is_empty() {
+        None
+    } else {
+        Some(prompt_tag_selection(&config.changesets_tags)?)
+    };
+
     let message = if let Some(trimmed) = normalize_nonempty_string(args.message.as_deref()) {
         log_success_value("Changeset message", &trimmed);
         trimmed
@@ -124,8 +131,16 @@ pub fn run(args: &AddArgs) -> Result<()> {
         prompt_message()?
     };
 
-    // Compose file contents
-    let contents = render_changeset_markdown(&package_bumps, &message);
+    // Compose file contents using tagged format when a tag is selected
+    let contents = if let Some(ref tag) = selected_tag {
+        let entries_with_tags: Vec<(PackageSpecifier, Bump, Option<String>)> = package_bumps
+            .into_iter()
+            .map(|(spec, bump)| (spec, bump, Some(tag.clone())))
+            .collect();
+        render_changeset_markdown_with_tags(&entries_with_tags, &message)
+    } else {
+        render_changeset_markdown(&package_bumps, &message)
+    };
     let path = unique_changeset_path(&changesets_dir);
     fs::write(&path, contents)?;
 
@@ -234,6 +249,21 @@ fn prompt_message() -> Result<String> {
     let value = prompt_nonempty_string("Changeset message")?;
     log_success_value("Changeset message", &value);
     Ok(value)
+}
+
+/// Prompt the user to select a changelog tag from the configured tags.
+fn prompt_tag_selection(tags: &[String]) -> Result<String> {
+    let theme = prompt_theme();
+    let selection = Select::with_theme(&theme)
+        .with_prompt("Tag as")
+        .items(tags)
+        .default(0)
+        .report(false)
+        .interact()
+        .map_err(prompt_io_error)?;
+    let tag = tags[selection].clone();
+    log_success_value("Tag", &tag);
+    Ok(tag)
 }
 
 fn unique_changeset_path(dir: &Path) -> PathBuf {

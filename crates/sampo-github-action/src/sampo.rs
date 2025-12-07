@@ -1,11 +1,13 @@
 use crate::error::{ActionError, Result};
 use sampo_core::format_markdown_list_item;
-use sampo_core::types::{PackageSpecifier, SpecResolution, format_ambiguity_options};
+use sampo_core::types::{
+    ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
+};
 use sampo_core::{
-    Bump, Config, VersionChange, detect_all_dependency_explanations,
-    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    exit_prerelease as core_exit_prerelease, get_commit_hash_for_path, load_changesets,
-    run_publish as core_publish, run_release as core_release,
+    Config, VersionChange, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, exit_prerelease as core_exit_prerelease,
+    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
+    run_release as core_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -120,7 +122,7 @@ pub fn build_release_pr_body(
     }
 
     let changesets_dir = workspace.join(".sampo").join("changesets");
-    let changesets = load_changesets(&changesets_dir)?;
+    let changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
 
     // Load workspace for dependency explanations
     let ws = discover_workspace(workspace).map_err(|e| ActionError::SampoCommandFailed {
@@ -129,8 +131,8 @@ pub fn build_release_pr_body(
     })?;
     let include_kind = ws.has_multiple_package_kinds();
 
-    // Group messages per canonical package id by bump
-    let mut messages_by_pkg: BTreeMap<String, Vec<(String, Bump)>> = BTreeMap::new();
+    // Group messages per canonical package id by category
+    let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
 
     // Resolve GitHub slug and token for commit links and acknowledgments
     let repo_slug =
@@ -140,7 +142,7 @@ pub fn build_release_pr_body(
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
     for cs in &changesets {
-        for (pkg_spec, bump) in &cs.entries {
+        for (pkg_spec, bump, tag) in &cs.entries {
             let identifier = resolve_specifier_identifier(&ws, pkg_spec)?;
             if releases.contains_key(&identifier) {
                 let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
@@ -157,10 +159,15 @@ pub fn build_release_pr_body(
                 } else {
                     cs.message.clone()
                 };
+                let category = if let Some(t) = tag {
+                    ChangelogCategory::Tag(t.clone())
+                } else {
+                    ChangelogCategory::Bump(*bump)
+                };
                 messages_by_pkg
                     .entry(identifier)
                     .or_default()
-                    .push((enriched, *bump));
+                    .push((enriched, category));
             }
         }
     }
@@ -204,9 +211,8 @@ pub fn build_release_pr_body(
             pretty_name, old_version, new_version
         ));
 
-        let mut major_changes = Vec::new();
-        let mut minor_changes = Vec::new();
-        let mut patch_changes = Vec::new();
+        // Collect changes by category
+        let mut changes_by_category: BTreeMap<ChangelogCategory, Vec<String>> = BTreeMap::new();
 
         if let Some(changeset_list) = messages_by_pkg.get(&identifier) {
             // Helper to push without duplicates (preserve append order)
@@ -216,18 +222,23 @@ pub fn build_release_pr_body(
                 }
             };
 
-            for (message, bump_type) in changeset_list {
-                match bump_type {
-                    Bump::Major => push_unique(&mut major_changes, message),
-                    Bump::Minor => push_unique(&mut minor_changes, message),
-                    Bump::Patch => push_unique(&mut patch_changes, message),
-                }
+            for (message, category) in changeset_list {
+                push_unique(
+                    changes_by_category.entry(category.clone()).or_default(),
+                    message,
+                );
             }
         }
 
-        append_changes_section(&mut output, "Major changes", &major_changes);
-        append_changes_section(&mut output, "Minor changes", &minor_changes);
-        append_changes_section(&mut output, "Patch changes", &patch_changes);
+        // Sort categories: tags alphabetically first, then bump types by severity
+        let mut categories: Vec<_> = changes_by_category.keys().cloned().collect();
+        categories.sort_by_key(|c| c.sort_key());
+
+        for category in categories {
+            if let Some(changes) = changes_by_category.get(&category) {
+                append_changes_section(&mut output, &category.heading(), changes);
+            }
+        }
     }
 
     Ok(output)

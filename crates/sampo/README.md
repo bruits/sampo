@@ -127,6 +127,9 @@ release_branches = ["3.x"]
 [github]
 repository = "owner/repo"
 
+[changesets]
+tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
+
 [changelog]
 show_commit_hash = true
 show_acknowledgments = true
@@ -154,6 +157,10 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 ### `[github]` section
 
 `repository`: The GitHub repository slug in the format "owner/repo". If not set, Sampo uses the `GITHUB_REPOSITORY` environment variable or attempts to detect it from the `origin` git remote. This setting is used to enrich changelog messages with commit hash links and author acknowledgments, especially for first-time contributors.
+
+### `[changesets]` section
+
+`tags`: An optional array of custom changelog section names (default: `[]`). When configured, changesets can use the `bump (Tag)` format to categorize entries under custom headings instead of the default bump-based sections. For example, `tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]` enables [Keep a Changelog](https://keepachangelog.com/) style formatting where `cargo/my-crate: minor (Added)` appears under `### Added` while still applying a minor version bump.
 
 ### `[changelog]` section
 

@@ -14,6 +14,9 @@ pub struct Config {
     pub changelog_show_release_date: bool,
     pub changelog_release_date_format: String,
     pub changelog_release_date_timezone: Option<String>,
+    /// Custom tags for changelog categorization (e.g., "Added", "Fixed", "Changed").
+    /// When set, enables Keep a Changelog style sections instead of bump-level sections.
+    pub changesets_tags: Vec<String>,
     pub fixed_dependencies: Vec<Vec<String>>,
     pub linked_dependencies: Vec<Vec<String>>,
     pub ignore_unpublished: bool,
@@ -32,6 +35,7 @@ impl Default for Config {
             changelog_show_release_date: true,
             changelog_release_date_format: "%Y-%m-%d".to_string(),
             changelog_release_date_timezone: None,
+            changesets_tags: Vec::new(),
             fixed_dependencies: Vec::new(),
             linked_dependencies: Vec::new(),
             ignore_unpublished: false,
@@ -100,6 +104,20 @@ impl Config {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+
+        let changesets_table = value.get("changesets").and_then(|v| v.as_table());
+
+        let changesets_tags = changesets_table
+            .and_then(|t| t.get("tags"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
 
         let fixed_dependencies = value
             .get("packages")
@@ -288,6 +306,7 @@ impl Config {
             changelog_show_release_date,
             changelog_release_date_format,
             changelog_release_date_timezone,
+            changesets_tags,
             fixed_dependencies,
             linked_dependencies,
             ignore_unpublished,
@@ -333,6 +352,7 @@ mod tests {
         assert!(config.changelog_show_release_date);
         assert_eq!(config.changelog_release_date_format, "%Y-%m-%d");
         assert!(config.changelog_release_date_timezone.is_none());
+        assert!(config.changesets_tags.is_empty());
         assert_eq!(config.default_branch(), "main");
         assert!(config.is_release_branch("main"));
         assert_eq!(config.git_release_branches, Vec::<String>::new());
@@ -356,6 +376,30 @@ mod tests {
         assert_eq!(
             config.changelog_release_date_timezone.as_deref(),
             Some("+02:30")
+        );
+    }
+
+    #[test]
+    fn reads_changesets_tags() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[changesets]\ntags = [\"Added\", \"Changed\", \"Fixed\", \"Deprecated\", \"Removed\", \"Security\"]\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+        assert_eq!(
+            config.changesets_tags,
+            vec![
+                "Added",
+                "Changed",
+                "Fixed",
+                "Deprecated",
+                "Removed",
+                "Security"
+            ]
         );
     }
 
