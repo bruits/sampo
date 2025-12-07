@@ -22,8 +22,8 @@ use std::process::ExitCode;
 struct GitHubReleaseOptions {
     /// Create GitHub releases for newly created tags during publish
     create_github_release: bool,
-    /// Also open a GitHub Discussion for each created release
-    open_discussion: bool,
+    /// Filter for which packages should have GitHub Discussions opened
+    open_discussion: DiscussionFilter,
     /// Preferred Discussions category slug (e.g., "announcements")
     discussion_category: Option<String>,
     /// Release asset patterns provided by the workflow (already-built artifacts)
@@ -34,7 +34,7 @@ impl GitHubReleaseOptions {
     fn from_config(config: &Config) -> Self {
         Self {
             create_github_release: config.create_github_release,
-            open_discussion: config.open_discussion,
+            open_discussion: config.open_discussion.clone(),
             discussion_category: config.discussion_category.clone(),
             asset_specs: parse_asset_specs(config.release_assets.as_deref()),
         }
@@ -67,6 +67,59 @@ impl Mode {
             "release" => Mode::Release,
             "publish" => Mode::Publish,
             _ => Mode::Auto,
+        }
+    }
+}
+
+/// Filter for which packages should have GitHub Discussions opened.
+///
+/// Supports:
+/// - `All`: Open discussions for all packages (when input is "true")
+/// - `None`: Never open discussions (when input is "false" or empty)
+/// - `Packages`: Only open discussions for specific packages (comma-separated list)
+#[derive(Debug, Clone)]
+enum DiscussionFilter {
+    /// Open discussions for all released packages
+    All,
+    /// Never open discussions
+    None,
+    /// Open discussions only for these specific package names
+    Packages(Vec<String>),
+}
+
+impl DiscussionFilter {
+    /// Parse the INPUT_OPEN_DISCUSSION environment variable value.
+    ///
+    /// Accepts:
+    /// - "true" -> All
+    /// - "false" or empty -> None
+    /// - "pkg1,pkg2,pkg3" -> Packages(["pkg1", "pkg2", "pkg3"])
+    fn parse(input: &str) -> Self {
+        let trimmed = input.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("false") {
+            DiscussionFilter::None
+        } else if trimmed.eq_ignore_ascii_case("true") {
+            DiscussionFilter::All
+        } else {
+            let packages: Vec<String> = trimmed
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if packages.is_empty() {
+                DiscussionFilter::None
+            } else {
+                DiscussionFilter::Packages(packages)
+            }
+        }
+    }
+
+    /// Check if a discussion should be opened for a given package name.
+    fn should_open_for(&self, package_name: &str) -> bool {
+        match self {
+            DiscussionFilter::All => true,
+            DiscussionFilter::None => false,
+            DiscussionFilter::Packages(packages) => packages.iter().any(|p| p == package_name),
         }
     }
 }
@@ -111,8 +164,8 @@ struct Config {
     /// Create GitHub releases for newly created tags during publish
     create_github_release: bool,
 
-    /// Also open a GitHub Discussion for each created release
-    open_discussion: bool,
+    /// Filter for which packages should have GitHub Discussions opened
+    open_discussion: DiscussionFilter,
 
     /// Preferred Discussions category slug (e.g., "announcements")
     discussion_category: Option<String>,
@@ -170,8 +223,8 @@ impl Config {
             .unwrap_or(false);
 
         let open_discussion = std::env::var("INPUT_OPEN_DISCUSSION")
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+            .map(|v| DiscussionFilter::parse(&v))
+            .unwrap_or(DiscussionFilter::None);
 
         let discussion_category = std::env::var("INPUT_DISCUSSION_CATEGORY")
             .ok()
@@ -760,8 +813,11 @@ fn create_github_release_for_tag(
         }
     }
 
-    // Optionally open a Discussion for this release
-    if github_options.open_discussion
+    // Optionally open a Discussion for this release (based on filter)
+    if let Some((package_name, _version)) = parse_tag(tag)
+        && github_options
+            .open_discussion
+            .should_open_for(&package_name)
         && let Err(e) = github_client.create_discussion(
             tag,
             &body,
@@ -1100,7 +1156,7 @@ mod tests {
             stabilize_pr_branch: None,
             stabilize_pr_title: None,
             create_github_release: false,
-            open_discussion: false,
+            open_discussion: DiscussionFilter::None,
             discussion_category: None,
             release_assets: None,
         };
@@ -1316,5 +1372,87 @@ mod tests {
         assert!(got.starts_with("- New feature"));
         assert!(!got.contains("## 2.0.0"));
         assert!(!got.contains("1.9.0"));
+    }
+
+    #[test]
+    fn test_discussion_filter_parsing() {
+        // "false" or empty -> None
+        assert!(matches!(
+            DiscussionFilter::parse("false"),
+            DiscussionFilter::None
+        ));
+        assert!(matches!(
+            DiscussionFilter::parse("FALSE"),
+            DiscussionFilter::None
+        ));
+        assert!(matches!(
+            DiscussionFilter::parse(""),
+            DiscussionFilter::None
+        ));
+        assert!(matches!(
+            DiscussionFilter::parse("  "),
+            DiscussionFilter::None
+        ));
+
+        // "true" -> All
+        assert!(matches!(
+            DiscussionFilter::parse("true"),
+            DiscussionFilter::All
+        ));
+        assert!(matches!(
+            DiscussionFilter::parse("TRUE"),
+            DiscussionFilter::All
+        ));
+        assert!(matches!(
+            DiscussionFilter::parse("True"),
+            DiscussionFilter::All
+        ));
+
+        // Package list
+        match DiscussionFilter::parse("sampo,sampo-github-action") {
+            DiscussionFilter::Packages(pkgs) => {
+                assert_eq!(pkgs, vec!["sampo", "sampo-github-action"]);
+            }
+            _ => panic!("Expected Packages variant"),
+        }
+
+        // Package list with whitespace
+        match DiscussionFilter::parse("  pkg-a , pkg-b  , pkg-c  ") {
+            DiscussionFilter::Packages(pkgs) => {
+                assert_eq!(pkgs, vec!["pkg-a", "pkg-b", "pkg-c"]);
+            }
+            _ => panic!("Expected Packages variant"),
+        }
+
+        // Single package
+        match DiscussionFilter::parse("my-crate") {
+            DiscussionFilter::Packages(pkgs) => {
+                assert_eq!(pkgs, vec!["my-crate"]);
+            }
+            _ => panic!("Expected Packages variant"),
+        }
+    }
+
+    #[test]
+    fn test_discussion_filter_should_open_for() {
+        // All opens for any package
+        let all = DiscussionFilter::All;
+        assert!(all.should_open_for("sampo"));
+        assert!(all.should_open_for("any-package"));
+
+        // None never opens
+        let none = DiscussionFilter::None;
+        assert!(!none.should_open_for("sampo"));
+        assert!(!none.should_open_for("any-package"));
+
+        // Packages only opens for listed packages
+        let packages = DiscussionFilter::Packages(vec![
+            "sampo".to_string(),
+            "sampo-github-action".to_string(),
+        ]);
+        assert!(packages.should_open_for("sampo"));
+        assert!(packages.should_open_for("sampo-github-action"));
+        assert!(!packages.should_open_for("sampo-core"));
+        assert!(!packages.should_open_for("sampo-github-bot"));
     }
 }

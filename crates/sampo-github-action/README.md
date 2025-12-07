@@ -48,7 +48,7 @@ jobs:
 
 Set the `create-github-release` input to `true` to create a GitHub Release for each new tag created when publishing packages. The release notes are generated from the changesets included in the release.
 
-If you also set `open-discussion` to `true`, a GitHub Discussion will be created for each release, in the category specified by `discussion-category` (if provided) or the repository's default category.
+To also open a GitHub Discussion for each release, set `open-discussion` to `true` (all packages) or a comma-separated list of package names (e.g., `sampo,sampo-github-action`). Use `discussion-category` to specify the target category.
 
 ### Uploading release assets in GitHub Releases
 
@@ -111,7 +111,7 @@ The action supports the following inputs:
 - `stabilize-pr-branch`: working branch used for the stabilize PR that `auto` prepares (defaults to `stabilize/<current-branch>` with `/` replaced by `-`).
 - `stabilize-pr-title`: title of the stabilize PR that `auto` prepares (defaults to `Release stable (<current-branch>)`).
 - `create-github-release`: if `true`, create GitHub Releases for new tags.
-- `open-discussion`: if `true`, create a GitHub Discussion for each created release (requires GitHub Releases).
+- `open-discussion`: create a GitHub Discussion for released packages. Accepts `true` (all packages), `false` (none, default), or a comma-separated list of package names to filter (e.g., `sampo,sampo-github-action`). Requires `create-github-release: true`.
 - `discussion-category`: preferred Discussions category slug when creating releases.
 - `release-assets`: comma or newline separated list of paths or glob patterns for pre-built artifacts to upload when creating GitHub releases. Use `=>` to rename matches (e.g. `dist/*.zip => my-tool.zip`). Placeholders `{{tag}}`, `{{crate}}`, and `{{version}}` are available.
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env).
