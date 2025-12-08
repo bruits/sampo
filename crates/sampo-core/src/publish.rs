@@ -571,6 +571,9 @@ fn main() {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
 
+            // Create .sampo/ directory (required for discover_workspace)
+            fs::create_dir_all(root.join(".sampo")).unwrap();
+
             // Create basic workspace structure
             fs::write(
                 root.join("Cargo.toml"),
@@ -809,9 +812,11 @@ fn main() {
     fn handles_empty_workspace() {
         let workspace = TestWorkspace::new();
 
-        // Should succeed with no output
+        // Empty workspace should error early (no packages found)
         let result = workspace.run_publish(true);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        let error_msg = format!("{}", result.unwrap_err());
+        assert!(error_msg.contains("No packages found"));
     }
 
     #[test]

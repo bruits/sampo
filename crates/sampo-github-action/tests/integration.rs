@@ -155,6 +155,9 @@ impl WorkspaceBuilder {
     }
 
     fn build(self, ws: &TestWorkspace) {
+        // Create .sampo/ directory (required for discover_workspace)
+        fs::create_dir_all(ws.file_path(".sampo")).expect("failed to create .sampo directory");
+
         // Create workspace Cargo.toml
         ws.write_file(
             "Cargo.toml",

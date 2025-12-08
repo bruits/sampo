@@ -5,43 +5,66 @@ use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, WorkspaceError>;
 
-/// Discover workspace packages using registered ecosystem adapters.
+const SAMPO_DIR: &str = ".sampo";
+
+/// Find the Sampo root by walking up from `start_dir` looking for `.sampo/`.
+///
+/// This is the primary way to locate the workspace root for all commands
+/// except `sampo init`. Returns `NotInitialized` if `.sampo/` is not found.
+pub fn find_sampo_root(start_dir: &Path) -> Result<PathBuf> {
+    let mut current = start_dir;
+    loop {
+        if current.join(SAMPO_DIR).is_dir() {
+            return Ok(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+    Err(WorkspaceError::NotInitialized)
+}
+
+/// Discover workspace by first finding the `.sampo/` directory, then discovering packages.
+///
+/// This is the main entry point for all commands except `sampo init`.
+/// It ensures Sampo has been initialized before proceeding.
+///
+/// Returns `NoPackagesFound` if `.sampo/` exists but no packages are detected,
+/// which likely indicates `.sampo/` was created in the wrong directory.
 pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
-    let mut root = None;
+    // First, find the Sampo root by looking for .sampo/
+    let workspace_root = find_sampo_root(start_dir)?;
+
+    // Then discover packages at that root
+    let members = discover_packages_at(&workspace_root)?;
+
+    // No packages found likely means .sampo/ is in the wrong location
+    if members.is_empty() {
+        return Err(WorkspaceError::NoPackagesFound);
+    }
+
+    Ok(Workspace {
+        root: workspace_root,
+        members,
+    })
+}
+
+/// Discover packages in a directory using registered ecosystem adapters.
+///
+/// This is used by `sampo init` to detect packages in the current directory
+/// before `.sampo/` exists. It only looks at the given directory, not parents.
+pub fn discover_packages_at(root: &Path) -> Result<Vec<crate::types::PackageInfo>> {
     let mut all_members = Vec::new();
 
-    // Try each registered adapter (static dispatch, zero-cost)
     for adapter in PackageAdapter::all() {
-        if adapter.can_discover(start_dir) {
-            // Find the workspace root by walking up from start_dir
-            let discovered_root = find_workspace_root_for_adapter(start_dir, *adapter)?;
-
-            // Discover packages in this ecosystem
-            let packages = adapter.discover(&discovered_root)?;
-
-            // Use the first discovered root as the workspace root
-            root.get_or_insert(discovered_root);
+        if adapter.can_discover(root) {
+            let packages = adapter.discover(root)?;
             all_members.extend(packages);
         }
     }
 
-    let workspace_root = root.ok_or(WorkspaceError::NotFound)?;
-
-    Ok(Workspace {
-        root: workspace_root,
-        members: all_members,
-    })
-}
-
-/// Find the workspace root for a given adapter by walking up the directory tree.
-fn find_workspace_root_for_adapter(start_dir: &Path, adapter: PackageAdapter) -> Result<PathBuf> {
-    let mut current = start_dir;
-    loop {
-        if adapter.can_discover(current) {
-            return Ok(current.to_path_buf());
-        }
-        current = current.parent().ok_or(WorkspaceError::NotFound)?;
-    }
+    Ok(all_members)
 }
 
 #[cfg(test)]
@@ -50,19 +73,69 @@ mod tests {
     use crate::types::PackageKind;
     use std::fs;
 
+    fn init_sampo(root: &Path) {
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+    }
+
+    #[test]
+    fn find_sampo_root_finds_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_sampo(root);
+
+        let result = find_sampo_root(root).unwrap();
+        assert_eq!(result, root);
+    }
+
+    #[test]
+    fn find_sampo_root_walks_up_from_subdirectory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_sampo(root);
+
+        let deep_dir = root.join("a/b/c/d");
+        fs::create_dir_all(&deep_dir).unwrap();
+
+        let result = find_sampo_root(&deep_dir).unwrap();
+        assert_eq!(result, root);
+    }
+
+    #[test]
+    fn find_sampo_root_returns_not_initialized_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let result = find_sampo_root(root);
+        assert!(matches!(result, Err(WorkspaceError::NotInitialized)));
+    }
+
+    #[test]
+    fn discover_workspace_requires_sampo_init() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"test\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let result = discover_workspace(root);
+        assert!(matches!(result, Err(WorkspaceError::NotInitialized)));
+    }
+
     #[test]
     fn discover_workspace_finds_cargo_packages() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+        init_sampo(root);
 
-        // Create workspace
         fs::write(
             root.join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/*\"]\n",
         )
         .unwrap();
 
-        // Create crates
         let crates_dir = root.join("crates");
         fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
         fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
@@ -89,15 +162,14 @@ mod tests {
     fn discover_workspace_detects_internal_deps() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+        init_sampo(root);
 
-        // workspace
         fs::write(
             root.join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/*\"]\n",
         )
         .unwrap();
 
-        // crates: x depends on y via path, and on z via workspace
         let crates_dir = root.join("crates");
         fs::create_dir_all(crates_dir.join("x")).unwrap();
         fs::create_dir_all(crates_dir.join("y")).unwrap();
@@ -130,14 +202,34 @@ mod tests {
     }
 
     #[test]
-    fn discover_workspace_returns_cargo_packages() {
-        // This test verifies that when a workspace contains only Cargo packages,
-        // they are discovered correctly and marked with the Cargo kind.
-
+    fn discover_workspace_returns_error_for_empty_workspace() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+        init_sampo(root);
 
-        // Create a Cargo workspace
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+        let result = discover_workspace(root);
+        assert!(matches!(result, Err(WorkspaceError::NoPackagesFound)));
+    }
+
+    #[test]
+    fn discover_workspace_returns_error_when_no_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_sampo(root);
+
+        // .sampo/ exists but no manifest files at all
+        let result = discover_workspace(root);
+        assert!(matches!(result, Err(WorkspaceError::NoPackagesFound)));
+    }
+
+    #[test]
+    fn discover_workspace_from_package_subdirectory_finds_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        init_sampo(root);
+
         fs::write(
             root.join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/*\"]\n",
@@ -145,83 +237,81 @@ mod tests {
         .unwrap();
 
         let crates_dir = root.join("crates");
-        fs::create_dir_all(crates_dir.join("cargo-pkg")).unwrap();
+        fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+        fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
         fs::write(
-            crates_dir.join("cargo-pkg/Cargo.toml"),
-            "[package]\nname = \"cargo-pkg\"\nversion = \"1.0.0\"\n",
+            crates_dir.join("pkg-a/Cargo.toml"),
+            "[package]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            crates_dir.join("pkg-b/Cargo.toml"),
+            "[package]\nname = \"pkg-b\"\nversion = \"0.2.0\"\n",
         )
         .unwrap();
 
-        let ws = discover_workspace(root).unwrap();
+        let pkg_a_dir = crates_dir.join("pkg-a");
+        let ws = discover_workspace(&pkg_a_dir).unwrap();
 
-        // Should discover the Cargo package
-        assert_eq!(ws.members.len(), 1);
-        assert_eq!(ws.members[0].name, "cargo-pkg");
-        assert_eq!(ws.members[0].kind, PackageKind::Cargo);
-    }
-
-    #[test]
-    fn discover_workspace_handles_empty_workspace() {
-        // Test that an empty workspace (workspace defined but no packages) is valid
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-
-        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
-
-        let ws = discover_workspace(root).unwrap();
-        assert_eq!(ws.members.len(), 0);
         assert_eq!(ws.root, root);
+        assert_eq!(ws.members.len(), 2);
+        let mut names: Vec<_> = ws.members.iter().map(|p| p.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["pkg-a", "pkg-b"]);
     }
 
     #[test]
-    fn discover_workspace_fails_when_no_workspace_found() {
-        // Test that we get an error when there's no workspace at all
+    fn discover_workspace_from_intermediate_directory_finds_root() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
+        init_sampo(root);
 
-        // No Cargo.toml, no workspace
-        let result = discover_workspace(root);
-        assert!(result.is_err());
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
 
-        // Verify it's the right error
-        match result {
-            Err(WorkspaceError::NotFound) => {}
-            _ => panic!("Expected WorkspaceError::NotFound"),
-        }
+        let crates_dir = root.join("crates");
+        fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+        fs::write(
+            crates_dir.join("pkg-a/Cargo.toml"),
+            "[package]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let ws = discover_workspace(&crates_dir).unwrap();
+
+        assert_eq!(ws.root, root);
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name, "pkg-a");
     }
 
     #[test]
-    fn discover_workspace_discovers_single_cargo_package() {
+    fn discover_packages_at_finds_cargo_packages() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
         fs::write(
             root.join("Cargo.toml"),
-            "[package]\nname = \"standalone-crate\"\nversion = \"1.0.0\"\n",
+            "[package]\nname = \"standalone\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
 
-        let ws = discover_workspace(root).unwrap();
-        assert_eq!(ws.members.len(), 1);
-        assert_eq!(ws.members[0].name, "standalone-crate");
-        assert_eq!(ws.members[0].version, "1.0.0");
-        assert_eq!(ws.members[0].kind, PackageKind::Cargo);
-        assert_eq!(ws.members[0].path, root);
+        let packages = discover_packages_at(root).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "standalone");
+        assert_eq!(packages[0].kind, PackageKind::Cargo);
     }
 
     #[test]
-    fn discover_workspace_discovers_npm_packages() {
+    fn discover_packages_at_finds_npm_packages() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
         fs::write(
             root.join("package.json"),
-            r#"{
-  "name": "root-package",
-  "version": "1.0.0",
-  "workspaces": ["packages/*"]
-}
-"#,
+            r#"{"name": "my-app", "version": "1.0.0", "workspaces": ["packages/*"]}"#,
         )
         .unwrap();
 
@@ -229,30 +319,18 @@ mod tests {
         fs::create_dir_all(packages_dir.join("pkg-a")).unwrap();
         fs::write(
             packages_dir.join("pkg-a/package.json"),
-            r#"{
-  "name": "pkg-a",
-  "version": "0.1.0"
-}
-"#,
+            r#"{"name": "pkg-a", "version": "0.1.0"}"#,
         )
         .unwrap();
 
-        let ws = discover_workspace(root).unwrap();
-        assert_eq!(ws.members.len(), 2);
-        assert!(
-            ws.members
-                .iter()
-                .any(|pkg| pkg.name == "root-package" && pkg.kind == PackageKind::Npm)
-        );
-        assert!(
-            ws.members
-                .iter()
-                .any(|pkg| pkg.name == "pkg-a" && pkg.kind == PackageKind::Npm)
-        );
+        let packages = discover_packages_at(root).unwrap();
+        assert_eq!(packages.len(), 2);
+        assert!(packages.iter().any(|p| p.name == "my-app"));
+        assert!(packages.iter().any(|p| p.name == "pkg-a"));
     }
 
     #[test]
-    fn discover_workspace_discovers_hex_packages() {
+    fn discover_packages_at_finds_hex_packages() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
@@ -261,26 +339,27 @@ mod tests {
             r#"
 defmodule Example.MixProject do
   use Mix.Project
-
   def project do
-    [
-      app: :example,
-      version: "0.1.0",
-      deps: deps()
-    ]
+    [app: :example, version: "0.1.0", deps: deps()]
   end
-
-  defp deps do
-    []
-  end
+  defp deps, do: []
 end
 "#,
         )
         .unwrap();
 
-        let ws = discover_workspace(root).unwrap();
-        assert_eq!(ws.members.len(), 1);
-        assert_eq!(ws.members[0].name, "example");
-        assert_eq!(ws.members[0].kind, PackageKind::Hex);
+        let packages = discover_packages_at(root).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "example");
+        assert_eq!(packages[0].kind, PackageKind::Hex);
+    }
+
+    #[test]
+    fn discover_packages_at_returns_empty_when_no_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let packages = discover_packages_at(root).unwrap();
+        assert!(packages.is_empty());
     }
 }

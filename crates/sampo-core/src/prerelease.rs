@@ -289,6 +289,9 @@ mod tests {
         let temp = tempdir().unwrap();
         let root = temp.path();
 
+        // Create .sampo/ directory (required for discover_workspace)
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+
         fs::create_dir_all(root.join("crates/foo")).unwrap();
         fs::create_dir_all(root.join("crates/bar")).unwrap();
 

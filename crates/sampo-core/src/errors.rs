@@ -46,8 +46,12 @@ pub enum SampoError {
 pub enum WorkspaceError {
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    #[error("No supported workspace manifest found")]
+    #[error("Sampo not initialized. Run `sampo init` first.")]
+    NotInitialized,
+    #[error("No supported workspace manifest found in current directory")]
     NotFound,
+    #[error("No packages found. Check that `.sampo/` is at the workspace root.")]
+    NoPackagesFound,
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
     #[error("Invalid workspace: {0}")]

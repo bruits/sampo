@@ -20,28 +20,21 @@ use std::path::{Path, PathBuf};
 pub fn run(args: &AddArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
-    let workspace = discover_workspace(&cwd).ok();
-    let include_kind = workspace
-        .as_ref()
-        .map(|ws| ws.has_multiple_package_kinds())
-        .unwrap_or(false);
-    let (root, available_packages, config) = if let Some(ref ws) = workspace {
-        let cfg = Config::load(&ws.root).unwrap_or_default();
-        let visible =
-            filter_members(ws, &cfg).unwrap_or_else(|_| ws.members.iter().collect::<Vec<_>>());
-        let mut out = Vec::new();
-        for info in visible {
-            let label = format_package_label(&info.name, info.kind, include_kind);
-            let spec = PackageSpecifier {
-                kind: Some(info.kind),
-                name: info.name.clone(),
-            };
-            out.push((label, spec));
-        }
-        (ws.root.clone(), out, cfg)
-    } else {
-        (cwd.clone(), Vec::new(), Config::default())
-    };
+    let workspace = discover_workspace(&cwd)?;
+    let include_kind = workspace.has_multiple_package_kinds();
+    let config = Config::load(&workspace.root).unwrap_or_default();
+    let visible = filter_members(&workspace, &config)
+        .unwrap_or_else(|_| workspace.members.iter().collect::<Vec<_>>());
+    let mut available_packages = Vec::new();
+    for info in visible {
+        let label = format_package_label(&info.name, info.kind, include_kind);
+        let spec = PackageSpecifier {
+            kind: Some(info.kind),
+            name: info.name.clone(),
+        };
+        available_packages.push((label, spec));
+    }
+    let root = workspace.root.clone();
 
     // Create changesets directory if it doesn't exist
     let changesets_dir = root.join(".sampo").join("changesets");
@@ -86,7 +79,7 @@ pub fn run(args: &AddArgs) -> Result<()> {
                 .collect::<Result<Vec<_>>>()?
         }
     } else {
-        let specs = resolve_cli_packages(workspace.as_ref(), &args.package)?;
+        let specs = resolve_cli_packages(Some(&workspace), &args.package)?;
         let labels: Vec<String> = specs
             .iter()
             .map(|spec| package_display_label(spec, include_kind))
