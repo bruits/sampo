@@ -1,5 +1,15 @@
 # sampo-github-bot
 
+## 0.4.0 — 2025-12-08
+
+### Minor changes
+
+- [8552e90](https://github.com/bruits/sampo/commit/8552e905285d539ad80870cf75b0a20a4a025a26) Bot comments now display custom tags (e.g., `### Added`) when changesets use the `bump (Tag)` format, matching the changelog output. — Thanks @goulvenclech!
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.10.0
+
 ## 0.3.3 — 2025-11-18
 
 ### Patch changes

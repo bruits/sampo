@@ -1,5 +1,16 @@
 # sampo
 
+## 0.13.0 — 2025-12-08
+
+### Minor changes
+
+- [8552e90](https://github.com/bruits/sampo/commit/8552e905285d539ad80870cf75b0a20a4a025a26) Introducing `changesets.tags` configuration option, an optional array of custom changelog section names (default: `[]`). When configured, changesets can use the `bump (Tag)` format to categorize entries under custom headings instead of the default bump-based sections. For example, `tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]` enables [Keep a Changelog](https://keepachangelog.com/) style formatting where `cargo/my-crate: minor (Added)` appears under `### Added` while still applying a minor version bump. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [b90bbaa](https://github.com/bruits/sampo/commit/b90bbaa066274ad7b0c752b27bb062667101d1cf) Running Sampo commands from a package subdirectory now correctly finds the workspace root by locating the `.sampo/` directory. If `.sampo/` doesn't exist, Sampo displays a clear error message: "Sampo not initialized. Run sampo init first." — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.10.0
+
 ## 0.12.3 — 2025-11-18
 
 ### Patch changes

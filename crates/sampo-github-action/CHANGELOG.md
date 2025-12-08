@@ -1,5 +1,16 @@
 # sampo-github-action
 
+## 0.12.0 — 2025-12-08
+
+### Minor changes
+
+- [8552e90](https://github.com/bruits/sampo/commit/8552e905285d539ad80870cf75b0a20a4a025a26) Introducing `changesets.tags` configuration option, an optional array of custom changelog section names (default: `[]`). When configured, changesets can use the `bump (Tag)` format to categorize entries under custom headings instead of the default bump-based sections. For example, `tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]` enables [Keep a Changelog](https://keepachangelog.com/) style formatting where `cargo/my-crate: minor (Added)` appears under `### Added` while still applying a minor version bump. — Thanks @goulvenclech!
+- [fd7a42a](https://github.com/bruits/sampo/commit/fd7a42a6bda4b1083dcd000478d83830480b7284) The `open-discussion` input now accepts a comma-separated list of package names (e.g. `sampo,sampo-github-action,sampo-github-bot`) to open GitHub Discussions only for specific packages, in addition to true (all) or false (none). — Thanks @goulvenclech!
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.10.0
+
 ## 0.11.2 — 2025-11-18
 
 ### Patch changes
