@@ -10,7 +10,8 @@ use sampo_core::{
 use std::io;
 
 pub const SUCCESS_PREFIX: &str = "✔";
-pub const WARNING_PREFIX: &str = "⚠️";
+pub const WARNING_PREFIX: &str = "⚠";
+pub const HINT_PREFIX: &str = "💡";
 const EMPTY_SELECTION_PLACEHOLDER: &str = "(none)";
 
 pub fn log_success_value(label: &str, value: &str) {
@@ -52,6 +53,17 @@ pub fn log_warning(message: &str) {
         theme.error_prefix.clone(),
         theme.error_style.apply_to(message)
     );
+    eprintln!("{line}");
+}
+
+/// Prints a hint message to stderr with a distinct visual style.
+///
+/// Used for non-critical suggestions like update notifications.
+pub fn log_hint(message: &str) {
+    let prefix = style(HINT_PREFIX.to_string()).for_stderr().yellow();
+    let message_style = Style::new().for_stderr().yellow();
+
+    let line = format!("{} {}", prefix, message_style.apply_to(message));
     eprintln!("{line}");
 }
 

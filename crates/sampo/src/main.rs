@@ -6,13 +6,17 @@ mod prerelease;
 mod publish;
 mod release;
 mod ui;
+mod version_check;
 
 use clap::Parser;
 use cli::{Cli, Commands};
 use std::process::ExitCode;
+use version_check::VersionCheckResult;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    check_and_notify_update();
 
     match cli.command {
         Commands::Init => {
@@ -69,4 +73,15 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Checks for CLI updates and prints a hint if a newer version is available. Non-blocking, best-effort.
+fn check_and_notify_update() {
+    if let VersionCheckResult::UpdateAvailable { current, latest } =
+        version_check::check_for_updates()
+    {
+        ui::log_hint(&format!(
+            "A new version of Sampo is available: {current} → {latest}. Run `cargo install sampo` to update."
+        ));
+    }
 }
