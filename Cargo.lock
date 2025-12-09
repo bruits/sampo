@@ -1634,9 +1634,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.24"
+version = "0.12.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d0946410b9f7b082a427e4ef5c8ff541a88b357bc6c637c40db3a68ac70a36f"
+checksum = "b6eff9328d40131d43bd911d42d79eb6a47312002a4daefc9e37f17e74a7701a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -1666,7 +1666,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tower 0.5.2",
- "tower-http 0.6.7",
+ "tower-http 0.6.8",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -1810,13 +1810,13 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 
 [[package]]
 name = "sampo"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "clap",
  "dialoguer",
  "dirs",
  "rand",
- "reqwest 0.12.24",
+ "reqwest 0.12.25",
  "rustc-hash",
  "sampo-core",
  "semver",
@@ -1834,7 +1834,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "glob",
- "reqwest 0.12.24",
+ "reqwest 0.12.25",
  "rustc-hash",
  "semver",
  "serde",
@@ -1854,7 +1854,7 @@ name = "sampo-github-action"
 version = "0.12.0"
 dependencies = [
  "glob",
- "reqwest 0.12.24",
+ "reqwest 0.12.25",
  "rustc-hash",
  "sampo-core",
  "semver",
@@ -2499,9 +2499,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf146f99d442e8e68e585f5d798ccd3cad9a7835b917e09728880a862706456"
+checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
 dependencies = [
  "bitflags 2.10.0",
  "bytes",

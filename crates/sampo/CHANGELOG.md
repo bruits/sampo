@@ -1,5 +1,11 @@
 # sampo
 
+## 0.14.0 — 2025-12-09
+
+### Minor changes
+
+- [03098f1](https://github.com/bruits/sampo/commit/03098f1de41263b77331e738a32232bee85a137c) Sampo now checks for updates once per day, and displays a hint when a newer version is available on crates.io. The check is non-blocking and fails silently if offline. — Thanks @goulvenclech!
+
 ## 0.13.0 — 2025-12-08
 
 ### Minor changes
