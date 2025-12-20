@@ -25,6 +25,9 @@ pub enum Commands {
 
     /// Manage pre-release versions for workspace packages
     Pre(PreArgs),
+
+    /// Update Sampo CLI to the latest version
+    Update(UpdateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -88,6 +91,17 @@ pub struct PreExitArgs {
     /// Packages to update (prompted interactively if omitted)
     #[arg(short, long, num_args = 1.., value_name = "PACKAGE")]
     pub package: Vec<String>,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct UpdateArgs {
+    /// Skip confirmation prompt
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Include pre-release versions (alpha, beta, rc, etc.)
+    #[arg(long)]
+    pub pre: bool,
 }
 
 #[cfg(test)]
@@ -203,6 +217,51 @@ mod tests {
         let cli = Cli::try_parse_from(["sampo", "pre"]).unwrap();
         match cli.command {
             Commands::Pre(args) => assert!(args.command.is_none()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_update() {
+        let cli = Cli::try_parse_from(["sampo", "update"]).unwrap();
+        match cli.command {
+            Commands::Update(args) => assert!(!args.yes),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_update_with_yes() {
+        let cli = Cli::try_parse_from(["sampo", "update", "--yes"]).unwrap();
+        match cli.command {
+            Commands::Update(args) => {
+                assert!(args.yes);
+                assert!(!args.pre);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_update_with_pre() {
+        let cli = Cli::try_parse_from(["sampo", "update", "--pre"]).unwrap();
+        match cli.command {
+            Commands::Update(args) => {
+                assert!(!args.yes);
+                assert!(args.pre);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_update_with_yes_and_pre() {
+        let cli = Cli::try_parse_from(["sampo", "update", "--yes", "--pre"]).unwrap();
+        match cli.command {
+            Commands::Update(args) => {
+                assert!(args.yes);
+                assert!(args.pre);
+            }
             _ => panic!("wrong variant"),
         }
     }

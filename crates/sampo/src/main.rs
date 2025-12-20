@@ -6,6 +6,7 @@ mod prerelease;
 mod publish;
 mod release;
 mod ui;
+mod update;
 mod version_check;
 
 use clap::Parser;
@@ -71,6 +72,12 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         }
+        Commands::Update(args) => {
+            if let Err(e) = update::run(&args) {
+                eprintln!("Failed to update Sampo: {e}");
+                return ExitCode::from(1);
+            }
+        }
     }
     ExitCode::SUCCESS
 }
@@ -81,7 +88,7 @@ fn check_and_notify_update() {
         version_check::check_for_updates()
     {
         ui::log_hint(&format!(
-            "A new version of Sampo is available: {current} → {latest}. Run `cargo install sampo` to update."
+            "A new version of Sampo is available: {current} → {latest}. Run `sampo update` to update."
         ));
     }
 }

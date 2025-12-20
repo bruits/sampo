@@ -9,10 +9,19 @@ use sampo_core::{
 };
 use std::io;
 
+pub const INFO_PREFIX: &str = "→";
 pub const SUCCESS_PREFIX: &str = "✔";
 pub const WARNING_PREFIX: &str = "⚠";
 pub const HINT_PREFIX: &str = "💡";
 const EMPTY_SELECTION_PLACEHOLDER: &str = "(none)";
+
+pub fn log_info(message: &str) {
+    let prefix = style(INFO_PREFIX.to_string());
+    let message_style = Style::new();
+
+    let line = format!("{} {}", prefix, message_style.apply_to(message));
+    println!("{line}");
+}
 
 pub fn log_success_value(label: &str, value: &str) {
     let theme = success_output_theme();
@@ -56,12 +65,9 @@ pub fn log_warning(message: &str) {
     eprintln!("{line}");
 }
 
-/// Prints a hint message to stderr with a distinct visual style.
-///
-/// Used for non-critical suggestions like update notifications.
 pub fn log_hint(message: &str) {
-    let prefix = style(HINT_PREFIX.to_string()).for_stderr().yellow();
-    let message_style = Style::new().for_stderr().yellow();
+    let prefix = style(HINT_PREFIX.to_string()).for_stderr().cyan();
+    let message_style = Style::new().for_stderr().cyan();
 
     let line = format!("{} {}", prefix, message_style.apply_to(message));
     eprintln!("{line}");

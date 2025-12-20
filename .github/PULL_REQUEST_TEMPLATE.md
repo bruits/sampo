@@ -1,4 +1,4 @@
-## What does this change?
+## What has changed?
 
 - Be short and concise. Bullet points can help!
 - Before/after screenshots can help as well.

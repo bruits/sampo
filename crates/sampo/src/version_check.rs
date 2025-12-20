@@ -1,4 +1,4 @@
-//! Checks whether the installed Sampo CLI is up-to-date by querying crates.io.
+//! Checks whether the installed Sampo CLI is up-to-date by querying GitHub Releases.
 //!
 //! Uses a simple file-based cache to avoid excessive network requests. The cache
 //! stores the last-known latest version and a timestamp, and is refreshed when
@@ -13,8 +13,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Default cache TTL: 24 hours in seconds.
 const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
-/// Timeout for the crates.io API request.
+/// Timeout for the GitHub API request.
 const REQUEST_TIMEOUT_SECS: u64 = 3;
+
+/// GitHub repository coordinates.
+const REPO_OWNER: &str = "bruits";
+const REPO_NAME: &str = "sampo";
+
+/// Tag prefix for Sampo CLI releases.
+const TAG_PREFIX: &str = "sampo-v";
 
 /// Current CLI version (from Cargo.toml at compile time).
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -103,12 +110,18 @@ fn write_cache(version: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Fetches the latest version from crates.io.
+/// Fetches the latest stable version from GitHub Releases.
 ///
 /// Returns `None` on network errors, timeouts, or parse failures—these are
 /// silently ignored since version checking is best-effort.
+///
+/// Only considers releases matching the `sampo-v<version>` tag pattern,
+/// excluding pre-release versions to align with `sampo update` defaults.
 fn fetch_latest_version() -> Option<String> {
-    let url = "https://crates.io/api/v1/crates/sampo";
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/releases",
+        REPO_OWNER, REPO_NAME
+    );
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -116,20 +129,30 @@ fn fetch_latest_version() -> Option<String> {
         .build()
         .ok()?;
 
-    let response = client.get(url).send().ok()?;
+    let response = client.get(&url).send().ok()?;
 
     if !response.status().is_success() {
         return None;
     }
 
-    let json: serde_json::Value = response.json().ok()?;
-    let version = json
-        .get("crate")?
-        .get("max_stable_version")?
-        .as_str()?
-        .to_string();
+    let releases: Vec<serde_json::Value> = response.json().ok()?;
 
-    Some(version)
+    // Find the highest stable version among sampo-v* tags
+    releases
+        .iter()
+        .filter_map(|release| {
+            let tag = release.get("tag_name")?.as_str()?;
+            let version_str = tag.strip_prefix(TAG_PREFIX)?;
+            let version = Version::parse(version_str).ok()?;
+            // Exclude pre-releases to match `sampo update` default behavior
+            if version.pre.is_empty() {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+        .map(|v| v.to_string())
 }
 
 /// Compares two version strings and returns true if `latest` is greater than `current`.
