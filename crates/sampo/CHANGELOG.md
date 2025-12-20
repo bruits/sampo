@@ -1,5 +1,12 @@
 # sampo
 
+## 0.14.0 — 2025-12-20
+
+### Minor changes
+
+- [570729b](https://github.com/bruits/sampo/commit/570729bf03231cbe04fb936fe5f03ec7801ba0d8) Add `sampo update` command to self-update the CLI from GitHub Releases. By default, only stable versions are proposed, use `--pre` to include pre-releases (alpha, beta, rc). — Thanks @goulvenclech!
+- [03098f1](https://github.com/bruits/sampo/commit/03098f1de41263b77331e738a32232bee85a137c) Sampo now checks for updates once per day, and displays a hint when a newer version is available on crates.io. The check is non-blocking and fails silently if offline. — Thanks @goulvenclech!
+
 ## 0.13.0 — 2025-12-08
 
 ### Minor changes
