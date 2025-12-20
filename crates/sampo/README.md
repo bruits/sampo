@@ -210,6 +210,7 @@ All commands should be run from the root of the repository:
 | `sampo pre`     | Manage pre-release versions (enter or exit pre-release mode)              |
 | `sampo release` | Consume changesets, and prepare release(s) (bump versions and changelogs) |
 | `sampo publish` | Publish packages to registries and tag current versions                   |
+| `sampo update`  | Update Sampo CLI to the latest version                                    |
 
 For detailed command options, use `sampo help <command>` or `sampo <command> --help`.
 
