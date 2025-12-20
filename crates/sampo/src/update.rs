@@ -18,7 +18,7 @@ pub fn run(args: &UpdateArgs) -> Result<()> {
     log_info("Checking for updates...");
 
     let releases = fetch_sampo_releases()?;
-    let latest = find_latest_sampo_release(&releases)?;
+    let latest = find_latest_sampo_release(&releases, args.pre)?;
     let latest_version = parse_version_from_tag(&latest.name)?;
     let current_version = Version::parse(CURRENT_VERSION)
         .map_err(|e| SampoError::InvalidData(format!("Invalid current version: {e}")))?;
@@ -60,17 +60,25 @@ fn fetch_sampo_releases() -> Result<Vec<Release>> {
 
 /// Filters releases to only those matching the `sampo-v<version>` tag pattern
 /// and returns the one with the highest semver version.
-fn find_latest_sampo_release(releases: &[Release]) -> Result<&Release> {
+///
+/// When `include_prerelease` is false, pre-release versions are excluded
+/// to ensure users only upgrade to stable releases by default.
+fn find_latest_sampo_release(releases: &[Release], include_prerelease: bool) -> Result<&Release> {
     releases
         .iter()
         .filter(|r| r.name.starts_with(TAG_PREFIX))
-        .filter(|r| parse_version_from_tag(&r.name).is_ok())
-        .max_by(|a, b| {
-            let v_a = parse_version_from_tag(&a.name).unwrap_or_else(|_| Version::new(0, 0, 0));
-            let v_b = parse_version_from_tag(&b.name).unwrap_or_else(|_| Version::new(0, 0, 0));
-            v_a.cmp(&v_b)
+        .filter_map(|r| parse_version_from_tag(&r.name).ok().map(|v| (r, v)))
+        .filter(|(_, v)| include_prerelease || v.pre.is_empty())
+        .max_by(|(_, v_a), (_, v_b)| v_a.cmp(v_b))
+        .map(|(r, _)| r)
+        .ok_or_else(|| {
+            let msg = if include_prerelease {
+                "No Sampo CLI releases found on GitHub"
+            } else {
+                "No stable Sampo CLI releases found on GitHub (use --pre to include pre-releases)"
+            };
+            SampoError::NotFound(msg.to_string())
         })
-        .ok_or_else(|| SampoError::NotFound("No Sampo CLI releases found on GitHub".to_string()))
 }
 
 /// Parses a semver version from a tag like `sampo-v0.13.0`.
@@ -145,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn find_latest_selects_highest_version() {
+    fn find_latest_selects_highest_stable_version_by_default() {
         let releases = vec![
             Release {
                 name: "sampo-v0.12.0".to_string(),
@@ -169,8 +177,56 @@ mod tests {
             },
         ];
 
-        let latest = find_latest_sampo_release(&releases).unwrap();
+        let latest = find_latest_sampo_release(&releases, false).unwrap();
         assert_eq!(latest.name, "sampo-v0.13.0");
+    }
+
+    #[test]
+    fn find_latest_excludes_prerelease_by_default() {
+        let releases = vec![
+            Release {
+                name: "sampo-v0.13.0".to_string(),
+                version: "0.13.0".to_string(),
+                ..Default::default()
+            },
+            Release {
+                name: "sampo-v1.0.0-alpha.1".to_string(),
+                version: "1.0.0-alpha.1".to_string(),
+                ..Default::default()
+            },
+            Release {
+                name: "sampo-v1.0.0-beta.2".to_string(),
+                version: "1.0.0-beta.2".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let latest = find_latest_sampo_release(&releases, false).unwrap();
+        assert_eq!(latest.name, "sampo-v0.13.0");
+    }
+
+    #[test]
+    fn find_latest_includes_prerelease_when_enabled() {
+        let releases = vec![
+            Release {
+                name: "sampo-v0.13.0".to_string(),
+                version: "0.13.0".to_string(),
+                ..Default::default()
+            },
+            Release {
+                name: "sampo-v1.0.0-alpha.1".to_string(),
+                version: "1.0.0-alpha.1".to_string(),
+                ..Default::default()
+            },
+            Release {
+                name: "sampo-v1.0.0-beta.2".to_string(),
+                version: "1.0.0-beta.2".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let latest = find_latest_sampo_release(&releases, true).unwrap();
+        assert_eq!(latest.name, "sampo-v1.0.0-beta.2");
     }
 
     #[test]
@@ -181,8 +237,29 @@ mod tests {
             ..Default::default()
         }];
 
-        let result = find_latest_sampo_release(&releases);
+        let result = find_latest_sampo_release(&releases, false);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_latest_returns_error_when_only_prereleases_and_not_included() {
+        let releases = vec![
+            Release {
+                name: "sampo-v1.0.0-alpha.1".to_string(),
+                version: "1.0.0-alpha.1".to_string(),
+                ..Default::default()
+            },
+            Release {
+                name: "sampo-v1.0.0-beta.1".to_string(),
+                version: "1.0.0-beta.1".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let result = find_latest_sampo_release(&releases, false);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("--pre"));
     }
 
     #[test]
@@ -200,7 +277,7 @@ mod tests {
             },
         ];
 
-        let latest = find_latest_sampo_release(&releases).unwrap();
+        let latest = find_latest_sampo_release(&releases, false).unwrap();
         assert_eq!(latest.name, "sampo-v0.10.0");
     }
 }

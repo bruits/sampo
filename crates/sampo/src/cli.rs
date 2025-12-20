@@ -98,6 +98,10 @@ pub struct UpdateArgs {
     /// Skip confirmation prompt
     #[arg(long)]
     pub yes: bool,
+
+    /// Include pre-release versions (alpha, beta, rc, etc.)
+    #[arg(long)]
+    pub pre: bool,
 }
 
 #[cfg(test)]
@@ -230,7 +234,34 @@ mod tests {
     fn parses_update_with_yes() {
         let cli = Cli::try_parse_from(["sampo", "update", "--yes"]).unwrap();
         match cli.command {
-            Commands::Update(args) => assert!(args.yes),
+            Commands::Update(args) => {
+                assert!(args.yes);
+                assert!(!args.pre);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_update_with_pre() {
+        let cli = Cli::try_parse_from(["sampo", "update", "--pre"]).unwrap();
+        match cli.command {
+            Commands::Update(args) => {
+                assert!(!args.yes);
+                assert!(args.pre);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_update_with_yes_and_pre() {
+        let cli = Cli::try_parse_from(["sampo", "update", "--yes", "--pre"]).unwrap();
+        match cli.command {
+            Commands::Update(args) => {
+                assert!(args.yes);
+                assert!(args.pre);
+            }
             _ => panic!("wrong variant"),
         }
     }
