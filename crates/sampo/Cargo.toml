@@ -1,6 +1,6 @@
 [package]
 name = "sampo"
-version = "0.13.0"
+version = "0.14.0"
 license = "MIT"
 authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
 edition = "2024"
@@ -26,6 +26,11 @@ sampo-core = { version = "0.10.0", path = "../sampo-core" }
 clap = { version = "4.5", features = ["derive"] }
 dialoguer = { version = "0.11", default-features = true }
 dirs = "6.0.0"
+self_update = { version = "0.42", default-features = false, features = [
+    "archive-tar",
+    "compression-flate2",
+    "rustls",
+] }
 
 [dev-dependencies]
 tempfile = "3"
