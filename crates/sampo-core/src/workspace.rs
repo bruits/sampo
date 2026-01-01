@@ -355,6 +355,28 @@ end
     }
 
     #[test]
+    fn discover_packages_at_finds_pypi_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("pyproject.toml"),
+            r#"
+[project]
+name = "my-python-pkg"
+version = "1.0.0"
+dependencies = []
+"#,
+        )
+        .unwrap();
+
+        let packages = discover_packages_at(root).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "my-python-pkg");
+        assert_eq!(packages[0].kind, PackageKind::PyPI);
+    }
+
+    #[test]
     fn discover_packages_at_returns_empty_when_no_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
