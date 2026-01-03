@@ -251,13 +251,14 @@ fn apply_version_updates(
             PackageKind::Cargo => PackageAdapter::Cargo,
             PackageKind::Npm => PackageAdapter::Npm,
             PackageKind::Hex => PackageAdapter::Hex,
+            PackageKind::PyPI => PackageAdapter::PyPI,
         };
         let manifest_path = adapter.manifest_path(&info.path);
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
         let metadata_ref = match info.kind {
             PackageKind::Cargo => manifest_metadata.as_ref(),
-            PackageKind::Npm | PackageKind::Hex => None,
+            PackageKind::Npm | PackageKind::Hex | PackageKind::PyPI => None,
         };
         let (updated, _deps) = adapter.update_manifest_versions(
             &manifest_path,

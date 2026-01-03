@@ -2,8 +2,8 @@ use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
 use serde::Deserialize;
-use serde_json::Value as JsonValue;
 use serde_json::value::RawValue;
+use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -13,7 +13,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEFAULT_NPM_REGISTRY: &str = "https://registry.npmjs.org/";
-const NPM_USER_AGENT: &str = concat!("sampo-core/", env!("CARGO_PKG_VERSION"));
 const REGISTRY_RATE_LIMIT: Duration = Duration::from_millis(300);
 
 static REGISTRY_LAST_CALL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
@@ -64,7 +63,11 @@ impl NpmAdapter {
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
         let manifest = load_package_json(manifest_path)?;
         let info = parse_manifest_info(manifest_path, &manifest)?;
-        if info.private { Ok(false) } else { Ok(true) }
+        if info.private {
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 
     pub(super) fn version_exists(
@@ -354,7 +357,7 @@ fn version_exists_on_registry(
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
-        .user_agent(NPM_USER_AGENT)
+        .user_agent(crate::USER_AGENT)
         .build()
         .map_err(|err| SampoError::Publish(format!("failed to build HTTP client: {}", err)))?;
 

@@ -5,11 +5,10 @@
 //!
 //! Repository detection: config override → GITHUB_REPOSITORY env → git remote origin.
 
+use crate::USER_AGENT;
 use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
-
-const USER_AGENT: &str = concat!("sampo/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone)]
 pub struct CommitInfo {

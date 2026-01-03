@@ -2,6 +2,7 @@
 pub mod cargo;
 pub mod hex;
 pub mod npm;
+pub mod pypi;
 
 pub use cargo::ManifestMetadata;
 
@@ -16,6 +17,7 @@ pub enum PackageAdapter {
     Cargo,
     Npm,
     Hex,
+    PyPI,
 }
 
 impl PackageAdapter {
@@ -26,6 +28,7 @@ impl PackageAdapter {
             PackageAdapter::Cargo,
             PackageAdapter::Npm,
             PackageAdapter::Hex,
+            PackageAdapter::PyPI,
         ]
     }
 
@@ -35,6 +38,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.can_discover(root),
             Self::Npm => npm::NpmAdapter.can_discover(root),
             Self::Hex => hex::HexAdapter.can_discover(root),
+            Self::PyPI => pypi::PyPIAdapter.can_discover(root),
         }
     }
 
@@ -44,6 +48,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.discover(root),
             Self::Npm => npm::NpmAdapter.discover(root),
             Self::Hex => hex::HexAdapter.discover(root),
+            Self::PyPI => pypi::PyPIAdapter.discover(root),
         }
     }
 
@@ -53,6 +58,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.manifest_path(package_dir),
             Self::Npm => npm::NpmAdapter.manifest_path(package_dir),
             Self::Hex => hex::HexAdapter.manifest_path(package_dir),
+            Self::PyPI => pypi::PyPIAdapter.manifest_path(package_dir),
         }
     }
 
@@ -62,6 +68,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.is_publishable(manifest_path),
             Self::Npm => npm::NpmAdapter.is_publishable(manifest_path),
             Self::Hex => hex::HexAdapter.is_publishable(manifest_path),
+            Self::PyPI => pypi::PyPIAdapter.is_publishable(manifest_path),
         }
     }
 
@@ -76,6 +83,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version),
             Self::Npm => npm::NpmAdapter.version_exists(package_name, version, manifest_path),
             Self::Hex => hex::HexAdapter.version_exists(package_name, version, manifest_path),
+            Self::PyPI => pypi::PyPIAdapter.version_exists(package_name, version, manifest_path),
         }
     }
 
@@ -90,6 +98,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.publish(manifest_path, dry_run, extra_args),
             Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, extra_args),
             Self::Hex => hex::HexAdapter.publish(manifest_path, dry_run, extra_args),
+            Self::PyPI => pypi::PyPIAdapter.publish(manifest_path, dry_run, extra_args),
         }
     }
 
@@ -105,6 +114,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::publish_dry_run(workspace_root, packages, extra_args),
             Self::Npm => npm::publish_dry_run(packages, extra_args),
             Self::Hex => hex::publish_dry_run(packages, extra_args),
+            Self::PyPI => pypi::publish_dry_run(packages, extra_args),
         }
     }
 
@@ -114,6 +124,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter.regenerate_lockfile(workspace_root),
             Self::Npm => npm::NpmAdapter.regenerate_lockfile(workspace_root),
             Self::Hex => hex::HexAdapter.regenerate_lockfile(workspace_root),
+            Self::PyPI => pypi::PyPIAdapter.regenerate_lockfile(workspace_root),
         }
     }
 
@@ -158,6 +169,18 @@ impl PackageAdapter {
                     new_version_by_name,
                 )
             }
+            Self::PyPI => {
+                debug_assert!(
+                    metadata.is_none(),
+                    "pypi adapter does not use Cargo metadata"
+                );
+                pypi::update_manifest_versions(
+                    manifest_path,
+                    input,
+                    new_pkg_version,
+                    new_version_by_name,
+                )
+            }
         }
     }
 
@@ -167,6 +190,7 @@ impl PackageAdapter {
             PackageKind::Cargo => Self::Cargo,
             PackageKind::Npm => Self::Npm,
             PackageKind::Hex => Self::Hex,
+            PackageKind::PyPI => Self::PyPI,
         }
     }
 }

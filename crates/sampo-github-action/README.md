@@ -9,6 +9,7 @@ Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentat
 ### Release and Publish
 
 By default, the action runs in `auto` mode:
+
 - When changesets exist on the current release branch (see the `[git]` configuration), it prepares or refreshes that branch's release PR.
 - When the release plan targets pre-release versions, it also prepares a stabilize PR that exits pre-release mode and lines up the stable release for the same set of changesets.
 - When that PR is merged, it publishes your packages, creates tags, and can open GitHub Releases/Discussions. Can also mark Github Releases as « pre-release » for pre-releases branches.
@@ -17,13 +18,13 @@ By default, the action runs in `auto` mode:
 name: Release & Publish
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch: {}
 
 permissions:
-  contents: write        # Create tags and releases
-  pull-requests: write   # Create and update release PRs
-  discussions: write     # Open GitHub Discussions (optional)
+  contents: write      # Create tags and releases
+  pull-requests: write # Create and update release PRs
+  discussions: write   # Open GitHub Discussions (optional)
 
 jobs:
   release:
@@ -39,9 +40,10 @@ jobs:
           # Options here, see below
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }} # For Cargo packages (optional)
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}     # For npm packages (optional, uses .npmrc if not set)
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }} # For Hex packages (optional)
+          CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}     # For Cargo packages (optional)
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}         # For npm packages (optional, uses .npmrc if not set)
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}     # For Hex packages (optional)
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }} # For PyPI packages via uv (optional)
 ```
 
 ### Creating GitHub Releases and Discussions
@@ -61,13 +63,13 @@ Build binaries or archives in earlier workflow steps, then pass their paths or g
 Example:
 
 ```yaml
-      - run: cargo build --release
-      - uses: bruits/sampo/crates/sampo-github-action@main
-        with:
-          create-github-release: true
-          release-assets: |
-            target/release/my-cli => my-cli-{{tag}}
-            dist/{{crate}}-v{{version}}-*.tar.gz
+- run: cargo build --release
+- uses: bruits/sampo/crates/sampo-github-action@main
+  with:
+    create-github-release: true
+    release-assets: |
+      target/release/my-cli => my-cli-{{tag}}
+      dist/{{crate}}-v{{version}}-*.tar.gz
 ```
 
 ### Using outputs to conditionally run steps
@@ -80,19 +82,19 @@ The action exposes two outputs:
 These outputs can be used to gate subsequent steps, example:
 
 ```yaml
-      - name: Create release PR or publish packages
-        id: sampo
-        uses: bruits/sampo/crates/sampo-github-action@main
-        with:
-          command: auto
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Notify on release PR creation
-        if: steps.sampo.outputs.released == 'true'
-        run: echo "Release PR created or updated"
-      - name: Notify on publish
-        if: steps.sampo.outputs.published == 'true'
-        run: echo "Packages were published"
+- name: Create release PR or publish packages
+  id: sampo
+  uses: bruits/sampo/crates/sampo-github-action@main
+  with:
+    command: auto
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- name: Notify on release PR creation
+  if: steps.sampo.outputs.released == 'true'
+  run: echo "Release PR created or updated"
+- name: Notify on publish
+  if: steps.sampo.outputs.published == 'true'
+  run: echo "Packages were published"
 ```
 
 ## Configuration
