@@ -9,6 +9,7 @@ pub enum PackageKind {
     Npm,
     Hex,
     PyPI,
+    Packagist,
 }
 
 impl PackageKind {
@@ -19,6 +20,7 @@ impl PackageKind {
             Self::Npm => "npm",
             Self::Hex => "hex",
             Self::PyPI => "pypi",
+            Self::Packagist => "packagist",
         }
     }
 
@@ -29,6 +31,7 @@ impl PackageKind {
             Self::Npm => "npm",
             Self::Hex => "Hex",
             Self::PyPI => "PyPI",
+            Self::Packagist => "Packagist",
         }
     }
 
@@ -48,6 +51,7 @@ impl PackageKind {
             "npm" => Some(Self::Npm),
             "hex" => Some(Self::Hex),
             "pypi" => Some(Self::PyPI),
+            "packagist" => Some(Self::Packagist),
             _ => None,
         }
     }
