@@ -816,6 +816,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             PackageKind::Npm => PackageAdapter::Npm,
             PackageKind::Hex => PackageAdapter::Hex,
             PackageKind::PyPI => PackageAdapter::PyPI,
+            PackageKind::Packagist => PackageAdapter::Packagist,
         };
 
         let lockfile_exists = match kind {
@@ -829,6 +830,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             }
             PackageKind::Hex => workspace.root.join("mix.lock").exists(),
             PackageKind::PyPI => workspace.root.join("uv.lock").exists(),
+            PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
         };
 
         if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
@@ -1337,6 +1339,7 @@ fn apply_releases(
             PackageKind::Npm => crate::adapters::PackageAdapter::Npm,
             PackageKind::Hex => crate::adapters::PackageAdapter::Hex,
             PackageKind::PyPI => crate::adapters::PackageAdapter::PyPI,
+            PackageKind::Packagist => crate::adapters::PackageAdapter::Packagist,
         };
         let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
@@ -1344,7 +1347,10 @@ fn apply_releases(
         // Update manifest versions
         let cargo_metadata = match adapter {
             PackageAdapter::Cargo => manifest_metadata.as_ref(),
-            PackageAdapter::Npm | PackageAdapter::Hex | PackageAdapter::PyPI => None,
+            PackageAdapter::Npm
+            | PackageAdapter::Hex
+            | PackageAdapter::PyPI
+            | PackageAdapter::Packagist => None,
         };
         let (updated, _dep_updates) = adapter.update_manifest_versions(
             &manifest_path,
