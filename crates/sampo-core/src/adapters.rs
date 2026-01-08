@@ -2,6 +2,7 @@
 pub mod cargo;
 pub mod hex;
 pub mod npm;
+pub mod packagist;
 pub mod pypi;
 
 pub use cargo::ManifestMetadata;
@@ -18,6 +19,7 @@ pub enum PackageAdapter {
     Npm,
     Hex,
     PyPI,
+    Packagist,
 }
 
 impl PackageAdapter {
@@ -29,6 +31,7 @@ impl PackageAdapter {
             PackageAdapter::Npm,
             PackageAdapter::Hex,
             PackageAdapter::PyPI,
+            PackageAdapter::Packagist,
         ]
     }
 
@@ -39,6 +42,7 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.can_discover(root),
             Self::Hex => hex::HexAdapter.can_discover(root),
             Self::PyPI => pypi::PyPIAdapter.can_discover(root),
+            Self::Packagist => packagist::PackagistAdapter.can_discover(root),
         }
     }
 
@@ -49,6 +53,7 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.discover(root),
             Self::Hex => hex::HexAdapter.discover(root),
             Self::PyPI => pypi::PyPIAdapter.discover(root),
+            Self::Packagist => packagist::PackagistAdapter.discover(root),
         }
     }
 
@@ -59,6 +64,7 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.manifest_path(package_dir),
             Self::Hex => hex::HexAdapter.manifest_path(package_dir),
             Self::PyPI => pypi::PyPIAdapter.manifest_path(package_dir),
+            Self::Packagist => packagist::PackagistAdapter.manifest_path(package_dir),
         }
     }
 
@@ -69,6 +75,7 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.is_publishable(manifest_path),
             Self::Hex => hex::HexAdapter.is_publishable(manifest_path),
             Self::PyPI => pypi::PyPIAdapter.is_publishable(manifest_path),
+            Self::Packagist => packagist::PackagistAdapter.is_publishable(manifest_path),
         }
     }
 
@@ -84,6 +91,9 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.version_exists(package_name, version, manifest_path),
             Self::Hex => hex::HexAdapter.version_exists(package_name, version, manifest_path),
             Self::PyPI => pypi::PyPIAdapter.version_exists(package_name, version, manifest_path),
+            Self::Packagist => {
+                packagist::PackagistAdapter.version_exists(package_name, version, manifest_path)
+            }
         }
     }
 
@@ -99,6 +109,9 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, extra_args),
             Self::Hex => hex::HexAdapter.publish(manifest_path, dry_run, extra_args),
             Self::PyPI => pypi::PyPIAdapter.publish(manifest_path, dry_run, extra_args),
+            Self::Packagist => {
+                packagist::PackagistAdapter.publish(manifest_path, dry_run, extra_args)
+            }
         }
     }
 
@@ -115,6 +128,7 @@ impl PackageAdapter {
             Self::Npm => npm::publish_dry_run(packages, extra_args),
             Self::Hex => hex::publish_dry_run(packages, extra_args),
             Self::PyPI => pypi::publish_dry_run(packages, extra_args),
+            Self::Packagist => packagist::publish_dry_run(packages, extra_args),
         }
     }
 
@@ -125,6 +139,7 @@ impl PackageAdapter {
             Self::Npm => npm::NpmAdapter.regenerate_lockfile(workspace_root),
             Self::Hex => hex::HexAdapter.regenerate_lockfile(workspace_root),
             Self::PyPI => pypi::PyPIAdapter.regenerate_lockfile(workspace_root),
+            Self::Packagist => packagist::PackagistAdapter.regenerate_lockfile(workspace_root),
         }
     }
 
@@ -181,6 +196,18 @@ impl PackageAdapter {
                     new_version_by_name,
                 )
             }
+            Self::Packagist => {
+                debug_assert!(
+                    metadata.is_none(),
+                    "packagist adapter does not use Cargo metadata"
+                );
+                packagist::update_manifest_versions(
+                    manifest_path,
+                    input,
+                    new_pkg_version,
+                    new_version_by_name,
+                )
+            }
         }
     }
 
@@ -191,6 +218,7 @@ impl PackageAdapter {
             PackageKind::Npm => Self::Npm,
             PackageKind::Hex => Self::Hex,
             PackageKind::PyPI => Self::PyPI,
+            PackageKind::Packagist => Self::Packagist,
         }
     }
 }
