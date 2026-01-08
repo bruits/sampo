@@ -1,7 +1,7 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::PackageInfo;
-use reqwest::blocking::Client;
 use reqwest::StatusCode;
+use reqwest::blocking::Client;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

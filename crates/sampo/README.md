@@ -80,7 +80,7 @@ At the root of each published package, a human-readable file listing all changes
 ... previous entries ...
 ```
 
-Sampo generates changelog entries from consumed changesets and enriches them with commit hash links and author acknowledgments (can be disabled in config). 
+Sampo generates changelog entries from consumed changesets and enriches them with commit hash links and author acknowledgments (can be disabled in config).
 
 Any intro content or custom main header before the first `##` section is preserved. You can also manually edit the previously released entries, and Sampo will keep them intact.
 
@@ -163,6 +163,9 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 `tags`: An optional array of custom changelog section names (default: `[]`). When configured, changesets can use the `bump (Tag)` format to categorize entries under custom headings instead of the default bump-based sections. For example, `tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]` enables [Keep a Changelog](https://keepachangelog.com/) style formatting where `cargo/my-crate: minor (Added)` appears under `### Added` while still applying a minor version bump.
 
 ### `[changelog]` section
+
+> [!WARNING]
+> Commit hash links and author acknowledgments won't work in shallow clones or CI environments where the full git history is not available.
 
 `show_commit_hash`: Whether to include commit hash links in changelog entries (default: `true`). When enabled, changelog entries include clickable commit hash links that point to the commit on GitHub.
 

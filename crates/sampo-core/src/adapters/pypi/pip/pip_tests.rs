@@ -76,7 +76,10 @@ dependencies = []
     let packages = discover(root).unwrap();
     assert_eq!(packages.len(), 3);
 
-    let root_pkg = packages.iter().find(|p| p.name == "workspace-root").unwrap();
+    let root_pkg = packages
+        .iter()
+        .find(|p| p.name == "workspace-root")
+        .unwrap();
     assert!(root_pkg.internal_deps.contains("pypi/pkg-a"));
 
     let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
