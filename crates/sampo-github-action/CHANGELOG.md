@@ -1,5 +1,16 @@
 # sampo-github-action
 
+## 0.13.0 — 2026-01-09
+
+### Minor changes
+
+- [1dcc188](https://github.com/bruits/sampo/commit/1dcc188f7cf1d9867dd074f2f6da06f179002dc2) Add pypi support to sampo allowing Python libraries to be managed via sampo. It currently only supports pyproject.toml + uv for publishing — Thanks @rafaeelaudibert for your first contribution 🎉!
+
+### Patch changes
+
+- [26aed7e](https://github.com/bruits/sampo/commit/26aed7ec7994e92f8d6f4392e36cd73b37d2ac70) Changelog entries now correctly credit the original changeset author, even if the file was later edited by someone else. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.11.0
+
 ## 0.12.0 — 2025-12-08
 
 ### Minor changes
