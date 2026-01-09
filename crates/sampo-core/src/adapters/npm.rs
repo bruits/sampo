@@ -2,8 +2,8 @@ use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
 use serde::Deserialize;
-use serde_json::value::RawValue;
 use serde_json::Value as JsonValue;
+use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -63,11 +63,7 @@ impl NpmAdapter {
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
         let manifest = load_package_json(manifest_path)?;
         let info = parse_manifest_info(manifest_path, &manifest)?;
-        if info.private {
-            Ok(false)
-        } else {
-            Ok(true)
-        }
+        if info.private { Ok(false) } else { Ok(true) }
     }
 
     pub(super) fn version_exists(

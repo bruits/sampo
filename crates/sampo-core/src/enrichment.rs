@@ -48,6 +48,7 @@ pub fn get_commit_hash_for_path(repo_root: &Path, file_path: &Path) -> Option<St
         .current_dir(repo_root)
         .args([
             "log",
+            "--diff-filter=A",
             "-1",
             "--format=%H",
             "--",
@@ -543,6 +544,206 @@ mod tests {
         assert_eq!(
             plain, "fix: resolve critical bug",
             "Should be unchanged when features disabled"
+        );
+    }
+
+    #[test]
+    fn get_commit_hash_returns_creation_commit_not_modification() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize a git repo
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Configure git user for initial commit
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Original Author"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "original@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create and commit file
+        let test_file = repo_path.join("changeset.md");
+        fs::write(&test_file, "initial content").unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "changeset.md"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "create changeset"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Record the creation commit hash
+        let creation_commit =
+            get_commit_hash_for_path(repo_path, &test_file).expect("Should find creation commit");
+
+        // Now modify the file with a different author
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Editor"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "editor@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        fs::write(&test_file, "modified content").unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "changeset.md"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "edit changeset"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // After modification, get_commit_hash_for_path should still return the creation commit
+        let hash_after_modification = get_commit_hash_for_path(repo_path, &test_file)
+            .expect("Should find commit after modification");
+
+        assert_eq!(
+            hash_after_modification, creation_commit,
+            "Should return creation commit, not modification commit"
+        );
+
+        // Verify we can get the correct author from the creation commit
+        let commit_info =
+            get_commit_info_for_hash(repo_path, &creation_commit).expect("Should get commit info");
+        assert_eq!(
+            commit_info.author_name, "Original Author",
+            "Should credit original author, not editor"
+        );
+    }
+
+    #[test]
+    fn get_commit_hash_returns_latest_creation_after_delete_recreate() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let repo_path = temp_dir.path();
+
+        // Initialize a git repo
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Configure git user for first creation
+        std::process::Command::new("git")
+            .args(["config", "user.name", "First Author"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "first@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Create and commit file
+        let test_file = repo_path.join("changeset.md");
+        fs::write(&test_file, "first version").unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "changeset.md"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "first creation"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        let first_creation_commit = get_commit_hash_for_path(repo_path, &test_file)
+            .expect("Should find first creation commit");
+
+        // Delete the file
+        fs::remove_file(&test_file).unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "changeset.md"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "delete changeset"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Re-create the file with a different author
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Second Author"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "second@example.com"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        fs::write(&test_file, "second version").unwrap();
+
+        std::process::Command::new("git")
+            .args(["add", "changeset.md"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "recreate changeset"])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+
+        // Should return the latest creation commit (second author's)
+        let latest_creation_commit = get_commit_hash_for_path(repo_path, &test_file)
+            .expect("Should find latest creation commit");
+
+        assert_ne!(
+            latest_creation_commit, first_creation_commit,
+            "Should return different commit after delete/recreate"
+        );
+
+        // Verify we credit the second author (current file creator)
+        let commit_info = get_commit_info_for_hash(repo_path, &latest_creation_commit)
+            .expect("Should get commit info");
+        assert_eq!(
+            commit_info.author_name, "Second Author",
+            "Should credit the author who re-created the file"
         );
     }
 
