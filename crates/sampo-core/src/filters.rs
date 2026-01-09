@@ -19,6 +19,7 @@ pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -
             crate::types::PackageKind::Npm => PackageAdapter::Npm,
             crate::types::PackageKind::Hex => PackageAdapter::Hex,
             crate::types::PackageKind::PyPI => PackageAdapter::PyPI,
+            crate::types::PackageKind::Packagist => PackageAdapter::Packagist,
         };
         let manifest = adapter.manifest_path(&info.path);
         if !adapter.is_publishable(&manifest)? {

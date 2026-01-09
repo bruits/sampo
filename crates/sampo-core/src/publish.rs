@@ -65,6 +65,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
             crate::types::PackageKind::Npm => PackageAdapter::Npm,
             crate::types::PackageKind::Hex => PackageAdapter::Hex,
             crate::types::PackageKind::PyPI => PackageAdapter::PyPI,
+            crate::types::PackageKind::Packagist => PackageAdapter::Packagist,
         };
 
         let manifest = adapter.manifest_path(&c.path);
