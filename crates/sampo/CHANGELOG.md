@@ -1,5 +1,12 @@
 # sampo
 
+## 0.15.0 — 2026-01-09
+
+### Patch changes
+
+- [26aed7e](https://github.com/bruits/sampo/commit/26aed7ec7994e92f8d6f4392e36cd73b37d2ac70) Changelog entries now correctly credit the original changeset author, even if the file was later edited by someone else. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.11.0
+
 ## 0.14.0 — 2025-12-20
 
 ### Minor changes
