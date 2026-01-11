@@ -34,31 +34,20 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
     }
 
     // Check for uv workspace members in [tool.uv.workspace]
-    if let Some(members) = parse_uv_workspace_members(&manifest_text) {
+    let workspace_config = parse_uv_workspace_config(&manifest_text);
+    if let Some(ref members) = workspace_config.members {
         for pattern in members {
-            let pattern_path = root.join(&pattern);
-
-            // Handle glob patterns like "packages/*"
-            if pattern.contains('*') {
-                let base = pattern.trim_end_matches("/*").trim_end_matches("/**");
-                let base_dir = root.join(base);
-                if base_dir.exists()
-                    && let Ok(entries) = fs::read_dir(&base_dir)
-                {
-                    for entry in entries.flatten() {
-                        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                            continue;
-                        }
-                        let dir = entry.path();
-                        if dir.join(PYPROJECT_MANIFEST).exists() {
-                            package_dirs.insert(normalize_path(&dir));
-                        }
-                    }
-                }
-            } else if pattern_path.join(PYPROJECT_MANIFEST).exists() {
-                package_dirs.insert(normalize_path(&pattern_path));
-            }
+            expand_uv_member_pattern(root, pattern, &mut package_dirs)?;
         }
+    }
+
+    // Apply exclude patterns
+    if let Some(ref excludes) = workspace_config.exclude {
+        let mut excluded_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        for pattern in excludes {
+            expand_uv_member_pattern(root, pattern, &mut excluded_dirs)?;
+        }
+        package_dirs.retain(|dir| !excluded_dirs.contains(dir));
     }
 
     let mut manifests = Vec::new();
@@ -398,25 +387,80 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
     metadata
 }
 
-/// Parse uv workspace members from [tool.uv.workspace]
-fn parse_uv_workspace_members(source: &str) -> Option<Vec<String>> {
-    let doc: DocumentMut = source.parse().ok()?;
+/// Configuration parsed from [tool.uv.workspace]
+#[derive(Default)]
+struct UvWorkspaceConfig {
+    members: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
+}
 
-    let tool = doc.get("tool")?.as_table()?;
-    let uv = tool.get("uv")?.as_table()?;
-    let workspace = uv.get("workspace")?.as_table()?;
-    let members = workspace.get("members")?.as_array()?;
+/// Parse uv workspace configuration from [tool.uv.workspace]
+fn parse_uv_workspace_config(source: &str) -> UvWorkspaceConfig {
+    let Ok(doc) = source.parse::<DocumentMut>() else {
+        return UvWorkspaceConfig::default();
+    };
 
-    let result: Vec<String> = members
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
+    let Some(workspace) = doc
+        .get("tool")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("uv"))
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("workspace"))
+        .and_then(|t| t.as_table())
+    else {
+        return UvWorkspaceConfig::default();
+    };
 
-    if result.is_empty() {
-        None
+    let members = workspace
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty());
+
+    let exclude = workspace
+        .get("exclude")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty());
+
+    UvWorkspaceConfig { members, exclude }
+}
+
+/// Expand a member pattern (plain path or glob) into concrete paths containing pyproject.toml
+fn expand_uv_member_pattern(
+    root: &Path,
+    pattern: &str,
+    paths: &mut BTreeSet<PathBuf>,
+) -> std::result::Result<(), WorkspaceError> {
+    if pattern.contains('*') {
+        let full_pattern = root.join(pattern);
+        let pattern_str = full_pattern.to_string_lossy();
+        let entries = glob::glob(&pattern_str).map_err(|e| {
+            WorkspaceError::InvalidWorkspace(format!("invalid glob pattern '{}': {}", pattern, e))
+        })?;
+        for entry in entries {
+            let path = entry
+                .map_err(|e| WorkspaceError::InvalidWorkspace(format!("glob error: {}", e)))?;
+            if path.is_dir() && path.join(PYPROJECT_MANIFEST).exists() {
+                paths.insert(normalize_path(&path));
+            }
+        }
     } else {
-        Some(result)
+        let member_path = normalize_path(&root.join(pattern));
+        if member_path.join(PYPROJECT_MANIFEST).exists() {
+            paths.insert(member_path);
+        }
+        // Unlike Cargo, uv silently ignores non-existent members
     }
+    Ok(())
 }
 
 /// Collect dependency names from PEP 621 [project.dependencies] and [project.optional-dependencies]

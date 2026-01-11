@@ -600,7 +600,7 @@ key = "value"
 }
 
 #[test]
-fn parse_uv_workspace_members_extracts_members() {
+fn parse_uv_workspace_config_extracts_members() {
     let source = r#"
 [project]
 name = "root"
@@ -609,20 +609,43 @@ version = "1.0.0"
 [tool.uv.workspace]
 members = ["packages/*", "libs/core"]
 "#;
-    let members = parse_uv_workspace_members(source).unwrap();
+    let config = parse_uv_workspace_config(source);
+    let members = config.members.unwrap();
     assert_eq!(members.len(), 2);
     assert!(members.contains(&"packages/*".to_string()));
     assert!(members.contains(&"libs/core".to_string()));
+    assert!(config.exclude.is_none());
 }
 
 #[test]
-fn parse_uv_workspace_members_returns_none_without_workspace() {
+fn parse_uv_workspace_config_extracts_exclude() {
+    let source = r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/test-fixtures", "packages/examples/*"]
+"#;
+    let config = parse_uv_workspace_config(source);
+    assert!(config.members.is_some());
+    let exclude = config.exclude.unwrap();
+    assert_eq!(exclude.len(), 2);
+    assert!(exclude.contains(&"packages/test-fixtures".to_string()));
+    assert!(exclude.contains(&"packages/examples/*".to_string()));
+}
+
+#[test]
+fn parse_uv_workspace_config_returns_empty_without_workspace() {
     let source = r#"
 [project]
 name = "single-pkg"
 version = "1.0.0"
 "#;
-    assert!(parse_uv_workspace_members(source).is_none());
+    let config = parse_uv_workspace_config(source);
+    assert!(config.members.is_none());
+    assert!(config.exclude.is_none());
 }
 
 #[test]
@@ -1094,4 +1117,423 @@ version = "1.0.0"
 
     let packages = discover(root).expect("distinct names should succeed");
     assert_eq!(packages.len(), 3);
+}
+
+// ============================================================================
+// Glob Pattern Tests
+// ============================================================================
+
+#[test]
+fn discover_uv_workspace_with_recursive_glob() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/**"]
+"#,
+    );
+
+    // Nested packages at different depths
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-a"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/nested/pkg-b/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-b"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"pkg-a"));
+    assert!(names.contains(&"pkg-b"));
+}
+
+#[test]
+fn discover_uv_workspace_with_mid_path_glob() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Pattern like "packages/*/src" which should match packages/foo/src, packages/bar/src
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*/sub"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/foo/sub/pyproject.toml"),
+        r#"
+[project]
+name = "foo-sub"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/bar/sub/pyproject.toml"),
+        r#"
+[project]
+name = "bar-sub"
+version = "0.1.0"
+"#,
+    );
+
+    // This one should NOT match (not in sub/)
+    write_file(
+        &root.join("packages/baz/pyproject.toml"),
+        r#"
+[project]
+name = "baz-root"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"foo-sub"));
+    assert!(names.contains(&"bar-sub"));
+    assert!(!names.contains(&"baz-root"));
+}
+
+#[test]
+fn discover_uv_workspace_with_prefix_glob() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Pattern like "apps/app-*"
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["apps/app-*"]
+"#,
+    );
+
+    write_file(
+        &root.join("apps/app-web/pyproject.toml"),
+        r#"
+[project]
+name = "app-web"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("apps/app-mobile/pyproject.toml"),
+        r#"
+[project]
+name = "app-mobile"
+version = "0.1.0"
+"#,
+    );
+
+    // This should NOT match (doesn't start with "app-")
+    write_file(
+        &root.join("apps/other/pyproject.toml"),
+        r#"
+[project]
+name = "other"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"app-web"));
+    assert!(names.contains(&"app-mobile"));
+    assert!(!names.contains(&"other"));
+}
+
+// ============================================================================
+// Exclude Pattern Tests
+// ============================================================================
+
+#[test]
+fn discover_uv_workspace_with_exclude() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/test-fixtures"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-a"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/test-fixtures/pyproject.toml"),
+        r#"
+[project]
+name = "test-fixtures"
+version = "0.0.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"pkg-a"));
+    assert!(!names.contains(&"test-fixtures"));
+}
+
+#[test]
+fn discover_uv_workspace_with_glob_exclude() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/example-*"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/core/pyproject.toml"),
+        r#"
+[project]
+name = "core"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/example-basic/pyproject.toml"),
+        r#"
+[project]
+name = "example-basic"
+version = "0.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/example-advanced/pyproject.toml"),
+        r#"
+[project]
+name = "example-advanced"
+version = "0.0.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"core"));
+    assert!(!names.contains(&"example-basic"));
+    assert!(!names.contains(&"example-advanced"));
+}
+
+#[test]
+fn discover_uv_workspace_with_multiple_exclude_patterns() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/test-*", "packages/examples"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/core/pyproject.toml"),
+        r#"
+[project]
+name = "core"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/test-unit/pyproject.toml"),
+        r#"
+[project]
+name = "test-unit"
+version = "0.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/test-integration/pyproject.toml"),
+        r#"
+[project]
+name = "test-integration"
+version = "0.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/examples/pyproject.toml"),
+        r#"
+[project]
+name = "examples"
+version = "0.0.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"core"));
+    assert!(!names.contains(&"test-unit"));
+    assert!(!names.contains(&"test-integration"));
+    assert!(!names.contains(&"examples"));
+}
+
+#[test]
+fn discover_uv_workspace_exclude_does_not_affect_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // The root package should not be excluded even if the pattern matches
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/*"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-a"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    // Root should still be included
+    assert!(names.contains(&"root"));
+    // But packages matched by exclude should not
+    assert!(!names.contains(&"pkg-a"));
+}
+
+#[test]
+fn expand_uv_member_pattern_handles_plain_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("libs/core/pyproject.toml"),
+        r#"
+[project]
+name = "core"
+version = "0.1.0"
+"#,
+    );
+
+    let mut paths = BTreeSet::new();
+    expand_uv_member_pattern(root, "libs/core", &mut paths).unwrap();
+
+    assert_eq!(paths.len(), 1);
+    assert!(paths.iter().next().unwrap().ends_with("libs/core"));
+}
+
+#[test]
+fn expand_uv_member_pattern_ignores_nonexistent_plain_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let mut paths = BTreeSet::new();
+    // Unlike Cargo, uv silently ignores non-existent members
+    expand_uv_member_pattern(root, "nonexistent/pkg", &mut paths).unwrap();
+
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn expand_uv_member_pattern_ignores_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Create a file that matches the pattern but is not a directory
+    write_file(&root.join("packages/not-a-dir"), "just a file");
+
+    // Also create a valid package directory
+    write_file(
+        &root.join("packages/valid-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "valid-pkg"
+version = "0.1.0"
+"#,
+    );
+
+    let mut paths = BTreeSet::new();
+    expand_uv_member_pattern(root, "packages/*", &mut paths).unwrap();
+
+    assert_eq!(paths.len(), 1);
+    assert!(paths.iter().next().unwrap().ends_with("valid-pkg"));
 }
