@@ -62,7 +62,8 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
     }
 
     let mut manifests = Vec::new();
-    let mut name_to_path: BTreeMap<String, PathBuf> = BTreeMap::new();
+    // PEP 503: package names are case-insensitive and treat `.`, `-`, `_` as equivalent
+    let mut normalized_name_to_original: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
 
     for dir in package_dirs {
         let manifest_path = dir.join(PYPROJECT_MANIFEST);
@@ -79,7 +80,22 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let version = meta.version.unwrap_or_default();
         let deps = collect_dependencies(&text);
 
-        name_to_path.insert(name.clone(), dir.clone());
+        let normalized = normalize_package_name(&name);
+
+        // Detect collision: two packages normalizing to the same PEP 503 name
+        if let Some((existing_name, existing_path)) = normalized_name_to_original.get(&normalized) {
+            return Err(WorkspaceError::InvalidWorkspace(format!(
+                "packages '{}' (at {}) and '{}' (at {}) normalize to the same PEP 503 name '{}'. \
+                 Python ecosystems do not allow duplicate normalized names",
+                existing_name,
+                existing_path.display(),
+                name,
+                dir.display(),
+                normalized
+            )));
+        }
+
+        normalized_name_to_original.insert(normalized, (name.clone(), dir.clone()));
         manifests.push((name, version, dir, deps));
     }
 
@@ -89,10 +105,11 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let mut internal = BTreeSet::new();
 
         for dep_name in deps {
-            if name_to_path.contains_key(&dep_name) {
+            let normalized_dep = normalize_package_name(&dep_name);
+            if let Some((original_name, _)) = normalized_name_to_original.get(&normalized_dep) {
                 internal.insert(PackageInfo::dependency_identifier(
                     PackageKind::PyPI,
-                    &dep_name,
+                    original_name,
                 ));
             }
         }
@@ -483,7 +500,11 @@ fn try_update_dependency_spec(
     new_version_by_name: &BTreeMap<String, String>,
 ) -> Option<(String, String)> {
     let name = extract_package_name(spec)?;
-    let new_version = new_version_by_name.get(&name)?;
+    let normalized_name = normalize_package_name(&name);
+
+    let (original_name, new_version) = new_version_by_name
+        .iter()
+        .find(|(k, _)| normalize_package_name(k) == normalized_name)?;
 
     let trimmed = spec.trim();
 
@@ -538,7 +559,7 @@ fn try_update_dependency_spec(
         None => new_spec,
     };
 
-    Some((name, result))
+    Some((original_name.clone(), result))
 }
 
 /// Compute a new dependency spec by replacing only the version.
@@ -568,6 +589,36 @@ fn is_valid_version_token(s: &str) -> bool {
         && !s.contains(char::is_whitespace)
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+' | '*'))
+}
+
+/// Normalize a Python package name for PEP 503-compatible comparison.
+///
+/// Based on PEP 503, this lowercases the name and collapses runs of `.`, `-`,
+/// or `_` into a single `-`. Additionally, leading and trailing separators are
+/// stripped (such names are invalid on PyPI anyway).
+///
+/// Reference: https://peps.python.org/pep-0503/#normalized-names
+fn normalize_package_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let mut prev_was_separator = false;
+
+    for c in name.chars() {
+        if c == '-' || c == '_' || c == '.' {
+            if !prev_was_separator && !result.is_empty() {
+                result.push('-');
+            }
+            prev_was_separator = true;
+        } else {
+            result.push(c.to_ascii_lowercase());
+            prev_was_separator = false;
+        }
+    }
+
+    if result.ends_with('-') {
+        result.pop();
+    }
+
+    result
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
