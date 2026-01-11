@@ -338,15 +338,13 @@ fn try_update_dependency_spec_preserves_operator() {
 }
 
 #[test]
-fn try_update_dependency_spec_adds_version_when_missing() {
+fn try_update_dependency_spec_skips_bare_dependencies() {
     let mut versions = BTreeMap::new();
     versions.insert("requests".to_string(), "3.0.0".to_string());
 
+    // Bare dependency without version - skip (nothing to update atomically)
     let result = try_update_dependency_spec("requests", &versions);
-    assert_eq!(
-        result,
-        Some(("requests".to_string(), "requests==3.0.0".to_string()))
-    );
+    assert_eq!(result, None);
 }
 
 #[test]
@@ -355,6 +353,190 @@ fn try_update_dependency_spec_ignores_unknown_packages() {
 
     let result = try_update_dependency_spec("requests>=2.0.0", &versions);
     assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_skips_when_already_at_version() {
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "2.0.0".to_string());
+
+    // Already at target version - no change needed
+    let result = try_update_dependency_spec("requests>=2.0.0", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_extras() {
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "3.0.0".to_string());
+
+    // Single extra
+    let result = try_update_dependency_spec("requests[security]>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "requests".to_string(),
+            "requests[security]>=3.0.0".to_string()
+        ))
+    );
+
+    // Multiple extras
+    let result = try_update_dependency_spec("requests[security,socks]>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "requests".to_string(),
+            "requests[security,socks]>=3.0.0".to_string()
+        ))
+    );
+
+    // Extra without version - skip (bare dependency)
+    let result = try_update_dependency_spec("requests[security]", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_environment_markers() {
+    let mut versions = BTreeMap::new();
+    versions.insert("typing-extensions".to_string(), "5.0.0".to_string());
+    versions.insert("pywin32".to_string(), "400".to_string());
+
+    // Python version marker
+    let result = try_update_dependency_spec(
+        "typing-extensions>=4.0; python_version < \"3.10\"",
+        &versions,
+    );
+    assert_eq!(
+        result,
+        Some((
+            "typing-extensions".to_string(),
+            "typing-extensions>=5.0.0 ; python_version < \"3.10\"".to_string()
+        ))
+    );
+
+    // Platform marker
+    let result = try_update_dependency_spec("pywin32>=300; sys_platform == 'win32'", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "pywin32".to_string(),
+            "pywin32>=400 ; sys_platform == 'win32'".to_string()
+        ))
+    );
+
+    // Marker without version - skip (bare dependency)
+    let result = try_update_dependency_spec("pywin32; sys_platform == 'win32'", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_skips_multiple_constraints() {
+    let mut versions = BTreeMap::new();
+    versions.insert("pandas".to_string(), "2.0.0".to_string());
+    versions.insert("numpy".to_string(), "2.0.0".to_string());
+
+    // Multiple constraints should be skipped - they require manual review
+    // as bumping may create invalid ranges like >=2.0.0,<2.0
+    let result = try_update_dependency_spec("pandas>=1.0,<2.0", &versions);
+    assert_eq!(result, None);
+
+    let result = try_update_dependency_spec("numpy>=1.20,!=1.22.0,<2.0", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_skips_url_references() {
+    let mut versions = BTreeMap::new();
+    versions.insert("my-package".to_string(), "2.0.0".to_string());
+
+    // URL reference should be skipped (not modified)
+    let result = try_update_dependency_spec(
+        "my-package @ https://github.com/user/repo/archive/main.zip",
+        &versions,
+    );
+    assert_eq!(result, None);
+
+    // File URL reference
+    let result = try_update_dependency_spec("my-package @ file:///local/path", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_extras_with_markers() {
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "3.0.0".to_string());
+
+    // Extras + version + markers
+    let result = try_update_dependency_spec(
+        "requests[security]>=2.0; python_version >= \"3.8\"",
+        &versions,
+    );
+    assert_eq!(
+        result,
+        Some((
+            "requests".to_string(),
+            "requests[security]>=3.0.0 ; python_version >= \"3.8\"".to_string()
+        ))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_skips_multiple_constraints_with_markers() {
+    let mut versions = BTreeMap::new();
+    versions.insert("pandas".to_string(), "2.5.0".to_string());
+
+    // Multiple constraints + markers should be skipped
+    let result =
+        try_update_dependency_spec("pandas>=1.0,<2.0; python_version >= \"3.9\"", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_handles_all_operators() {
+    let mut versions = BTreeMap::new();
+    versions.insert("pkg".to_string(), "5.0.0".to_string());
+
+    // >=
+    assert_eq!(
+        try_update_dependency_spec("pkg>=1.0", &versions),
+        Some(("pkg".to_string(), "pkg>=5.0.0".to_string()))
+    );
+
+    // <=
+    assert_eq!(
+        try_update_dependency_spec("pkg<=1.0", &versions),
+        Some(("pkg".to_string(), "pkg<=5.0.0".to_string()))
+    );
+
+    // ==
+    assert_eq!(
+        try_update_dependency_spec("pkg==1.0", &versions),
+        Some(("pkg".to_string(), "pkg==5.0.0".to_string()))
+    );
+
+    // ~=
+    assert_eq!(
+        try_update_dependency_spec("pkg~=1.0", &versions),
+        Some(("pkg".to_string(), "pkg~=5.0.0".to_string()))
+    );
+
+    // !=
+    assert_eq!(
+        try_update_dependency_spec("pkg!=1.0", &versions),
+        Some(("pkg".to_string(), "pkg!=5.0.0".to_string()))
+    );
+
+    // >
+    assert_eq!(
+        try_update_dependency_spec("pkg>1.0", &versions),
+        Some(("pkg".to_string(), "pkg>5.0.0".to_string()))
+    );
+
+    // <
+    assert_eq!(
+        try_update_dependency_spec("pkg<1.0", &versions),
+        Some(("pkg".to_string(), "pkg<5.0.0".to_string()))
+    );
 }
 
 #[test]

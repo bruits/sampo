@@ -472,6 +472,12 @@ fn extract_package_name(spec: &str) -> Option<String> {
 
 /// Try to update a dependency specifier if the package name matches one in new_version_by_name.
 /// Returns Some((package_name, new_spec)) if updated, None otherwise.
+///
+/// Handles simple PEP 508 specifiers with a single version constraint.
+/// Skips complex cases that require manual review:
+/// - URL references: `package @ https://...`
+/// - Multiple constraints: `pandas>=1.0,<2.0`
+/// - No version specified: `requests`
 fn try_update_dependency_spec(
     spec: &str,
     new_version_by_name: &BTreeMap<String, String>,
@@ -479,37 +485,89 @@ fn try_update_dependency_spec(
     let name = extract_package_name(spec)?;
     let new_version = new_version_by_name.get(&name)?;
 
-    // Parse the current spec and rebuild with new version
     let trimmed = spec.trim();
 
-    // Handle different version specifier formats
-    // Find where the version specifier starts
-    let version_chars = ['>', '<', '=', '!', '~'];
-    if let Some(pos) = trimmed.find(|c: char| version_chars.contains(&c)) {
-        // Has a version specifier, preserve the operator style
-        let prefix = &trimmed[..pos];
-
-        // Check for common operators and rebuild
-        let rest = &trimmed[pos..];
-        if rest.starts_with(">=")
-            || rest.starts_with("<=")
-            || rest.starts_with("==")
-            || rest.starts_with("~=")
-            || rest.starts_with("!=")
-        {
-            let op = &rest[..2];
-            Some((name, format!("{}{}{}", prefix, op, new_version)))
-        } else if rest.starts_with('>') || rest.starts_with('<') {
-            let op = &rest[..1];
-            Some((name, format!("{}{}{}", prefix, op, new_version)))
-        } else {
-            // Complex specifier, just update to exact version
-            Some((name.clone(), format!("{}=={}", name, new_version)))
-        }
-    } else {
-        // No version specifier, add one
-        Some((name.clone(), format!("{}=={}", name, new_version)))
+    if trimmed.contains(" @ ") {
+        return None;
     }
+
+    let (version_part, markers) = match trimmed.find(';') {
+        Some(pos) => (&trimmed[..pos], Some(trimmed[pos..].trim())),
+        None => (trimmed, None),
+    };
+    let version_part = version_part.trim();
+
+    let after_extras = match (version_part.find('['), version_part.find(']')) {
+        (Some(start), Some(end)) if start < end => &version_part[end + 1..],
+        _ => {
+            let name_end = version_part
+                .find(|c: char| ['>', '<', '=', '!', '~'].contains(&c))
+                .unwrap_or(version_part.len());
+            &version_part[name_end..]
+        }
+    };
+    let after_extras = after_extras.trim();
+
+    // Multiple constraints require manual review as bumping may create invalid ranges
+    if after_extras.contains(',') {
+        return None;
+    }
+
+    let new_spec = if after_extras.is_empty() {
+        return None;
+    } else if let Some(current) = after_extras.strip_prefix(">=") {
+        compute_new_spec(version_part, ">=", current.trim(), new_version)
+    } else if let Some(current) = after_extras.strip_prefix("<=") {
+        compute_new_spec(version_part, "<=", current.trim(), new_version)
+    } else if let Some(current) = after_extras.strip_prefix("==") {
+        compute_new_spec(version_part, "==", current.trim(), new_version)
+    } else if let Some(current) = after_extras.strip_prefix("~=") {
+        compute_new_spec(version_part, "~=", current.trim(), new_version)
+    } else if let Some(current) = after_extras.strip_prefix("!=") {
+        compute_new_spec(version_part, "!=", current.trim(), new_version)
+    } else if let Some(current) = after_extras.strip_prefix('>') {
+        compute_new_spec(version_part, ">", current.trim(), new_version)
+    } else if let Some(current) = after_extras.strip_prefix('<') {
+        compute_new_spec(version_part, "<", current.trim(), new_version)
+    } else {
+        return None;
+    }?;
+
+    let result = match markers {
+        Some(m) => format!("{} {}", new_spec, m),
+        None => new_spec,
+    };
+
+    Some((name, result))
+}
+
+/// Compute a new dependency spec by replacing only the version.
+fn compute_new_spec(
+    version_part: &str,
+    operator: &str,
+    current_version: &str,
+    new_version: &str,
+) -> Option<String> {
+    if current_version == new_version {
+        return None;
+    }
+
+    if !is_valid_version_token(current_version) {
+        return None;
+    }
+
+    let op_start = version_part.find(operator)?;
+    let prefix = &version_part[..op_start];
+
+    Some(format!("{}{}{}", prefix, operator, new_version))
+}
+
+/// Check if a string looks like a valid simple version token.
+fn is_valid_version_token(s: &str) -> bool {
+    !s.is_empty()
+        && !s.contains(char::is_whitespace)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+' | '*'))
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
