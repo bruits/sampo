@@ -152,6 +152,15 @@ pub struct ReleaseOutput {
     pub dry_run: bool,
 }
 
+/// Output information from a publish operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishOutput {
+    /// Tags that were created (non-dry-run) or would be created (dry-run)
+    pub tags: Vec<String>,
+    /// Whether this was a dry-run (no packages actually published)
+    pub dry_run: bool,
+}
+
 /// Information about a package in the workspace
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageInfo {

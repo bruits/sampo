@@ -714,18 +714,9 @@ fn post_merge_publish(
     // Setup git identity for tag creation
     git::setup_bot_user(workspace)?;
 
-    // Capture tags before publishing
-    let before_tags = git::list_tags(workspace)?;
-
-    // Publish
-    sampo::run_publish(workspace, dry_run, args, cargo_token)?;
-
-    // Compute new tags created by publish
-    let after_tags = git::list_tags(workspace)?;
-    let new_tags: Vec<String> = after_tags
-        .into_iter()
-        .filter(|tag| !before_tags.contains(tag))
-        .collect();
+    // Publish and get information about tags created/would-be-created
+    let publish_output = sampo::run_publish(workspace, dry_run, args, cargo_token)?;
+    let new_tags = publish_output.tags;
 
     if !dry_run && !new_tags.is_empty() {
         println!("Pushing {} new tags", new_tags.len());

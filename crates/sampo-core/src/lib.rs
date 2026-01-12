@@ -42,7 +42,7 @@ pub use release::{
 };
 pub use types::{
     Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageKind, ParsedChangeType,
-    ReleaseOutput, ReleasedPackage, Workspace,
+    PublishOutput, ReleaseOutput, ReleasedPackage, Workspace,
 };
 pub use workspace::{discover_packages_at, discover_workspace, find_sampo_root};
 

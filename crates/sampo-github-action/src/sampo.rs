@@ -4,10 +4,10 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    Config, VersionChange, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, exit_prerelease as core_exit_prerelease,
-    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
-    run_release as core_release,
+    Config, PublishOutput, VersionChange, detect_all_dependency_explanations,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    exit_prerelease as core_exit_prerelease, get_commit_hash_for_path, load_changesets,
+    run_publish as core_publish, run_release as core_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -62,13 +62,13 @@ pub fn run_release(workspace: &Path, dry_run: bool, cargo_token: Option<&str>) -
     Ok(())
 }
 
-/// Execute sampo publish
+/// Execute sampo publish and return information about created/would-be-created tags
 pub fn run_publish(
     workspace: &Path,
     dry_run: bool,
     extra_args: Option<&str>,
     cargo_token: Option<&str>,
-) -> Result<()> {
+) -> Result<PublishOutput> {
     // Set cargo token if provided
     if let Some(token) = cargo_token {
         set_cargo_env_var(token);
@@ -81,14 +81,10 @@ pub fn run_publish(
         Vec::new()
     };
 
-    core_publish(workspace, dry_run, &publish_args).map_err(|e| {
-        ActionError::SampoCommandFailed {
-            operation: "publish".to_string(),
-            message: format!("sampo publish failed: {}", e),
-        }
-    })?;
-
-    Ok(())
+    core_publish(workspace, dry_run, &publish_args).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "publish".to_string(),
+        message: format!("sampo publish failed: {}", e),
+    })
 }
 
 /// Exit pre-release mode for the provided packages.

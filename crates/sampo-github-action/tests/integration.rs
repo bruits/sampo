@@ -595,17 +595,23 @@ fn test_publish_dry_run_does_not_push_tags() {
 fn test_publish_dry_run_shows_would_push_message() {
     let ws = TestWorkspace::new();
 
-    // Simulate a scenario where local tags exist but shouldn't be pushed in dry-run
+    // Package without existing tag triggers "Would push" message
     WorkspaceBuilder::new()
         .publish_disabled()
         .with_git()
         .build(&ws);
 
-    Command::new("git")
-        .args(["tag", "-a", "foo-v0.1.0", "-m", "Release foo 0.1.0"])
+    let local_tags_before = Command::new("git")
+        .args(["tag", "--list"])
         .current_dir(ws.path())
-        .status()
-        .expect("failed to create local tag");
+        .output()
+        .expect("failed to list local tags");
+    assert!(
+        String::from_utf8_lossy(&local_tags_before.stdout)
+            .trim()
+            .is_empty(),
+        "No tags should exist before dry-run"
+    );
 
     let remote_dir = TempDir::new().expect("Failed to create remote dir");
     Command::new("git")
@@ -624,16 +630,6 @@ fn test_publish_dry_run_shows_would_push_message() {
         .current_dir(ws.path())
         .status()
         .expect("failed to add remote origin");
-
-    let local_tags_before = Command::new("git")
-        .args(["tag", "--list"])
-        .current_dir(ws.path())
-        .output()
-        .expect("failed to list local tags");
-    assert!(
-        String::from_utf8_lossy(&local_tags_before.stdout).contains("foo-v0.1.0"),
-        "Local tag should exist before dry-run"
-    );
 
     let output_file = ws.file_path("github_output");
     let mut env_vars = FxHashMap::default();
@@ -655,6 +651,31 @@ fn test_publish_dry_run_shows_would_push_message() {
         "publish dry-run command should succeed"
     );
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("Would push") && stdout.contains("new tags"),
+        "Expected 'Would push X new tags' message in dry-run output, got stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("foo-v0.1.0"),
+        "Expected tag name 'foo-v0.1.0' in would-push output, got stdout: {}",
+        stdout
+    );
+
+    let local_tags_after = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(ws.path())
+        .output()
+        .expect("failed to list local tags");
+    assert!(
+        String::from_utf8_lossy(&local_tags_after.stdout)
+            .trim()
+            .is_empty(),
+        "No tags should be created in dry-run mode"
+    );
+
     let remote_tags = Command::new("git")
         .args(["tag", "--list"])
         .current_dir(remote_dir.path())
@@ -672,7 +693,7 @@ fn test_publish_dry_run_shows_would_push_message() {
     assert_eq!(
         outputs.get("published").map(String::as_str),
         Some("false"),
-        "published should be false in dry-run mode even with local tags"
+        "published should be false in dry-run mode"
     );
 }
 

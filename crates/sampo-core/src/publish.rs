@@ -1,5 +1,5 @@
 use crate::adapters::PackageAdapter;
-use crate::types::PackageInfo;
+use crate::types::{PackageInfo, PublishOutput};
 use crate::{
     Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
@@ -18,6 +18,9 @@ use std::process::Command;
 /// After publishing, git tags are created for all packages that have been released
 /// (including non-publishable packages), as long as they are not ignored by the configuration.
 ///
+/// Returns a `PublishOutput` containing the tags that were created (non-dry-run) or would
+/// be created (dry-run), allowing callers to know what happened or would happen.
+///
 /// # Arguments
 /// * `root` - Path to the workspace root directory
 /// * `dry_run` - If true, performs validation and shows what would be published without actually publishing
@@ -29,12 +32,18 @@ use std::process::Command;
 /// use sampo_core::run_publish;
 ///
 /// // Dry run to see what would be published
-/// run_publish(Path::new("."), true, &[]).unwrap();
+/// let output = run_publish(Path::new("."), true, &[]).unwrap();
+/// println!("Would create {} tags", output.tags.len());
 ///
 /// // Actual publish with custom cargo args
-/// run_publish(Path::new("."), false, &["--allow-dirty".to_string()]).unwrap();
+/// let output = run_publish(Path::new("."), false, &["--allow-dirty".to_string()]).unwrap();
+/// println!("Created {} tags", output.tags.len());
 /// ```
-pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String]) -> Result<()> {
+pub fn run_publish(
+    root: &std::path::Path,
+    dry_run: bool,
+    publish_args: &[String],
+) -> Result<PublishOutput> {
     let ws = discover_workspace(root)?;
     let config = Config::load(&ws.root)?;
 
@@ -79,7 +88,10 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
 
     if publishable.is_empty() && all_non_ignored.is_empty() {
         println!("No publishable packages were found in the workspace.");
-        return Ok(());
+        return Ok(PublishOutput {
+            tags: Vec::new(),
+            dry_run,
+        });
     }
 
     // Validate internal deps do not include non-publishable packages
@@ -185,19 +197,27 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         println!("Dry-run validation passed.");
     }
 
-    // Track whether any package was actually published (not skipped because already exists)
+    let mut tags_to_create: Vec<String> = Vec::new();
     let mut any_published = false;
 
     for (package, adapter, manifest) in &publish_targets {
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
         any_published = true;
 
+        let tag = build_tag_name(&package.name, &package.version);
+
         // Tag immediately after successful publish to ensure partial failures still tag what succeeded
-        if !dry_run && let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
-            eprintln!(
-                "Warning: failed to create tag for {}@{}: {}",
-                package.name, package.version, e
-            );
+        if !dry_run {
+            if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
+                eprintln!(
+                    "Warning: failed to create tag for {}@{}: {}",
+                    package.name, package.version, e
+                );
+            } else {
+                tags_to_create.push(tag);
+            }
+        } else if !package_tag_exists(&ws.root, &package.name, &package.version)? {
+            tags_to_create.push(tag);
         }
     }
 
@@ -207,24 +227,29 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     //   2. There exist private packages whose current version does not have a tag yet
     // This avoids creating tags during no-op invocations (e.g., auto mode with no releases)
     let mut private_packages_to_tag: Vec<&PackageInfo> = Vec::new();
-    if !dry_run {
-        for package in &all_non_ignored {
-            if publishable.contains(package.canonical_identifier()) {
-                continue;
-            }
-            if !package_tag_exists(&ws.root, &package.name, &package.version)? {
-                private_packages_to_tag.push(*package);
-            }
+    for package in &all_non_ignored {
+        if publishable.contains(package.canonical_identifier()) {
+            continue;
+        }
+        if !package_tag_exists(&ws.root, &package.name, &package.version)? {
+            private_packages_to_tag.push(*package);
         }
     }
 
-    if !dry_run && (any_published || !private_packages_to_tag.is_empty()) {
-        for package in private_packages_to_tag {
-            if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
-                eprintln!(
-                    "Warning: failed to create tag for {}@{}: {}",
-                    package.name, package.version, e
-                );
+    if any_published || !private_packages_to_tag.is_empty() {
+        for package in &private_packages_to_tag {
+            let tag = build_tag_name(&package.name, &package.version);
+            if !dry_run {
+                if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
+                    eprintln!(
+                        "Warning: failed to create tag for {}@{}: {}",
+                        package.name, package.version, e
+                    );
+                } else {
+                    tags_to_create.push(tag);
+                }
+            } else {
+                tags_to_create.push(tag);
             }
         }
     }
@@ -235,7 +260,10 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
         println!("Publish complete.");
     }
 
-    Ok(())
+    Ok(PublishOutput {
+        tags: tags_to_create,
+        dry_run,
+    })
 }
 
 fn build_tag_name(crate_name: &str, version: &str) -> String {
@@ -663,7 +691,7 @@ fn main() {
             self
         }
 
-        fn run_publish(&self, dry_run: bool) -> Result<()> {
+        fn run_publish(&self, dry_run: bool) -> Result<PublishOutput> {
             let _branch_guard = override_current_branch_for_tests(&self.branch);
             super::run_publish(&self.root, dry_run, &[])
         }

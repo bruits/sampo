@@ -56,25 +56,3 @@ pub fn setup_bot_user(workspace: &Path) -> Result<()> {
     )?;
     Ok(())
 }
-
-/// List all git tags
-pub fn list_tags(cwd: &Path) -> Result<Vec<String>> {
-    let output = Command::new("git")
-        .args(["tag", "--list"])
-        .current_dir(cwd)
-        .output()
-        .map_err(ActionError::Io)?;
-
-    if !output.status.success() {
-        return Err(ActionError::SampoCommandFailed {
-            operation: "git-tag".to_string(),
-            message: format!("git tag failed: {}", output.status),
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect())
-}
