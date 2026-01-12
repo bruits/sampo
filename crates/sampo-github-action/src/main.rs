@@ -714,29 +714,27 @@ fn post_merge_publish(
     // Setup git identity for tag creation
     git::setup_bot_user(workspace)?;
 
-    // Capture tags before publishing
-    let before_tags = git::list_tags(workspace)?;
+    // Publish and get information about tags created/would-be-created
+    let publish_output = sampo::run_publish(workspace, dry_run, args, cargo_token)?;
+    let new_tags = publish_output.tags;
 
-    // Publish
-    sampo::run_publish(workspace, dry_run, args, cargo_token)?;
-
-    // Compute new tags created by publish
-    let after_tags = git::list_tags(workspace)?;
-    let new_tags: Vec<String> = after_tags
-        .into_iter()
-        .filter(|tag| !before_tags.contains(tag))
-        .collect();
-
-    // Push tags
-    if !new_tags.is_empty() {
+    if !dry_run && !new_tags.is_empty() {
         println!("Pushing {} new tags", new_tags.len());
         for tag in &new_tags {
             git::git(&["push", "origin", tag], Some(workspace))?;
         }
+    } else if dry_run && !new_tags.is_empty() {
+        println!(
+            "Would push {} new tags (skipped in dry-run mode)",
+            new_tags.len()
+        );
+        for tag in &new_tags {
+            println!("  - {}", tag);
+        }
     }
 
-    // Optionally create GitHub releases for new tags
-    if github_options.create_github_release
+    if !dry_run
+        && github_options.create_github_release
         && !new_tags.is_empty()
         && let Some(client) = github_client
     {
@@ -744,9 +742,18 @@ fn post_merge_publish(
             println!("Creating GitHub release for {}", tag);
             create_github_release_for_tag(client, tag, workspace, github_options)?;
         }
+    } else if dry_run && github_options.create_github_release && !new_tags.is_empty() {
+        println!(
+            "Would create {} GitHub releases (skipped in dry-run mode)",
+            new_tags.len()
+        );
+        for tag in &new_tags {
+            println!("  - {}", tag);
+        }
     }
-    let published = !new_tags.is_empty();
-    if !published {
+
+    let published = !dry_run && !new_tags.is_empty();
+    if !published && !dry_run {
         println!("No new tags were created during publish.");
     }
 
