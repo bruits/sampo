@@ -511,6 +511,171 @@ fn test_publish_private_packages_creates_tags_and_reports_published() {
     );
 }
 
+/// Regression test: dry-run mode should NOT push tags or create GitHub releases.
+/// This prevents accidental side effects when validating publish commands.
+#[test]
+fn test_publish_dry_run_does_not_push_tags() {
+    let ws = TestWorkspace::new();
+    setup_publish_workspace(&ws);
+
+    let remote_dir = TempDir::new().expect("Failed to create remote dir");
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote_dir.path())
+        .status()
+        .expect("failed to init bare remote repo");
+
+    Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            remote_dir.path().to_str().unwrap(),
+        ])
+        .current_dir(ws.path())
+        .status()
+        .expect("failed to add remote origin");
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(
+        output.status.success(),
+        "publish dry-run command should succeed"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("Dry-run complete."),
+        "Expected dry-run to complete successfully, got stdout: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Pushing"),
+        "Should not push tags in dry-run mode, got stdout: {}",
+        stdout
+    );
+
+    let remote_tags = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(remote_dir.path())
+        .output()
+        .expect("failed to list remote git tags");
+
+    let tags = String::from_utf8_lossy(&remote_tags.stdout);
+    assert!(
+        tags.trim().is_empty(),
+        "Remote should have no tags in dry-run mode, but found: {}",
+        tags
+    );
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(
+        outputs.get("published").map(String::as_str),
+        Some("false"),
+        "published should be false in dry-run mode"
+    );
+}
+
+/// Regression test: dry-run mode should show informative messages about what would happen.
+#[test]
+fn test_publish_dry_run_shows_would_push_message() {
+    let ws = TestWorkspace::new();
+
+    // Simulate a scenario where local tags exist but shouldn't be pushed in dry-run
+    WorkspaceBuilder::new()
+        .publish_disabled()
+        .with_git()
+        .build(&ws);
+
+    Command::new("git")
+        .args(["tag", "-a", "foo-v0.1.0", "-m", "Release foo 0.1.0"])
+        .current_dir(ws.path())
+        .status()
+        .expect("failed to create local tag");
+
+    let remote_dir = TempDir::new().expect("Failed to create remote dir");
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote_dir.path())
+        .status()
+        .expect("failed to init bare remote repo");
+
+    Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            remote_dir.path().to_str().unwrap(),
+        ])
+        .current_dir(ws.path())
+        .status()
+        .expect("failed to add remote origin");
+
+    let local_tags_before = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(ws.path())
+        .output()
+        .expect("failed to list local tags");
+    assert!(
+        String::from_utf8_lossy(&local_tags_before.stdout).contains("foo-v0.1.0"),
+        "Local tag should exist before dry-run"
+    );
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    assert!(
+        output.status.success(),
+        "publish dry-run command should succeed"
+    );
+
+    let remote_tags = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(remote_dir.path())
+        .output()
+        .expect("failed to list remote git tags");
+
+    let remote_tags_str = String::from_utf8_lossy(&remote_tags.stdout);
+    assert!(
+        remote_tags_str.trim().is_empty(),
+        "Remote should have no tags after dry-run, but found: {}",
+        remote_tags_str
+    );
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(
+        outputs.get("published").map(String::as_str),
+        Some("false"),
+        "published should be false in dry-run mode even with local tags"
+    );
+}
+
 #[test]
 fn test_auto_mode_detects_changesets() {
     let ws = TestWorkspace::new();

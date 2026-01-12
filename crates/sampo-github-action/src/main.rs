@@ -727,16 +727,23 @@ fn post_merge_publish(
         .filter(|tag| !before_tags.contains(tag))
         .collect();
 
-    // Push tags
-    if !new_tags.is_empty() {
+    if !dry_run && !new_tags.is_empty() {
         println!("Pushing {} new tags", new_tags.len());
         for tag in &new_tags {
             git::git(&["push", "origin", tag], Some(workspace))?;
         }
+    } else if dry_run && !new_tags.is_empty() {
+        println!(
+            "Would push {} new tags (skipped in dry-run mode)",
+            new_tags.len()
+        );
+        for tag in &new_tags {
+            println!("  - {}", tag);
+        }
     }
 
-    // Optionally create GitHub releases for new tags
-    if github_options.create_github_release
+    if !dry_run
+        && github_options.create_github_release
         && !new_tags.is_empty()
         && let Some(client) = github_client
     {
@@ -744,9 +751,18 @@ fn post_merge_publish(
             println!("Creating GitHub release for {}", tag);
             create_github_release_for_tag(client, tag, workspace, github_options)?;
         }
+    } else if dry_run && github_options.create_github_release && !new_tags.is_empty() {
+        println!(
+            "Would create {} GitHub releases (skipped in dry-run mode)",
+            new_tags.len()
+        );
+        for tag in &new_tags {
+            println!("  - {}", tag);
+        }
     }
-    let published = !new_tags.is_empty();
-    if !published {
+
+    let published = !dry_run && !new_tags.is_empty();
+    if !published && !dry_run {
         println!("No new tags were created during publish.");
     }
 
