@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
