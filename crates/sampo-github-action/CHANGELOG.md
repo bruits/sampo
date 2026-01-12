@@ -1,5 +1,17 @@
 # sampo-github-action
 
+## 0.13.0 — 2026-01-12
+
+### Minor changes
+
+- [1dcc188](https://github.com/bruits/sampo/commit/1dcc188f7cf1d9867dd074f2f6da06f179002dc2) **Python packages are now supported!** Sampo now automatically detects Python packages managed by `pyproject.toml` and `uv` (for publishing to PyPI), and handles versioning, changelogs, and publishing—even in mixed workspaces. — Thanks @rafaeelaudibert for your first contribution 🎉!
+
+### Patch changes
+
+- [26aed7e](https://github.com/bruits/sampo/commit/26aed7ec7994e92f8d6f4392e36cd73b37d2ac70) Changelog entries now correctly credit the original changeset author, even if the file was later edited by someone else. — Thanks @goulvenclech!
+- [2a403f1](https://github.com/bruits/sampo/commit/2a403f13a17a2b2b9b7c98876bef57e1d6b48c2a) Dry-run mode now skips already-published packages before validation, and no longer pushes tags or creates GitHub releases. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.11.0
+
 ## 0.12.0 — 2025-12-08
 
 ### Minor changes

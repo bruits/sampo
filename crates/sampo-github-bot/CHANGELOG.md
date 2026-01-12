@@ -1,5 +1,11 @@
 # sampo-github-bot
 
+## 0.4.1 — 2026-01-12
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.11.0
+
 ## 0.4.0 — 2025-12-08
 
 ### Minor changes
