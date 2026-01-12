@@ -8,6 +8,45 @@ use toml_edit::{DocumentMut, Item, Value};
 
 const PYPROJECT_MANIFEST: &str = "pyproject.toml";
 
+/// PEP 508 version comparison operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionOperator {
+    GreaterOrEqual,
+    LessOrEqual,
+    Equal,
+    Compatible,
+    NotEqual,
+    Greater,
+    Less,
+}
+
+impl VersionOperator {
+    /// Returns the string representation of the operator.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::GreaterOrEqual => ">=",
+            Self::LessOrEqual => "<=",
+            Self::Equal => "==",
+            Self::Compatible => "~=",
+            Self::NotEqual => "!=",
+            Self::Greater => ">",
+            Self::Less => "<",
+        }
+    }
+
+    /// All operators in order of precedence for parsing.
+    /// Two-character operators MUST come before single-character ones.
+    const ALL: &'static [Self] = &[
+        Self::GreaterOrEqual,
+        Self::LessOrEqual,
+        Self::Equal,
+        Self::Compatible,
+        Self::NotEqual,
+        Self::Greater,
+        Self::Less,
+    ];
+}
+
 pub(super) fn can_discover(root: &Path) -> bool {
     root.join(PYPROJECT_MANIFEST).exists()
 }
@@ -578,25 +617,15 @@ fn try_update_dependency_spec(
         return None;
     }
 
-    let new_spec = if after_extras.is_empty() {
+    if after_extras.is_empty() {
         return None;
-    } else if let Some(current) = after_extras.strip_prefix(">=") {
-        compute_new_spec(version_part, ">=", current.trim(), new_version)
-    } else if let Some(current) = after_extras.strip_prefix("<=") {
-        compute_new_spec(version_part, "<=", current.trim(), new_version)
-    } else if let Some(current) = after_extras.strip_prefix("==") {
-        compute_new_spec(version_part, "==", current.trim(), new_version)
-    } else if let Some(current) = after_extras.strip_prefix("~=") {
-        compute_new_spec(version_part, "~=", current.trim(), new_version)
-    } else if let Some(current) = after_extras.strip_prefix("!=") {
-        compute_new_spec(version_part, "!=", current.trim(), new_version)
-    } else if let Some(current) = after_extras.strip_prefix('>') {
-        compute_new_spec(version_part, ">", current.trim(), new_version)
-    } else if let Some(current) = after_extras.strip_prefix('<') {
-        compute_new_spec(version_part, "<", current.trim(), new_version)
-    } else {
-        return None;
-    }?;
+    }
+
+    let new_spec = VersionOperator::ALL.iter().find_map(|&op| {
+        after_extras
+            .strip_prefix(op.as_str())
+            .and_then(|current| compute_new_spec(version_part, op, current.trim(), new_version))
+    })?;
 
     let result = match markers {
         Some(m) => format!("{} {}", new_spec, m),
@@ -609,7 +638,7 @@ fn try_update_dependency_spec(
 /// Compute a new dependency spec by replacing only the version.
 fn compute_new_spec(
     version_part: &str,
-    operator: &str,
+    operator: VersionOperator,
     current_version: &str,
     new_version: &str,
 ) -> Option<String> {
@@ -621,10 +650,11 @@ fn compute_new_spec(
         return None;
     }
 
-    let op_start = version_part.find(operator)?;
+    let op_str = operator.as_str();
+    let op_start = version_part.find(op_str)?;
     let prefix = &version_part[..op_start];
 
-    Some(format!("{}{}{}", prefix, operator, new_version))
+    Some(format!("{}{}{}", prefix, op_str, new_version))
 }
 
 /// Check if a string looks like a valid simple version token.
