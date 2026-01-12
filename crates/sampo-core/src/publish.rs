@@ -112,8 +112,12 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     // Compute publish order (topological: deps first) for all publishable crates.
     let order = topo_order(&id_to_package, &publishable)?;
 
-    println!("Publish plan:");
-    let mut publish_targets = Vec::new();
+    // Build list of packages that actually need publishing (version doesn't exist on registry).
+    // We check version_exists() BEFORE dry-run validation to avoid unnecessary compilation
+    // and failures when all packages are already published.
+    println!("Checking registry for existing versions…");
+    let mut publish_targets: Vec<(&PackageInfo, PackageAdapter, std::path::PathBuf)> = Vec::new();
+
     for identifier in &order {
         let package = id_to_package.get(identifier).copied().ok_or_else(|| {
             SampoError::Publish(format!(
@@ -121,13 +125,45 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
                 identifier
             ))
         })?;
-        println!("  - {}", package.display_name(true));
         let adapter = PackageAdapter::from_kind(package.kind);
         let manifest = adapter.manifest_path(&package.path);
-        publish_targets.push((package, adapter, manifest));
+
+        match adapter.version_exists(&package.name, &package.version, Some(manifest.as_path())) {
+            Ok(true) => {
+                println!(
+                    "  - {} (already exists on {})",
+                    package.display_name(true),
+                    package.kind.display_name()
+                );
+            }
+            Ok(false) => {
+                publish_targets.push((package, adapter, manifest));
+            }
+            Err(e) => {
+                // If we can't check, include in publish targets to be safe
+                eprintln!(
+                    "Warning: could not check {} registry for {}@{}: {}. Will attempt publish.",
+                    package.kind.display_name(),
+                    package.name,
+                    package.version,
+                    e
+                );
+                publish_targets.push((package, adapter, manifest));
+            }
+        }
     }
 
-    if !dry_run {
+    if publish_targets.is_empty() {
+        println!("All packages are already published. Nothing to do.");
+        // Still need to handle private package tagging below
+    } else {
+        println!("Publish plan:");
+        for (package, _, _) in &publish_targets {
+            println!("  - {}", package.display_name(true));
+        }
+    }
+
+    if !dry_run && !publish_targets.is_empty() {
         println!("Validating publish commands (dry-run)…");
 
         let mut packages_by_kind: BTreeMap<
@@ -152,32 +188,7 @@ pub fn run_publish(root: &std::path::Path, dry_run: bool, publish_args: &[String
     // Track whether any package was actually published (not skipped because already exists)
     let mut any_published = false;
 
-    // Execute publish in order using the appropriate adapter for each package
     for (package, adapter, manifest) in &publish_targets {
-        // Skip if the exact version already exists on the registry
-        match adapter.version_exists(&package.name, &package.version, Some(manifest.as_path())) {
-            Ok(true) => {
-                println!(
-                    "Skipping {}@{} (already exists on {})",
-                    package.display_name(true),
-                    package.version,
-                    package.kind.display_name()
-                );
-                continue;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                eprintln!(
-                    "Warning: could not check {} registry for {}@{}: {}. Attempting publish…",
-                    package.kind.display_name(),
-                    package.name,
-                    package.version,
-                    e
-                );
-            }
-        }
-
-        // Publish using the adapter
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
         any_published = true;
 
@@ -1816,6 +1827,74 @@ edition = "2021"
             "Private package should receive a tag even when the publishable package was skipped. \
              This is the exact bug from the review. Got tags: {}",
             tags
+        );
+    }
+
+    /// Regression test: when all packages already exist on the registry,
+    /// preflight dry-run validation should be skipped entirely.
+    ///
+    /// This test uses `serde` version `1.0.0` which is known to exist on crates.io.
+    /// The test verifies that:
+    /// 1. `version_exists()` returns true for the package
+    /// 2. No cargo publish commands are executed (FakeCargo log is empty)
+    /// 3. The publish function completes successfully
+    ///
+    /// NOTE: This test requires network access to query crates.io.
+    #[test]
+    fn skips_preflight_when_all_packages_already_published() {
+        // Use a well-known crate that definitely exists on crates.io
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+
+        // Create .sampo/ directory
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+
+        // Create workspace structure with a crate name matching an existing crates.io package
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let crate_dir = root.join("crates").join("serde");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            // Use a version that definitely exists on crates.io
+            "[package]\nname=\"serde\"\nversion=\"1.0.0\"\nedition=\"2021\"\n",
+        )
+        .unwrap();
+        fs::write(crate_dir.join("src/lib.rs"), "// test").unwrap();
+
+        // Install FakeCargo to intercept publish commands
+        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        // Run publish (not dry-run)
+        let _branch_guard = override_current_branch_for_tests("main");
+        let result = super::run_publish(&root, false, &[]);
+
+        // The publish should succeed (no error)
+        assert!(
+            result.is_ok(),
+            "Publish should succeed when all packages already exist. Error: {:?}",
+            result.err()
+        );
+
+        // CRITICAL ASSERTION: The FakeCargo log should contain NO publish commands
+        // because version_exists() should return true and skip the entire publish phase.
+        // The only allowed command is --version check.
+        let log_content = fs::read_to_string(fake_cargo.log_path()).unwrap_or_default();
+        let publish_commands: Vec<&str> = log_content
+            .lines()
+            .filter(|line| line.contains("publish"))
+            .collect();
+
+        assert!(
+            publish_commands.is_empty(),
+            "No publish commands should be executed when all packages already exist on registry. \
+             Found commands: {:?}. Full log: {}",
+            publish_commands,
+            log_content
         );
     }
 }
