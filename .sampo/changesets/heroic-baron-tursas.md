@@ -4,4 +4,4 @@ cargo/sampo-core: patch
 cargo/sampo-github-action: patch
 ---
 
-Publish command now checks registry versions before running dry-run validation, skipping unnecessary compilation when packages are already published.
+Dry-run mode now skips already-published packages before validation, and no longer pushes tags or creates GitHub releases.
