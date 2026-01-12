@@ -1,6 +1,7 @@
 ---
+cargo/sampo: minor
 cargo/sampo-core: minor
 cargo/sampo-github-action: minor
 ---
 
-Add pypi support to sampo allowing Python libraries to be managed via sampo. It currently only supports pyproject.toml + uv for publishing
+**Python packages are now supported!** Sampo now automatically detects Python packages managed by `pyproject.toml` and `uv` (for publishing to PyPI), and handles versioning, changelogs, and publishing—even in mixed workspaces.

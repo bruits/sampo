@@ -8,6 +8,45 @@ use toml_edit::{DocumentMut, Item, Value};
 
 const PYPROJECT_MANIFEST: &str = "pyproject.toml";
 
+/// PEP 508 version comparison operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VersionOperator {
+    GreaterOrEqual,
+    LessOrEqual,
+    Equal,
+    Compatible,
+    NotEqual,
+    Greater,
+    Less,
+}
+
+impl VersionOperator {
+    /// Returns the string representation of the operator.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::GreaterOrEqual => ">=",
+            Self::LessOrEqual => "<=",
+            Self::Equal => "==",
+            Self::Compatible => "~=",
+            Self::NotEqual => "!=",
+            Self::Greater => ">",
+            Self::Less => "<",
+        }
+    }
+
+    /// All operators in order of precedence for parsing.
+    /// Two-character operators MUST come before single-character ones.
+    const ALL: &'static [Self] = &[
+        Self::GreaterOrEqual,
+        Self::LessOrEqual,
+        Self::Equal,
+        Self::Compatible,
+        Self::NotEqual,
+        Self::Greater,
+        Self::Less,
+    ];
+}
+
 pub(super) fn can_discover(root: &Path) -> bool {
     root.join(PYPROJECT_MANIFEST).exists()
 }
@@ -34,35 +73,25 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
     }
 
     // Check for uv workspace members in [tool.uv.workspace]
-    if let Some(members) = parse_uv_workspace_members(&manifest_text) {
+    let workspace_config = parse_uv_workspace_config(&manifest_text);
+    if let Some(ref members) = workspace_config.members {
         for pattern in members {
-            let pattern_path = root.join(&pattern);
-
-            // Handle glob patterns like "packages/*"
-            if pattern.contains('*') {
-                let base = pattern.trim_end_matches("/*").trim_end_matches("/**");
-                let base_dir = root.join(base);
-                if base_dir.exists()
-                    && let Ok(entries) = fs::read_dir(&base_dir)
-                {
-                    for entry in entries.flatten() {
-                        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                            continue;
-                        }
-                        let dir = entry.path();
-                        if dir.join(PYPROJECT_MANIFEST).exists() {
-                            package_dirs.insert(normalize_path(&dir));
-                        }
-                    }
-                }
-            } else if pattern_path.join(PYPROJECT_MANIFEST).exists() {
-                package_dirs.insert(normalize_path(&pattern_path));
-            }
+            expand_uv_member_pattern(root, pattern, &mut package_dirs)?;
         }
     }
 
+    // Apply exclude patterns
+    if let Some(ref excludes) = workspace_config.exclude {
+        let mut excluded_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+        for pattern in excludes {
+            expand_uv_member_pattern(root, pattern, &mut excluded_dirs)?;
+        }
+        package_dirs.retain(|dir| !excluded_dirs.contains(dir));
+    }
+
     let mut manifests = Vec::new();
-    let mut name_to_path: BTreeMap<String, PathBuf> = BTreeMap::new();
+    // PEP 503: package names are case-insensitive and treat `.`, `-`, `_` as equivalent
+    let mut normalized_name_to_original: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
 
     for dir in package_dirs {
         let manifest_path = dir.join(PYPROJECT_MANIFEST);
@@ -79,7 +108,22 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let version = meta.version.unwrap_or_default();
         let deps = collect_dependencies(&text);
 
-        name_to_path.insert(name.clone(), dir.clone());
+        let normalized = normalize_package_name(&name);
+
+        // Detect collision: two packages normalizing to the same PEP 503 name
+        if let Some((existing_name, existing_path)) = normalized_name_to_original.get(&normalized) {
+            return Err(WorkspaceError::InvalidWorkspace(format!(
+                "packages '{}' (at {}) and '{}' (at {}) normalize to the same PEP 503 name '{}'. \
+                 Python ecosystems do not allow duplicate normalized names",
+                existing_name,
+                existing_path.display(),
+                name,
+                dir.display(),
+                normalized
+            )));
+        }
+
+        normalized_name_to_original.insert(normalized, (name.clone(), dir.clone()));
         manifests.push((name, version, dir, deps));
     }
 
@@ -89,10 +133,11 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let mut internal = BTreeSet::new();
 
         for dep_name in deps {
-            if name_to_path.contains_key(&dep_name) {
+            let normalized_dep = normalize_package_name(&dep_name);
+            if let Some((original_name, _)) = normalized_name_to_original.get(&normalized_dep) {
                 internal.insert(PackageInfo::dependency_identifier(
                     PackageKind::PyPI,
-                    &dep_name,
+                    original_name,
                 ));
             }
         }
@@ -381,25 +426,80 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
     metadata
 }
 
-/// Parse uv workspace members from [tool.uv.workspace]
-fn parse_uv_workspace_members(source: &str) -> Option<Vec<String>> {
-    let doc: DocumentMut = source.parse().ok()?;
+/// Configuration parsed from [tool.uv.workspace]
+#[derive(Default)]
+struct UvWorkspaceConfig {
+    members: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
+}
 
-    let tool = doc.get("tool")?.as_table()?;
-    let uv = tool.get("uv")?.as_table()?;
-    let workspace = uv.get("workspace")?.as_table()?;
-    let members = workspace.get("members")?.as_array()?;
+/// Parse uv workspace configuration from [tool.uv.workspace]
+fn parse_uv_workspace_config(source: &str) -> UvWorkspaceConfig {
+    let Ok(doc) = source.parse::<DocumentMut>() else {
+        return UvWorkspaceConfig::default();
+    };
 
-    let result: Vec<String> = members
-        .iter()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
+    let Some(workspace) = doc
+        .get("tool")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("uv"))
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("workspace"))
+        .and_then(|t| t.as_table())
+    else {
+        return UvWorkspaceConfig::default();
+    };
 
-    if result.is_empty() {
-        None
+    let members = workspace
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty());
+
+    let exclude = workspace
+        .get("exclude")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty());
+
+    UvWorkspaceConfig { members, exclude }
+}
+
+/// Expand a member pattern (plain path or glob) into concrete paths containing pyproject.toml
+fn expand_uv_member_pattern(
+    root: &Path,
+    pattern: &str,
+    paths: &mut BTreeSet<PathBuf>,
+) -> std::result::Result<(), WorkspaceError> {
+    if pattern.contains('*') {
+        let full_pattern = root.join(pattern);
+        let pattern_str = full_pattern.to_string_lossy();
+        let entries = glob::glob(&pattern_str).map_err(|e| {
+            WorkspaceError::InvalidWorkspace(format!("invalid glob pattern '{}': {}", pattern, e))
+        })?;
+        for entry in entries {
+            let path = entry
+                .map_err(|e| WorkspaceError::InvalidWorkspace(format!("glob error: {}", e)))?;
+            if path.is_dir() && path.join(PYPROJECT_MANIFEST).exists() {
+                paths.insert(normalize_path(&path));
+            }
+        }
     } else {
-        Some(result)
+        let member_path = normalize_path(&root.join(pattern));
+        if member_path.join(PYPROJECT_MANIFEST).exists() {
+            paths.insert(member_path);
+        }
+        // Unlike Cargo, uv silently ignores non-existent members
     }
+    Ok(())
 }
 
 /// Collect dependency names from PEP 621 [project.dependencies] and [project.optional-dependencies]
@@ -472,44 +572,127 @@ fn extract_package_name(spec: &str) -> Option<String> {
 
 /// Try to update a dependency specifier if the package name matches one in new_version_by_name.
 /// Returns Some((package_name, new_spec)) if updated, None otherwise.
+///
+/// Handles simple PEP 508 specifiers with a single version constraint.
+/// Skips complex cases that require manual review:
+/// - URL references: `package @ https://...`
+/// - Multiple constraints: `pandas>=1.0,<2.0`
+/// - No version specified: `requests`
 fn try_update_dependency_spec(
     spec: &str,
     new_version_by_name: &BTreeMap<String, String>,
 ) -> Option<(String, String)> {
     let name = extract_package_name(spec)?;
-    let new_version = new_version_by_name.get(&name)?;
+    let normalized_name = normalize_package_name(&name);
 
-    // Parse the current spec and rebuild with new version
+    let (original_name, new_version) = new_version_by_name
+        .iter()
+        .find(|(k, _)| normalize_package_name(k) == normalized_name)?;
+
     let trimmed = spec.trim();
 
-    // Handle different version specifier formats
-    // Find where the version specifier starts
-    let version_chars = ['>', '<', '=', '!', '~'];
-    if let Some(pos) = trimmed.find(|c: char| version_chars.contains(&c)) {
-        // Has a version specifier, preserve the operator style
-        let prefix = &trimmed[..pos];
-
-        // Check for common operators and rebuild
-        let rest = &trimmed[pos..];
-        if rest.starts_with(">=")
-            || rest.starts_with("<=")
-            || rest.starts_with("==")
-            || rest.starts_with("~=")
-            || rest.starts_with("!=")
-        {
-            let op = &rest[..2];
-            Some((name, format!("{}{}{}", prefix, op, new_version)))
-        } else if rest.starts_with('>') || rest.starts_with('<') {
-            let op = &rest[..1];
-            Some((name, format!("{}{}{}", prefix, op, new_version)))
-        } else {
-            // Complex specifier, just update to exact version
-            Some((name.clone(), format!("{}=={}", name, new_version)))
-        }
-    } else {
-        // No version specifier, add one
-        Some((name.clone(), format!("{}=={}", name, new_version)))
+    if trimmed.contains(" @ ") {
+        return None;
     }
+
+    let (version_part, markers) = match trimmed.find(';') {
+        Some(pos) => (&trimmed[..pos], Some(trimmed[pos..].trim())),
+        None => (trimmed, None),
+    };
+    let version_part = version_part.trim();
+
+    let after_extras = match (version_part.find('['), version_part.find(']')) {
+        (Some(start), Some(end)) if start < end => &version_part[end + 1..],
+        _ => {
+            let name_end = version_part
+                .find(|c: char| ['>', '<', '=', '!', '~'].contains(&c))
+                .unwrap_or(version_part.len());
+            &version_part[name_end..]
+        }
+    };
+    let after_extras = after_extras.trim();
+
+    // Multiple constraints require manual review as bumping may create invalid ranges
+    if after_extras.contains(',') {
+        return None;
+    }
+
+    if after_extras.is_empty() {
+        return None;
+    }
+
+    let new_spec = VersionOperator::ALL.iter().find_map(|&op| {
+        after_extras
+            .strip_prefix(op.as_str())
+            .and_then(|current| compute_new_spec(version_part, op, current.trim(), new_version))
+    })?;
+
+    let result = match markers {
+        Some(m) => format!("{} {}", new_spec, m),
+        None => new_spec,
+    };
+
+    Some((original_name.clone(), result))
+}
+
+/// Compute a new dependency spec by replacing only the version.
+fn compute_new_spec(
+    version_part: &str,
+    operator: VersionOperator,
+    current_version: &str,
+    new_version: &str,
+) -> Option<String> {
+    if current_version == new_version {
+        return None;
+    }
+
+    if !is_valid_version_token(current_version) {
+        return None;
+    }
+
+    let op_str = operator.as_str();
+    let op_start = version_part.find(op_str)?;
+    let prefix = &version_part[..op_start];
+
+    Some(format!("{}{}{}", prefix, op_str, new_version))
+}
+
+/// Check if a string looks like a valid simple version token.
+fn is_valid_version_token(s: &str) -> bool {
+    !s.is_empty()
+        && !s.contains(char::is_whitespace)
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+' | '*'))
+}
+
+/// Normalize a Python package name for PEP 503-compatible comparison.
+///
+/// Based on PEP 503, this lowercases the name and collapses runs of `.`, `-`,
+/// or `_` into a single `-`. Additionally, leading and trailing separators are
+/// stripped (such names are invalid on PyPI anyway).
+///
+/// Reference: https://peps.python.org/pep-0503/#normalized-names
+fn normalize_package_name(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let mut prev_was_separator = false;
+
+    for c in name.chars() {
+        if c == '-' || c == '_' || c == '.' {
+            if !prev_was_separator && !result.is_empty() {
+                result.push('-');
+            }
+            prev_was_separator = true;
+        } else {
+            result.push(c.to_ascii_lowercase());
+            prev_was_separator = false;
+        }
+    }
+
+    if result.ends_with('-') {
+        result.pop();
+    }
+
+    result
 }
 
 fn normalize_path(path: &Path) -> PathBuf {

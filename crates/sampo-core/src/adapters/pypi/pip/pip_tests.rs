@@ -338,15 +338,13 @@ fn try_update_dependency_spec_preserves_operator() {
 }
 
 #[test]
-fn try_update_dependency_spec_adds_version_when_missing() {
+fn try_update_dependency_spec_skips_bare_dependencies() {
     let mut versions = BTreeMap::new();
     versions.insert("requests".to_string(), "3.0.0".to_string());
 
+    // Bare dependency without version - skip (nothing to update atomically)
     let result = try_update_dependency_spec("requests", &versions);
-    assert_eq!(
-        result,
-        Some(("requests".to_string(), "requests==3.0.0".to_string()))
-    );
+    assert_eq!(result, None);
 }
 
 #[test]
@@ -355,6 +353,190 @@ fn try_update_dependency_spec_ignores_unknown_packages() {
 
     let result = try_update_dependency_spec("requests>=2.0.0", &versions);
     assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_skips_when_already_at_version() {
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "2.0.0".to_string());
+
+    // Already at target version - no change needed
+    let result = try_update_dependency_spec("requests>=2.0.0", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_extras() {
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "3.0.0".to_string());
+
+    // Single extra
+    let result = try_update_dependency_spec("requests[security]>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "requests".to_string(),
+            "requests[security]>=3.0.0".to_string()
+        ))
+    );
+
+    // Multiple extras
+    let result = try_update_dependency_spec("requests[security,socks]>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "requests".to_string(),
+            "requests[security,socks]>=3.0.0".to_string()
+        ))
+    );
+
+    // Extra without version - skip (bare dependency)
+    let result = try_update_dependency_spec("requests[security]", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_environment_markers() {
+    let mut versions = BTreeMap::new();
+    versions.insert("typing-extensions".to_string(), "5.0.0".to_string());
+    versions.insert("pywin32".to_string(), "400".to_string());
+
+    // Python version marker
+    let result = try_update_dependency_spec(
+        "typing-extensions>=4.0; python_version < \"3.10\"",
+        &versions,
+    );
+    assert_eq!(
+        result,
+        Some((
+            "typing-extensions".to_string(),
+            "typing-extensions>=5.0.0 ; python_version < \"3.10\"".to_string()
+        ))
+    );
+
+    // Platform marker
+    let result = try_update_dependency_spec("pywin32>=300; sys_platform == 'win32'", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "pywin32".to_string(),
+            "pywin32>=400 ; sys_platform == 'win32'".to_string()
+        ))
+    );
+
+    // Marker without version - skip (bare dependency)
+    let result = try_update_dependency_spec("pywin32; sys_platform == 'win32'", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_skips_multiple_constraints() {
+    let mut versions = BTreeMap::new();
+    versions.insert("pandas".to_string(), "2.0.0".to_string());
+    versions.insert("numpy".to_string(), "2.0.0".to_string());
+
+    // Multiple constraints should be skipped - they require manual review
+    // as bumping may create invalid ranges like >=2.0.0,<2.0
+    let result = try_update_dependency_spec("pandas>=1.0,<2.0", &versions);
+    assert_eq!(result, None);
+
+    let result = try_update_dependency_spec("numpy>=1.20,!=1.22.0,<2.0", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_skips_url_references() {
+    let mut versions = BTreeMap::new();
+    versions.insert("my-package".to_string(), "2.0.0".to_string());
+
+    // URL reference should be skipped (not modified)
+    let result = try_update_dependency_spec(
+        "my-package @ https://github.com/user/repo/archive/main.zip",
+        &versions,
+    );
+    assert_eq!(result, None);
+
+    // File URL reference
+    let result = try_update_dependency_spec("my-package @ file:///local/path", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_extras_with_markers() {
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "3.0.0".to_string());
+
+    // Extras + version + markers
+    let result = try_update_dependency_spec(
+        "requests[security]>=2.0; python_version >= \"3.8\"",
+        &versions,
+    );
+    assert_eq!(
+        result,
+        Some((
+            "requests".to_string(),
+            "requests[security]>=3.0.0 ; python_version >= \"3.8\"".to_string()
+        ))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_skips_multiple_constraints_with_markers() {
+    let mut versions = BTreeMap::new();
+    versions.insert("pandas".to_string(), "2.5.0".to_string());
+
+    // Multiple constraints + markers should be skipped
+    let result =
+        try_update_dependency_spec("pandas>=1.0,<2.0; python_version >= \"3.9\"", &versions);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn try_update_dependency_spec_handles_all_operators() {
+    let mut versions = BTreeMap::new();
+    versions.insert("pkg".to_string(), "5.0.0".to_string());
+
+    // >=
+    assert_eq!(
+        try_update_dependency_spec("pkg>=1.0", &versions),
+        Some(("pkg".to_string(), "pkg>=5.0.0".to_string()))
+    );
+
+    // <=
+    assert_eq!(
+        try_update_dependency_spec("pkg<=1.0", &versions),
+        Some(("pkg".to_string(), "pkg<=5.0.0".to_string()))
+    );
+
+    // ==
+    assert_eq!(
+        try_update_dependency_spec("pkg==1.0", &versions),
+        Some(("pkg".to_string(), "pkg==5.0.0".to_string()))
+    );
+
+    // ~=
+    assert_eq!(
+        try_update_dependency_spec("pkg~=1.0", &versions),
+        Some(("pkg".to_string(), "pkg~=5.0.0".to_string()))
+    );
+
+    // !=
+    assert_eq!(
+        try_update_dependency_spec("pkg!=1.0", &versions),
+        Some(("pkg".to_string(), "pkg!=5.0.0".to_string()))
+    );
+
+    // >
+    assert_eq!(
+        try_update_dependency_spec("pkg>1.0", &versions),
+        Some(("pkg".to_string(), "pkg>5.0.0".to_string()))
+    );
+
+    // <
+    assert_eq!(
+        try_update_dependency_spec("pkg<1.0", &versions),
+        Some(("pkg".to_string(), "pkg<5.0.0".to_string()))
+    );
 }
 
 #[test]
@@ -418,7 +600,7 @@ key = "value"
 }
 
 #[test]
-fn parse_uv_workspace_members_extracts_members() {
+fn parse_uv_workspace_config_extracts_members() {
     let source = r#"
 [project]
 name = "root"
@@ -427,20 +609,43 @@ version = "1.0.0"
 [tool.uv.workspace]
 members = ["packages/*", "libs/core"]
 "#;
-    let members = parse_uv_workspace_members(source).unwrap();
+    let config = parse_uv_workspace_config(source);
+    let members = config.members.unwrap();
     assert_eq!(members.len(), 2);
     assert!(members.contains(&"packages/*".to_string()));
     assert!(members.contains(&"libs/core".to_string()));
+    assert!(config.exclude.is_none());
 }
 
 #[test]
-fn parse_uv_workspace_members_returns_none_without_workspace() {
+fn parse_uv_workspace_config_extracts_exclude() {
+    let source = r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/test-fixtures", "packages/examples/*"]
+"#;
+    let config = parse_uv_workspace_config(source);
+    assert!(config.members.is_some());
+    let exclude = config.exclude.unwrap();
+    assert_eq!(exclude.len(), 2);
+    assert!(exclude.contains(&"packages/test-fixtures".to_string()));
+    assert!(exclude.contains(&"packages/examples/*".to_string()));
+}
+
+#[test]
+fn parse_uv_workspace_config_returns_empty_without_workspace() {
     let source = r#"
 [project]
 name = "single-pkg"
 version = "1.0.0"
 "#;
-    assert!(parse_uv_workspace_members(source).is_none());
+    let config = parse_uv_workspace_config(source);
+    assert!(config.members.is_none());
+    assert!(config.exclude.is_none());
 }
 
 #[test]
@@ -470,4 +675,865 @@ key = "value"
 "#;
     let deps = collect_dependencies(source);
     assert!(deps.is_empty());
+}
+
+#[test]
+fn normalize_package_name_lowercases() {
+    assert_eq!(normalize_package_name("Requests"), "requests");
+    assert_eq!(normalize_package_name("DJANGO"), "django");
+    assert_eq!(normalize_package_name("Flask"), "flask");
+    assert_eq!(normalize_package_name("MyPackage"), "mypackage");
+}
+
+#[test]
+fn normalize_package_name_replaces_separators_with_dash() {
+    // Underscores become dashes
+    assert_eq!(normalize_package_name("my_package"), "my-package");
+    // Dots become dashes
+    assert_eq!(normalize_package_name("my.package"), "my-package");
+    // Dashes stay as dashes
+    assert_eq!(normalize_package_name("my-package"), "my-package");
+}
+
+#[test]
+fn normalize_package_name_collapses_separator_runs() {
+    // Multiple underscores
+    assert_eq!(normalize_package_name("my__package"), "my-package");
+    // Multiple dashes
+    assert_eq!(normalize_package_name("my--package"), "my-package");
+    // Multiple dots
+    assert_eq!(normalize_package_name("my..package"), "my-package");
+    // Mixed separators
+    assert_eq!(normalize_package_name("my_-._package"), "my-package");
+    assert_eq!(normalize_package_name("my.-_package"), "my-package");
+}
+
+#[test]
+fn normalize_package_name_handles_leading_trailing_separators() {
+    // Leading separators are dropped
+    assert_eq!(normalize_package_name("_package"), "package");
+    assert_eq!(normalize_package_name("-package"), "package");
+    assert_eq!(normalize_package_name(".package"), "package");
+    assert_eq!(normalize_package_name("__package"), "package");
+
+    // Trailing separators are dropped
+    assert_eq!(normalize_package_name("package_"), "package");
+    assert_eq!(normalize_package_name("package-"), "package");
+    assert_eq!(normalize_package_name("package."), "package");
+    assert_eq!(normalize_package_name("package__"), "package");
+}
+
+#[test]
+fn normalize_package_name_combined_cases() {
+    // PEP 503 example: all these should normalize to the same value
+    assert_eq!(normalize_package_name("My_Package"), "my-package");
+    assert_eq!(normalize_package_name("my-package"), "my-package");
+    assert_eq!(normalize_package_name("my.package"), "my-package");
+    assert_eq!(normalize_package_name("MY--PACKAGE"), "my-package");
+    assert_eq!(normalize_package_name("My..Package"), "my-package");
+    assert_eq!(normalize_package_name("my___package"), "my-package");
+
+    // More complex cases
+    assert_eq!(
+        normalize_package_name("Typing_Extensions"),
+        "typing-extensions"
+    );
+    assert_eq!(
+        normalize_package_name("typing-extensions"),
+        "typing-extensions"
+    );
+    assert_eq!(
+        normalize_package_name("typing.extensions"),
+        "typing-extensions"
+    );
+}
+
+#[test]
+fn normalize_package_name_handles_empty_and_simple() {
+    assert_eq!(normalize_package_name(""), "");
+    assert_eq!(normalize_package_name("a"), "a");
+    assert_eq!(normalize_package_name("pkg"), "pkg");
+}
+
+#[test]
+fn discover_matches_internal_deps_with_different_casing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Root workspace manifest
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+
+    // Package A with uppercase name
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "My_Core_Package"
+version = "0.1.0"
+dependencies = []
+"#,
+    );
+
+    // Package B depends on A with lowercase/different separators
+    write_file(
+        &root.join("packages/pkg-b/pyproject.toml"),
+        r#"
+[project]
+name = "my-app"
+version = "0.2.0"
+dependencies = ["my-core-package>=0.1.0"]
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    assert_eq!(packages.len(), 3);
+
+    let pkg_b = packages.iter().find(|p| p.name == "my-app").unwrap();
+    // Should detect internal dependency despite different naming conventions
+    assert!(
+        pkg_b.internal_deps.contains("pypi/My_Core_Package"),
+        "Expected my-app to have internal dep on My_Core_Package, got: {:?}",
+        pkg_b.internal_deps
+    );
+}
+
+#[test]
+fn discover_matches_internal_deps_with_different_separators() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+
+    // Package with underscores
+    write_file(
+        &root.join("packages/core/pyproject.toml"),
+        r#"
+[project]
+name = "my_core"
+version = "1.0.0"
+dependencies = []
+"#,
+    );
+
+    // Package with dots in dependency
+    write_file(
+        &root.join("packages/app/pyproject.toml"),
+        r#"
+[project]
+name = "my-app"
+version = "1.0.0"
+dependencies = ["my.core>=1.0.0"]
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+
+    let app = packages.iter().find(|p| p.name == "my-app").unwrap();
+    assert!(
+        app.internal_deps.contains("pypi/my_core"),
+        "Expected my-app to have internal dep on my_core (matching my.core), got: {:?}",
+        app.internal_deps
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_matches_with_normalized_names() {
+    let mut versions = BTreeMap::new();
+    // Map has uppercase/underscore name
+    versions.insert("My_Package".to_string(), "3.0.0".to_string());
+
+    // Dependency uses lowercase/dash - should still match
+    let result = try_update_dependency_spec("my-package>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some(("My_Package".to_string(), "my-package>=3.0.0".to_string()))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_matches_underscore_to_dash() {
+    let mut versions = BTreeMap::new();
+    versions.insert("typing-extensions".to_string(), "5.0.0".to_string());
+
+    // Dependency uses underscore
+    let result = try_update_dependency_spec("typing_extensions>=4.0.0", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "typing-extensions".to_string(),
+            "typing_extensions>=5.0.0".to_string()
+        ))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_matches_dot_to_dash() {
+    let mut versions = BTreeMap::new();
+    versions.insert("zope-interface".to_string(), "6.0.0".to_string());
+
+    // Dependency uses dots
+    let result = try_update_dependency_spec("zope.interface>=5.0.0", &versions);
+    assert_eq!(
+        result,
+        Some((
+            "zope-interface".to_string(),
+            "zope.interface>=6.0.0".to_string()
+        ))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_case_insensitive_match() {
+    let mut versions = BTreeMap::new();
+    versions.insert("Flask".to_string(), "3.0.0".to_string());
+
+    // Dependency uses lowercase
+    let result = try_update_dependency_spec("flask>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some(("Flask".to_string(), "flask>=3.0.0".to_string()))
+    );
+
+    // Dependency uses uppercase
+    let result = try_update_dependency_spec("FLASK>=2.0.0", &versions);
+    assert_eq!(
+        result,
+        Some(("Flask".to_string(), "FLASK>=3.0.0".to_string()))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_returns_original_name_from_map() {
+    let mut versions = BTreeMap::new();
+    // The map has the "canonical" name as stored in package info
+    versions.insert("My_Special_Package".to_string(), "2.0.0".to_string());
+
+    let result = try_update_dependency_spec("my-special-package>=1.0.0", &versions);
+
+    // Should return the original name from the map, not the dependency spec name
+    assert!(result.is_some());
+    let (returned_name, _) = result.unwrap();
+    assert_eq!(returned_name, "My_Special_Package");
+}
+
+#[test]
+fn discover_rejects_collision_dash_underscore() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+
+    // Two packages that normalize to the same name
+    write_file(
+        &root.join("packages/my-package/pyproject.toml"),
+        r#"
+[project]
+name = "my-package"
+version = "1.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/my_package/pyproject.toml"),
+        r#"
+[project]
+name = "my_package"
+version = "1.0.0"
+"#,
+    );
+
+    let err = discover(root).expect_err("expected collision to fail");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("normalize to the same PEP 503 name"),
+        "error should mention PEP 503 collision: {}",
+        msg
+    );
+    assert!(
+        msg.contains("my-package"),
+        "error should mention first package name"
+    );
+}
+
+#[test]
+fn discover_rejects_collision_case_insensitive() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/mypackage/pyproject.toml"),
+        r#"
+[project]
+name = "MyPackage"
+version = "1.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/mypackage2/pyproject.toml"),
+        r#"
+[project]
+name = "mypackage"
+version = "1.0.0"
+"#,
+    );
+
+    let err = discover(root).expect_err("expected collision to fail");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("normalize to the same PEP 503 name"),
+        "error should mention PEP 503 collision: {}",
+        msg
+    );
+}
+
+#[test]
+fn discover_rejects_collision_dot_separator() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg1/pyproject.toml"),
+        r#"
+[project]
+name = "my.package"
+version = "1.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg2/pyproject.toml"),
+        r#"
+[project]
+name = "my-package"
+version = "1.0.0"
+"#,
+    );
+
+    let err = discover(root).expect_err("expected collision to fail");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("normalize to the same PEP 503 name"),
+        "error should mention PEP 503 collision: {}",
+        msg
+    );
+}
+
+#[test]
+fn discover_allows_distinct_normalized_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+
+    // These normalize to different names: "my-package" vs "mypackage"
+    write_file(
+        &root.join("packages/pkg1/pyproject.toml"),
+        r#"
+[project]
+name = "my-package"
+version = "1.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg2/pyproject.toml"),
+        r#"
+[project]
+name = "mypackage"
+version = "1.0.0"
+"#,
+    );
+
+    let packages = discover(root).expect("distinct names should succeed");
+    assert_eq!(packages.len(), 3);
+}
+
+// ============================================================================
+// Glob Pattern Tests
+// ============================================================================
+
+#[test]
+fn discover_uv_workspace_with_recursive_glob() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/**"]
+"#,
+    );
+
+    // Nested packages at different depths
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-a"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/nested/pkg-b/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-b"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"pkg-a"));
+    assert!(names.contains(&"pkg-b"));
+}
+
+#[test]
+fn discover_uv_workspace_with_mid_path_glob() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Pattern like "packages/*/src" which should match packages/foo/src, packages/bar/src
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*/sub"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/foo/sub/pyproject.toml"),
+        r#"
+[project]
+name = "foo-sub"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/bar/sub/pyproject.toml"),
+        r#"
+[project]
+name = "bar-sub"
+version = "0.1.0"
+"#,
+    );
+
+    // This one should NOT match (not in sub/)
+    write_file(
+        &root.join("packages/baz/pyproject.toml"),
+        r#"
+[project]
+name = "baz-root"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"foo-sub"));
+    assert!(names.contains(&"bar-sub"));
+    assert!(!names.contains(&"baz-root"));
+}
+
+#[test]
+fn discover_uv_workspace_with_prefix_glob() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Pattern like "apps/app-*"
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["apps/app-*"]
+"#,
+    );
+
+    write_file(
+        &root.join("apps/app-web/pyproject.toml"),
+        r#"
+[project]
+name = "app-web"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("apps/app-mobile/pyproject.toml"),
+        r#"
+[project]
+name = "app-mobile"
+version = "0.1.0"
+"#,
+    );
+
+    // This should NOT match (doesn't start with "app-")
+    write_file(
+        &root.join("apps/other/pyproject.toml"),
+        r#"
+[project]
+name = "other"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"app-web"));
+    assert!(names.contains(&"app-mobile"));
+    assert!(!names.contains(&"other"));
+}
+
+// ============================================================================
+// Exclude Pattern Tests
+// ============================================================================
+
+#[test]
+fn discover_uv_workspace_with_exclude() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/test-fixtures"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-a"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/test-fixtures/pyproject.toml"),
+        r#"
+[project]
+name = "test-fixtures"
+version = "0.0.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"pkg-a"));
+    assert!(!names.contains(&"test-fixtures"));
+}
+
+#[test]
+fn discover_uv_workspace_with_glob_exclude() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/example-*"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/core/pyproject.toml"),
+        r#"
+[project]
+name = "core"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/example-basic/pyproject.toml"),
+        r#"
+[project]
+name = "example-basic"
+version = "0.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/example-advanced/pyproject.toml"),
+        r#"
+[project]
+name = "example-advanced"
+version = "0.0.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"core"));
+    assert!(!names.contains(&"example-basic"));
+    assert!(!names.contains(&"example-advanced"));
+}
+
+#[test]
+fn discover_uv_workspace_with_multiple_exclude_patterns() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/test-*", "packages/examples"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/core/pyproject.toml"),
+        r#"
+[project]
+name = "core"
+version = "0.1.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/test-unit/pyproject.toml"),
+        r#"
+[project]
+name = "test-unit"
+version = "0.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/test-integration/pyproject.toml"),
+        r#"
+[project]
+name = "test-integration"
+version = "0.0.0"
+"#,
+    );
+
+    write_file(
+        &root.join("packages/examples/pyproject.toml"),
+        r#"
+[project]
+name = "examples"
+version = "0.0.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"core"));
+    assert!(!names.contains(&"test-unit"));
+    assert!(!names.contains(&"test-integration"));
+    assert!(!names.contains(&"examples"));
+}
+
+#[test]
+fn discover_uv_workspace_exclude_does_not_affect_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // The root package should not be excluded even if the pattern matches
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/*"]
+"#,
+    );
+
+    write_file(
+        &root.join("packages/pkg-a/pyproject.toml"),
+        r#"
+[project]
+name = "pkg-a"
+version = "0.1.0"
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+
+    // Root should still be included
+    assert!(names.contains(&"root"));
+    // But packages matched by exclude should not
+    assert!(!names.contains(&"pkg-a"));
+}
+
+#[test]
+fn expand_uv_member_pattern_handles_plain_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("libs/core/pyproject.toml"),
+        r#"
+[project]
+name = "core"
+version = "0.1.0"
+"#,
+    );
+
+    let mut paths = BTreeSet::new();
+    expand_uv_member_pattern(root, "libs/core", &mut paths).unwrap();
+
+    assert_eq!(paths.len(), 1);
+    assert!(paths.iter().next().unwrap().ends_with("libs/core"));
+}
+
+#[test]
+fn expand_uv_member_pattern_ignores_nonexistent_plain_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    let mut paths = BTreeSet::new();
+    // Unlike Cargo, uv silently ignores non-existent members
+    expand_uv_member_pattern(root, "nonexistent/pkg", &mut paths).unwrap();
+
+    assert!(paths.is_empty());
+}
+
+#[test]
+fn expand_uv_member_pattern_ignores_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Create a file that matches the pattern but is not a directory
+    write_file(&root.join("packages/not-a-dir"), "just a file");
+
+    // Also create a valid package directory
+    write_file(
+        &root.join("packages/valid-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "valid-pkg"
+version = "0.1.0"
+"#,
+    );
+
+    let mut paths = BTreeSet::new();
+    expand_uv_member_pattern(root, "packages/*", &mut paths).unwrap();
+
+    assert_eq!(paths.len(), 1);
+    assert!(paths.iter().next().unwrap().ends_with("valid-pkg"));
 }
