@@ -79,6 +79,17 @@ impl CargoAdapter {
     }
 }
 
+/// Stub: returns `Skipped` until Cargo semver constraint parsing is implemented.
+pub(super) fn check_dependency_constraint(
+    _dep_name: &str,
+    _current_constraint: &str,
+    _new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    Ok(crate::types::ConstraintCheckResult::Skipped {
+        reason: "Cargo constraint validation not yet implemented".to_string(),
+    })
+}
+
 /// Detect the version of the `cargo` binary available on the PATH.
 pub fn detect_version() -> Result<Option<Version>> {
     let output = match Command::new("cargo").arg("--version").output() {
