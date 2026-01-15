@@ -780,8 +780,8 @@ fn validate_dependency_constraints(
                         new_version: new_version.clone(),
                     };
 
-                    let is_fixed_or_linked = is_in_group(pkg_id, &fixed_groups)
-                        || is_in_group(pkg_id, &linked_groups);
+                    let is_fixed_or_linked =
+                        is_in_group(pkg_id, &fixed_groups) || is_in_group(pkg_id, &linked_groups);
 
                     if is_fixed_or_linked {
                         violations.push(violation);
@@ -806,7 +806,9 @@ fn validate_dependency_constraints(
 
 /// Check if a package identifier is in any of the provided groups.
 fn is_in_group(pkg_id: &str, groups: &[Vec<String>]) -> bool {
-    groups.iter().any(|group| group.contains(&pkg_id.to_string()))
+    groups
+        .iter()
+        .any(|group| group.contains(&pkg_id.to_string()))
 }
 
 fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
