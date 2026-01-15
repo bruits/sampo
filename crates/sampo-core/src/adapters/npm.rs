@@ -178,6 +178,18 @@ impl NpmAdapter {
     }
 }
 
+/// Stub: returns `Skipped` until npm semver constraint parsing is implemented.
+pub(super) fn check_dependency_constraint(
+    _manifest_path: &Path,
+    _dep_name: &str,
+    _current_constraint: &str,
+    _new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    Ok(crate::types::ConstraintCheckResult::Skipped {
+        reason: "npm constraint validation not yet implemented".to_string(),
+    })
+}
+
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],

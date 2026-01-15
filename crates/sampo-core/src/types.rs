@@ -446,6 +446,70 @@ impl std::fmt::Display for ChangelogCategory {
     }
 }
 
+/// Result of checking a dependency version constraint against a new version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstraintCheckResult {
+    Satisfied,
+    NotSatisfied {
+        constraint: String,
+        new_version: String,
+    },
+    Skipped {
+        reason: String,
+    },
+}
+
+impl ConstraintCheckResult {
+    /// Returns true if the constraint check passed (satisfied or skipped).
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::Satisfied | Self::Skipped { .. })
+    }
+
+    /// Returns true if the constraint is not satisfied.
+    pub fn is_not_satisfied(&self) -> bool {
+        matches!(self, Self::NotSatisfied { .. })
+    }
+}
+
+impl std::fmt::Display for ConstraintCheckResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Satisfied => write!(f, "satisfied"),
+            Self::NotSatisfied {
+                constraint,
+                new_version,
+            } => {
+                write!(
+                    f,
+                    "not satisfied: version {} does not match constraint '{}'",
+                    new_version, constraint
+                )
+            }
+            Self::Skipped { reason } => write!(f, "skipped: {}", reason),
+        }
+    }
+}
+
+/// Information about a dependency constraint validation failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintViolation {
+    pub dependent_identifier: String,
+    pub dependency_identifier: String,
+    pub dependency_name: String,
+    pub constraint: String,
+    pub new_version: String,
+}
+
+impl std::fmt::Display for ConstraintViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} depends on {} with constraint '{}', but new version {} does not satisfy it",
+            self.dependent_identifier, self.dependency_name, self.constraint, self.new_version
+        )
+    }
+}
+
 /// Result of parsing a change type string that may include a custom tag.
 ///
 /// Parses formats like:
@@ -671,6 +735,81 @@ mod tests {
         assert_eq!(
             ChangelogCategory::Tag("Added".to_string()).bump(),
             Bump::Patch
+        );
+    }
+
+    #[test]
+    fn constraint_check_result_is_ok() {
+        assert!(ConstraintCheckResult::Satisfied.is_ok());
+        assert!(
+            ConstraintCheckResult::Skipped {
+                reason: "test".to_string()
+            }
+            .is_ok()
+        );
+        assert!(
+            !ConstraintCheckResult::NotSatisfied {
+                constraint: "^1.0".to_string(),
+                new_version: "2.0.0".to_string(),
+            }
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn constraint_check_result_is_not_satisfied() {
+        assert!(!ConstraintCheckResult::Satisfied.is_not_satisfied());
+        assert!(
+            !ConstraintCheckResult::Skipped {
+                reason: "test".to_string()
+            }
+            .is_not_satisfied()
+        );
+        assert!(
+            ConstraintCheckResult::NotSatisfied {
+                constraint: "^1.0".to_string(),
+                new_version: "2.0.0".to_string(),
+            }
+            .is_not_satisfied()
+        );
+    }
+
+    #[test]
+    fn constraint_check_result_display() {
+        assert_eq!(format!("{}", ConstraintCheckResult::Satisfied), "satisfied");
+        assert_eq!(
+            format!(
+                "{}",
+                ConstraintCheckResult::Skipped {
+                    reason: "not implemented".to_string()
+                }
+            ),
+            "skipped: not implemented"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                ConstraintCheckResult::NotSatisfied {
+                    constraint: "^1.0.0".to_string(),
+                    new_version: "2.0.0".to_string(),
+                }
+            ),
+            "not satisfied: version 2.0.0 does not match constraint '^1.0.0'"
+        );
+    }
+
+    #[test]
+    fn constraint_violation_display() {
+        let violation = ConstraintViolation {
+            dependent_identifier: "cargo/app".to_string(),
+            dependency_identifier: "cargo/lib".to_string(),
+            dependency_name: "lib".to_string(),
+            constraint: "^1.0.0".to_string(),
+            new_version: "2.0.0".to_string(),
+        };
+        assert_eq!(
+            format!("{}", violation),
+            "cargo/app depends on lib with constraint '^1.0.0', but new version 2.0.0 does not satisfy it"
         );
     }
 }
