@@ -79,15 +79,43 @@ impl CargoAdapter {
     }
 }
 
-/// Stub: returns `Skipped` until Cargo semver constraint parsing is implemented.
+/// Check if a Cargo dependency version constraint is satisfied by a new version.
 pub(super) fn check_dependency_constraint(
     _dep_name: &str,
-    _current_constraint: &str,
-    _new_version: &str,
+    current_constraint: &str,
+    new_version: &str,
 ) -> Result<crate::types::ConstraintCheckResult> {
-    Ok(crate::types::ConstraintCheckResult::Skipped {
-        reason: "Cargo constraint validation not yet implemented".to_string(),
-    })
+    use crate::types::ConstraintCheckResult;
+
+    let constraint = current_constraint.trim();
+    let version_str = new_version.trim();
+
+    let req = match VersionReq::parse(constraint) {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable constraint '{}'", constraint),
+            });
+        }
+    };
+
+    let version = match Version::parse(version_str) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable version '{}'", version_str),
+            });
+        }
+    };
+
+    if req.matches(&version) {
+        Ok(ConstraintCheckResult::Satisfied)
+    } else {
+        Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: constraint.to_string(),
+            new_version: version_str.to_string(),
+        })
+    }
 }
 
 /// Detect the version of the `cargo` binary available on the PATH.
@@ -366,6 +394,7 @@ struct MetadataDependency {
     package_name: String,
     kind: DependencyKind,
     target: Option<String>,
+    version_req: String,
 }
 
 impl ManifestMetadata {
@@ -402,6 +431,7 @@ impl ManifestMetadata {
                     package_name: dep.name.clone(),
                     kind: dep.kind,
                     target: dep.target.as_ref().map(|platform| platform.to_string()),
+                    version_req: dep.req.to_string(),
                 })
                 .collect();
 
@@ -426,6 +456,21 @@ impl ManifestMetadata {
 
     fn is_workspace_package(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
+    }
+
+    /// Returns the version constraint for a dependency of a package, if found.
+    /// The `dep_name` is the package name (not the alias/manifest key).
+    pub fn get_dependency_constraint(
+        &self,
+        manifest_path: &Path,
+        dep_name: &str,
+    ) -> Option<String> {
+        let package = self.package_for_manifest(manifest_path)?;
+        package
+            .dependencies
+            .iter()
+            .find(|dep| dep.package_name == dep_name)
+            .map(|dep| dep.version_req.clone())
     }
 }
 

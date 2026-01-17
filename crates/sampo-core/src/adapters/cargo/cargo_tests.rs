@@ -314,3 +314,158 @@ fn cargo_discoverer_rejects_workspace_inheritance_without_workspace_version() {
     let err = result.unwrap_err().to_string();
     assert!(err.contains("version.workspace = true requires workspace.package.version"));
 }
+
+mod constraint_validation {
+    use super::*;
+    use crate::types::ConstraintCheckResult;
+
+    fn assert_satisfied(constraint: &str, version: &str) {
+        let result = check_dependency_constraint("test-dep", constraint, version).unwrap();
+        assert_eq!(
+            result,
+            ConstraintCheckResult::Satisfied,
+            "Expected constraint '{}' to be satisfied by version '{}', got {:?}",
+            constraint,
+            version,
+            result
+        );
+    }
+
+    fn assert_not_satisfied(constraint: &str, version: &str) {
+        let result = check_dependency_constraint("test-dep", constraint, version).unwrap();
+        assert!(
+            matches!(result, ConstraintCheckResult::NotSatisfied { .. }),
+            "Expected constraint '{}' to NOT be satisfied by version '{}', got {:?}",
+            constraint,
+            version,
+            result
+        );
+    }
+
+    fn assert_skipped(constraint: &str, version: &str) {
+        let result = check_dependency_constraint("test-dep", constraint, version).unwrap();
+        assert!(
+            matches!(result, ConstraintCheckResult::Skipped { .. }),
+            "Expected constraint '{}' with version '{}' to be skipped, got {:?}",
+            constraint,
+            version,
+            result
+        );
+    }
+
+    #[test]
+    fn caret_constraint_allows_compatible_minor_bump() {
+        assert_satisfied("1.2.3", "1.3.0");
+        assert_satisfied("^1.2.3", "1.3.0");
+    }
+
+    #[test]
+    fn caret_constraint_rejects_major_bump() {
+        assert_not_satisfied("1.2.3", "2.0.0");
+        assert_not_satisfied("^1.2.3", "2.0.0");
+    }
+
+    #[test]
+    fn caret_constraint_zero_major_is_stricter() {
+        assert_satisfied("0.2.3", "0.2.5");
+        assert_not_satisfied("0.2.3", "0.3.0");
+    }
+
+    #[test]
+    fn tilde_constraint_allows_patch_only() {
+        assert_satisfied("~1.2.3", "1.2.9");
+    }
+
+    #[test]
+    fn tilde_constraint_rejects_minor_bump() {
+        assert_not_satisfied("~1.2.3", "1.3.0");
+    }
+
+    #[test]
+    fn wildcard_constraint_allows_any_minor() {
+        assert_satisfied("1.*", "1.99.0");
+    }
+
+    #[test]
+    fn wildcard_constraint_rejects_major_bump() {
+        assert_not_satisfied("1.*", "2.0.0");
+    }
+
+    #[test]
+    fn global_wildcard_allows_anything() {
+        assert_satisfied("*", "99.0.0");
+    }
+
+    #[test]
+    fn exact_constraint_allows_exact_match() {
+        assert_satisfied("=1.2.3", "1.2.3");
+    }
+
+    #[test]
+    fn exact_constraint_rejects_any_difference() {
+        assert_not_satisfied("=1.2.3", "1.2.4");
+    }
+
+    #[test]
+    fn range_constraint_allows_within_range() {
+        assert_satisfied(">=1.2, <2.0", "1.5.0");
+    }
+
+    #[test]
+    fn range_constraint_rejects_outside_range() {
+        assert_not_satisfied(">=1.2, <2.0", "2.0.0");
+    }
+
+    #[test]
+    fn prerelease_constraint_matches_prerelease_version() {
+        assert_satisfied("1.0.0-alpha", "1.0.0-beta");
+    }
+
+    #[test]
+    fn stable_constraint_rejects_prerelease_version() {
+        assert_not_satisfied("1.0", "1.0.0-alpha");
+    }
+
+    #[test]
+    fn invalid_constraint_is_skipped() {
+        assert_skipped("invalid", "1.0.0");
+    }
+
+    #[test]
+    fn invalid_version_is_skipped() {
+        assert_skipped("1.0", "invalid");
+    }
+
+    #[test]
+    fn empty_constraint_is_skipped() {
+        assert_skipped("", "1.0.0");
+    }
+
+    #[test]
+    fn empty_version_is_skipped() {
+        assert_skipped("1.0", "");
+    }
+
+    #[test]
+    fn whitespace_in_constraint_is_trimmed() {
+        assert_satisfied("  1.2.3  ", "1.3.0");
+    }
+
+    #[test]
+    fn whitespace_in_version_is_trimmed() {
+        assert_satisfied("1.2.3", "  1.3.0  ");
+    }
+
+    #[test]
+    fn partial_major_constraint_works() {
+        assert_satisfied("1", "1.5.0");
+        assert_not_satisfied("1", "2.0.0");
+    }
+
+    #[test]
+    fn partial_minor_constraint_works() {
+        assert_satisfied("1.2", "1.2.5");
+        assert_satisfied("1.2", "1.3.0");
+        assert_not_satisfied("1.2", "2.0.0");
+    }
+}

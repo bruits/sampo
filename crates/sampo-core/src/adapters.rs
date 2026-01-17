@@ -252,6 +252,12 @@ impl PackageAdapter {
                 current_constraint,
                 new_version,
             ),
+            Self::Packagist => packagist::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
         }
     }
 }
