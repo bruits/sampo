@@ -12,6 +12,7 @@ keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
 
 [dependencies]
+cargo_metadata = "0.18"
 glob = "0.3"
 rustc-hash = "2.0"
 thiserror = "2.0"

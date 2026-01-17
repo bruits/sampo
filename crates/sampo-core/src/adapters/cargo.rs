@@ -1,8 +1,10 @@
 /// Cargo ecosystem adapter for all Cargo operations.
 use crate::errors::{Result, SampoError, WorkspaceError};
-use crate::types::{PackageInfo, PackageKind};
+use crate::types::{PackageInfo, PackageKind, Workspace};
+use cargo_metadata::{DependencyKind, MetadataCommand};
+use rustc_hash::FxHashSet;
 use semver::{Version, VersionReq};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -77,15 +79,43 @@ impl CargoAdapter {
     }
 }
 
-/// Stub: returns `Skipped` until Cargo semver constraint parsing is implemented.
+/// Check if a Cargo dependency version constraint is satisfied by a new version.
 pub(super) fn check_dependency_constraint(
     _dep_name: &str,
-    _current_constraint: &str,
-    _new_version: &str,
+    current_constraint: &str,
+    new_version: &str,
 ) -> Result<crate::types::ConstraintCheckResult> {
-    Ok(crate::types::ConstraintCheckResult::Skipped {
-        reason: "Cargo constraint validation not yet implemented".to_string(),
-    })
+    use crate::types::ConstraintCheckResult;
+
+    let constraint = current_constraint.trim();
+    let version_str = new_version.trim();
+
+    let req = match VersionReq::parse(constraint) {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable constraint '{}'", constraint),
+            });
+        }
+    };
+
+    let version = match Version::parse(version_str) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable version '{}'", version_str),
+            });
+        }
+    };
+
+    if req.matches(&version) {
+        Ok(ConstraintCheckResult::Satisfied)
+    } else {
+        Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: constraint.to_string(),
+            new_version: version_str.to_string(),
+        })
+    }
 }
 
 /// Detect the version of the `cargo` binary available on the PATH.
@@ -346,6 +376,102 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
         s.push_str(&a.to_string_lossy());
     }
     s
+}
+
+/// Metadata extracted from `cargo_metadata` for the workspace.
+pub struct ManifestMetadata {
+    packages: Vec<MetadataPackage>,
+    by_manifest: HashMap<PathBuf, usize>,
+    by_name: HashMap<String, usize>,
+}
+
+struct MetadataPackage {
+    dependencies: Vec<MetadataDependency>,
+}
+
+struct MetadataDependency {
+    manifest_key: String,
+    package_name: String,
+    kind: DependencyKind,
+    target: Option<String>,
+    version_req: String,
+}
+
+impl ManifestMetadata {
+    pub fn load(workspace: &Workspace) -> Result<Self> {
+        let manifest_path = workspace.root.join("Cargo.toml");
+        let metadata = MetadataCommand::new()
+            .manifest_path(&manifest_path)
+            .no_deps()
+            .exec()
+            .map_err(|err| {
+                SampoError::Release(format!(
+                    "Failed to load cargo metadata for {}: {err}",
+                    manifest_path.display()
+                ))
+            })?;
+
+        let workspace_ids: FxHashSet<_> = metadata.workspace_members.iter().cloned().collect();
+
+        let mut packages = Vec::new();
+        let mut by_manifest = HashMap::new();
+        let mut by_name = HashMap::new();
+
+        for package in metadata.packages {
+            if !workspace_ids.contains(&package.id) {
+                continue;
+            }
+
+            let manifest_path: PathBuf = package.manifest_path.clone().into();
+            let dependencies = package
+                .dependencies
+                .iter()
+                .map(|dep| MetadataDependency {
+                    manifest_key: dep.rename.clone().unwrap_or_else(|| dep.name.clone()),
+                    package_name: dep.name.clone(),
+                    kind: dep.kind,
+                    target: dep.target.as_ref().map(|platform| platform.to_string()),
+                    version_req: dep.req.to_string(),
+                })
+                .collect();
+
+            let idx = packages.len();
+            by_manifest.insert(manifest_path.clone(), idx);
+            by_name.insert(package.name.clone(), idx);
+            packages.push(MetadataPackage { dependencies });
+        }
+
+        Ok(Self {
+            packages,
+            by_manifest,
+            by_name,
+        })
+    }
+
+    fn package_for_manifest(&self, manifest_path: &Path) -> Option<&MetadataPackage> {
+        self.by_manifest
+            .get(manifest_path)
+            .and_then(|idx| self.packages.get(*idx))
+    }
+
+    fn is_workspace_package(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    /// Returns the version constraint for a dependency of a package, if found.
+    /// The `dep_name` is the package name (not the alias/manifest key).
+    pub fn get_dependency_constraint(
+        &self,
+        manifest_path: &Path,
+        dep_name: &str,
+    ) -> Option<String> {
+        let package = self.package_for_manifest(manifest_path)?;
+        package
+            .dependencies
+            .iter()
+            .find(|dep| dep.package_name == dep_name)
+            .map(|dep| dep.version_req.clone())
+    }
 }
 
 /// Update a Cargo manifest by setting the package version (if provided) and retargeting internal

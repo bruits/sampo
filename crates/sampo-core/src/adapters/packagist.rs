@@ -327,6 +327,17 @@ pub(super) fn publish_dry_run(
     Ok(())
 }
 
+pub(super) fn check_dependency_constraint(
+    _manifest_path: &Path,
+    _dep_name: &str,
+    _current_constraint: &str,
+    _new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    Ok(crate::types::ConstraintCheckResult::Skipped {
+        reason: "packagist constraint validation not yet implemented".to_string(),
+    })
+}
+
 fn enforce_packagist_rate_limit() {
     let lock = PACKAGIST_LAST_CALL.get_or_init(|| Mutex::new(None));
     let mut guard = match lock.lock() {
