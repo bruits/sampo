@@ -403,6 +403,10 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
             "version" => {
                 if let Some(literal) = parse_string_literal_node(source, value_node) {
                     metadata.version = Some(literal.value);
+                } else if is_module_attribute_reference(source_bytes, value_node, "version") {
+                    if let Some(literal) = find_module_attribute_value(&tree, source, "version") {
+                        metadata.version = Some(literal.value);
+                    }
                 }
             }
             "apps_path" => {
@@ -424,6 +428,70 @@ fn has_package_function(source_bytes: &[u8], tree: &Tree) -> bool {
     !calls.is_empty()
 }
 
+/// Checks if a node is a module attribute reference like `@version` (not a definition).
+/// A reference is a `unary_operator` containing just an `identifier`.
+fn is_module_attribute_reference(source_bytes: &[u8], node: Node<'_>, attr_name: &str) -> bool {
+    if node.kind() != "unary_operator" {
+        return false;
+    }
+    // A reference has a direct identifier child, not a call child
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "identifier" {
+            if let Ok(text) = child.utf8_text(source_bytes) {
+                return text == attr_name;
+            }
+        }
+    }
+    false
+}
+
+/// Finds the string value of a module attribute definition like `@version "1.2.3"`.
+/// A definition is a `unary_operator` containing a `call` with the attribute name
+/// and a string argument.
+fn find_module_attribute_value(tree: &Tree, source: &str, attr_name: &str) -> Option<ValueLiteral> {
+    let source_bytes = source.as_bytes();
+
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        // Module attribute definitions are unary_operator nodes containing a call
+        if node.kind() == "unary_operator" {
+            let mut node_cursor = node.walk();
+            for child in node.named_children(&mut node_cursor) {
+                if child.kind() == "call" {
+                    // Check if the call target matches the attribute name
+                    if let Some(target) = first_named_child_any(child) {
+                        if target.kind() == "identifier" {
+                            if let Ok(name) = target.utf8_text(source_bytes) {
+                                if name == attr_name {
+                                    // Look for string in the call's arguments
+                                    if let Some(args) = first_named_child(child, "arguments") {
+                                        let mut args_cursor = args.walk();
+                                        for arg in args.named_children(&mut args_cursor) {
+                                            if let Some(literal) =
+                                                parse_string_literal_node(source, arg)
+                                            {
+                                                return Some(literal);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    None
+}
+
 fn locate_project_version_literal(source: &str) -> Option<ValueLiteral> {
     let tree = parse_mix_tree(source)?;
     let source_bytes = source.as_bytes();
@@ -440,7 +508,12 @@ fn locate_project_version_literal(source: &str) -> Option<ValueLiteral> {
         };
         let key = keyword_name(source_bytes, key_node)?;
         if key == "version" {
-            return parse_string_literal_node(source, value_node);
+            if let Some(literal) = parse_string_literal_node(source, value_node) {
+                return Some(literal);
+            }
+            if is_module_attribute_reference(source_bytes, value_node, "version") {
+                return find_module_attribute_value(&tree, source, "version");
+            }
         }
     }
 
