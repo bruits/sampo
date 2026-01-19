@@ -403,11 +403,10 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
             "version" => {
                 if let Some(literal) = parse_string_literal_node(source, value_node) {
                     metadata.version = Some(literal.value);
-                } else if is_module_attribute_reference(source_bytes, value_node, "version") {
-                    if let Some(literal) = find_module_attribute_value(&tree, source, "version") {
+                } else if is_module_attribute_reference(source_bytes, value_node, "version")
+                    && let Some(literal) = find_module_attribute_value(&tree, source, "version") {
                         metadata.version = Some(literal.value);
                     }
-                }
             }
             "apps_path" => {
                 if let Some(literal) = parse_string_literal_node(source, value_node) {
@@ -437,11 +436,10 @@ fn is_module_attribute_reference(source_bytes: &[u8], node: Node<'_>, attr_name:
     // A reference has a direct identifier child, not a call child
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if child.kind() == "identifier" {
-            if let Ok(text) = child.utf8_text(source_bytes) {
+        if child.kind() == "identifier"
+            && let Ok(text) = child.utf8_text(source_bytes) {
                 return text == attr_name;
             }
-        }
     }
     false
 }
@@ -460,10 +458,10 @@ fn find_module_attribute_value(tree: &Tree, source: &str, attr_name: &str) -> Op
             for child in node.named_children(&mut node_cursor) {
                 if child.kind() == "call" {
                     // Check if the call target matches the attribute name
-                    if let Some(target) = first_named_child_any(child) {
-                        if target.kind() == "identifier" {
-                            if let Ok(name) = target.utf8_text(source_bytes) {
-                                if name == attr_name {
+                    if let Some(target) = first_named_child_any(child)
+                        && target.kind() == "identifier"
+                            && let Ok(name) = target.utf8_text(source_bytes)
+                                && name == attr_name {
                                     // Look for string in the call's arguments
                                     if let Some(args) = first_named_child(child, "arguments") {
                                         let mut args_cursor = args.walk();
@@ -476,9 +474,6 @@ fn find_module_attribute_value(tree: &Tree, source: &str, attr_name: &str) -> Op
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
                 }
             }
         }
