@@ -14,6 +14,23 @@ use cli::{Cli, Commands};
 use std::process::ExitCode;
 use version_check::VersionCheckResult;
 
+/// Exit codes following Linux conventions.
+mod exit {
+    use std::process::ExitCode;
+
+    /// Success, changes were made (or would be made in dry-run).
+    pub const SUCCESS: ExitCode = ExitCode::SUCCESS;
+
+    /// Error occurred.
+    pub const ERROR: ExitCode = ExitCode::FAILURE;
+
+    /// Success, but no changes were needed (no-op).
+    /// no_changes() is a function rather than a const because ExitCode::from(2) isn't const-evaluable in stable Rust.
+    pub fn no_changes() -> ExitCode {
+        ExitCode::from(2)
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -25,7 +42,7 @@ fn main() -> ExitCode {
                 Ok(dir) => dir,
                 Err(e) => {
                     eprintln!("Failed to get current directory: {e}");
-                    return ExitCode::from(1);
+                    return exit::ERROR;
                 }
             };
             match init::init_from_cwd(&cwd) {
@@ -44,42 +61,51 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("init error: {e}");
-                    return ExitCode::from(1);
+                    return exit::ERROR;
                 }
             }
         }
         Commands::Add(args) => {
             if let Err(e) = add::run(&args) {
                 eprintln!("Failed to add changeset: {e}");
-                return ExitCode::from(1);
+                return exit::ERROR;
             }
         }
-        Commands::Publish(args) => {
-            if let Err(e) = publish::run(&args) {
+        Commands::Publish(args) => match publish::run(&args) {
+            Ok(true) => {}
+            Ok(false) => return exit::no_changes(),
+            Err(e) => {
                 eprintln!("Failed to publish packages: {e}");
-                return ExitCode::from(1);
+                return exit::ERROR;
             }
-        }
-        Commands::Release(args) => {
-            if let Err(e) = release::run(&args) {
+        },
+        Commands::Release(args) => match release::run(&args) {
+            Ok(true) => {}
+            Ok(false) => return exit::no_changes(),
+            Err(e) => {
                 eprintln!("Failed to release packages: {e}");
-                return ExitCode::from(1);
+                return exit::ERROR;
             }
-        }
-        Commands::Pre(args) => {
-            if let Err(e) = prerelease::run(&args) {
+        },
+        Commands::Pre(args) => match prerelease::run(&args) {
+            Ok(true) => {}
+            Ok(false) => return exit::no_changes(),
+            Err(e) => {
                 eprintln!("Failed to manage pre-release versions: {e}");
-                return ExitCode::from(1);
+                return exit::ERROR;
             }
-        }
-        Commands::Update(args) => {
-            if let Err(e) = update::run(&args) {
+        },
+        Commands::Update(args) => match update::run(&args) {
+            Ok(true) => {}
+            Ok(false) => return exit::no_changes(),
+            Err(e) => {
                 eprintln!("Failed to update Sampo: {e}");
-                return ExitCode::from(1);
+                return exit::ERROR;
             }
-        }
+        },
     }
-    ExitCode::SUCCESS
+
+    exit::SUCCESS
 }
 
 /// Checks for CLI updates and prints a hint if a newer version is available. Non-blocking, best-effort.

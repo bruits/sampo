@@ -14,7 +14,10 @@ const BIN_NAME: &str = "sampo";
 const TAG_PREFIX: &str = "sampo-v";
 
 /// Runs the update command.
-pub fn run(args: &UpdateArgs) -> Result<()> {
+///
+/// Returns `Ok(true)` if an update was performed,
+/// `Ok(false)` if already at latest version or update was cancelled.
+pub fn run(args: &UpdateArgs) -> Result<bool> {
     log_info("Checking for updates...");
 
     let releases = fetch_sampo_releases()?;
@@ -25,7 +28,7 @@ pub fn run(args: &UpdateArgs) -> Result<()> {
 
     if latest_version <= current_version {
         log_success_value("Already up to date", &current_version.to_string());
-        return Ok(());
+        return Ok(false);
     }
 
     log_warning(&format!(
@@ -35,14 +38,14 @@ pub fn run(args: &UpdateArgs) -> Result<()> {
 
     if !args.yes && !confirm_update()? {
         log_info("Update cancelled.");
-        return Ok(());
+        return Ok(false);
     }
 
     log_info("Downloading and installing...");
     perform_update(&latest.name)?;
 
     log_success_value("Updated to version", &latest_version.to_string());
-    Ok(())
+    Ok(true)
 }
 
 /// Fetches all releases from the GitHub repository.
