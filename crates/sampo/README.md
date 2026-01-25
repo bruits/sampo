@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
@@ -35,6 +35,7 @@ This command creates a `.sampo` directory at your repository root:
 #### Versioning
 
 Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate the nature of changes in each release. Versions follow the `MAJOR.MINOR.PATCH` format with three bump levels:
+
 - **patch**: Bug fixes and backwards-compatible changes
 - **minor**: New features that are backwards-compatible
 - **major**: Breaking changes that are not backwards-compatible
@@ -104,7 +105,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 > [!WARNING]
-> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
+> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `pip`/`twine`, `composer`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
 
 #### Pre-release versions
 
@@ -115,7 +116,7 @@ While in pre-release mode, you can continue to add changesets and run `sampo rel
 ## Configuration
 
 > [!NOTE]
-> Since Sampo automatically detects packages in your workspace (based on ecosystem conventions) and infers sensible defaults for most settings, you can often skip this section and use Sampo out-of-the-box. 
+> Since Sampo automatically detects packages in your workspace (based on ecosystem conventions) and infers sensible defaults for most settings, you can often skip this section and use Sampo out-of-the-box.
 
 The `.sampo/config.toml` file allows you to customize Sampo's behavior. Example configuration:
 
@@ -184,13 +185,14 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 `ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust crates or `"private": true` in a workspace `package.json` for npm packages. By default, Sampo still tracks versioning and changelogs for those packages, but will not attempt to publish them to their registries.
 
 `ignore`: A list of glob-like patterns to ignore packages by canonical identifier, plain name, or relative path. `*` matches any sequence. Examples:
+
 - `cargo/internal-*`: ignores Cargo packages with names like `internal-tool`.
 - `npm/web-*`: ignores npm packages whose names start with `web-`.
 - `examples/*`: ignores any package whose relative path starts with `examples/`.
 - `package-a`: ignores a package named exactly `package-a` (only if the name is unique across ecosystems).
 
 > [!NOTE]
-> Canonical identifiers follow the `<ecosystem>/<name>` format (e.g., `cargo/my-crate` for a Rust package, `npm/web-app` for a JavaScript package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
+> Canonical identifiers follow the `<ecosystem>/<name>` format (e.g., `cargo/my-crate` for a Rust package, `npm/web-app` for a JavaScript package, `packagist/vendor/package` for a PHP package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
 
 Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
