@@ -219,6 +219,47 @@ All commands should be run from the root of the repository:
 
 For detailed command options, use `sampo help <command>` or `sampo <command> --help`.
 
+### Exit codes
+
+Sampo uses standard exit codes to indicate command outcomes, making it easy to integrate with CI/CD pipelines and shell scripts:
+
+| Exit Code | Meaning |
+| --------- | ------- |
+| `0` | Success — changes were made (or would be made with `--dry-run`) |
+| `1` | Error — command failed |
+| `2` | No changes — command succeeded but no action was needed |
+
+Commands that support exit code `2`:
+- `sampo release` — no pending changesets to process
+- `sampo publish` — no packages to publish (already published or no new versions)
+- `sampo pre` — packages already in the target pre-release state
+- `sampo update` — CLI is already at the latest version
+
+This allows you to detect whether changes occurred:
+
+```bash
+sampo release --dry-run
+case $? in
+  0) echo "Pending changesets found" ;;
+  2) echo "No changesets to process" ;;
+  *) echo "Error occurred"; exit 1 ;;
+esac
+```
+
+Or use it directly in conditionals:
+
+```bash
+if sampo release --dry-run; then
+  echo "Changes would be made, proceeding..."
+  sampo release
+elif [ $? -eq 2 ]; then
+  echo "Nothing to release"
+else
+  echo "Release failed"
+  exit 1
+fi
+```
+
 ## Alternatives
 
 Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), from which we borrow the changeset format and monorepo release workflows. But our project goes beyond the JavaScript/TypeScript ecosystem, as it is made with Rust, and designed to support multiple mixed ecosystems. Other <abbr title="Node Package Manager">npm</abbr>-limited tools include [Rush](https://github.com/microsoft/rushstack), [Ship.js](https://github.com/algolia/shipjs), [Release It!](https://github.com/release-it/release-it), and [beachball](https://github.com/microsoft/beachball).

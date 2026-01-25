@@ -17,7 +17,11 @@ use std::collections::{BTreeSet, HashMap};
 
 const LABEL_PROMPT: &str = "Pre-release label (alpha, beta, rc, etc.)";
 
-pub fn run(args: &PreArgs) -> Result<()> {
+/// Runs the pre-release command.
+///
+/// Returns `Ok(true)` if version changes were applied,
+/// `Ok(false)` if no changes were needed.
+pub fn run(args: &PreArgs) -> Result<bool> {
     match &args.command {
         Some(PreCommands::Enter(cmd)) => run_enter(cmd),
         Some(PreCommands::Exit(cmd)) => run_exit(cmd),
@@ -25,7 +29,7 @@ pub fn run(args: &PreArgs) -> Result<()> {
     }
 }
 
-fn run_enter(args: &PreEnterArgs) -> Result<()> {
+fn run_enter(args: &PreEnterArgs) -> Result<bool> {
     let cwd = std::env::current_dir()?;
     let workspace = discover_workspace(&cwd)?;
     let include_kind = workspace.has_multiple_package_kinds();
@@ -103,10 +107,13 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
 
     let label = resolve_label(args.label.as_deref())?;
 
+    let mut any_changes = false;
+
     let packages_to_reset = packages_requiring_label_switch(&workspace, &canonical, &label)?;
     if !packages_to_reset.is_empty() {
         let exit_updates = exit_prerelease(&workspace.root, &packages_to_reset)?;
         if !exit_updates.is_empty() {
+            any_changes = true;
             let reset_display: Vec<String> = packages_to_reset
                 .iter()
                 .map(|id| display_name_for_identifier(&workspace, id, include_kind))
@@ -126,16 +133,20 @@ fn run_enter(args: &PreEnterArgs) -> Result<()> {
     }
 
     let updates = enter_prerelease(&workspace.root, &canonical, &label)?;
+    if !updates.is_empty() {
+        any_changes = true;
+    }
     report_updates(
         "Applied pre-release label",
         Some(label.as_str()),
         &requested_display,
         &updates,
     );
-    Ok(())
+
+    Ok(any_changes)
 }
 
-fn run_exit(args: &PreExitArgs) -> Result<()> {
+fn run_exit(args: &PreExitArgs) -> Result<bool> {
     let cwd = std::env::current_dir()?;
     let workspace = discover_workspace(&cwd)?;
     let include_kind = workspace.has_multiple_package_kinds();
@@ -160,7 +171,7 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
     let selected_specs = if args.package.is_empty() {
         if available.is_empty() {
             println!("All workspace packages are already stable.");
-            return Ok(());
+            return Ok(false);
         }
         let labels: Vec<String> = available.iter().map(|(label, _)| label.clone()).collect();
         let mut label_map: HashMap<String, PackageSpecifier> = HashMap::new();
@@ -217,16 +228,18 @@ fn run_exit(args: &PreExitArgs) -> Result<()> {
         .collect();
 
     let updates = exit_prerelease(&workspace.root, &canonical)?;
+    let any_changes = !updates.is_empty();
     report_updates(
         "Restored stable versions",
         None,
         &requested_display,
         &updates,
     );
-    Ok(())
+
+    Ok(any_changes)
 }
 
-fn run_interactive() -> Result<()> {
+fn run_interactive() -> Result<bool> {
     match prompt_mode()? {
         InteractiveMode::Enter => {
             let label = prompt_nonempty_string(LABEL_PROMPT)?;
