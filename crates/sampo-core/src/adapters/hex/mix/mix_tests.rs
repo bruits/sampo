@@ -305,3 +305,72 @@ fn regenerate_lockfile_requires_manifest() {
     let err = regenerate_lockfile(temp.path()).expect_err("expected missing manifest to fail");
     assert!(format!("{}", err).contains("mix.exs"));
 }
+
+#[test]
+fn discover_package_with_module_attribute_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("mix.exs"),
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  @version "1.2.3"
+
+  def project do
+    [
+      app: :example,
+      version: @version,
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    assert_eq!(packages.len(), 1);
+    let pkg = &packages[0];
+    assert_eq!(pkg.name, "example");
+    assert_eq!(pkg.version, "1.2.3");
+}
+
+#[test]
+fn update_manifest_versions_with_module_attribute_version() {
+    let manifest = r#"
+defmodule Foo.MixProject do
+  use Mix.Project
+
+  @version "0.1.0"
+
+  def project do
+    [
+      app: :foo,
+      version: @version,
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    [
+      {:bar, "~> 0.2.0"}
+    ]
+  end
+end
+"#;
+
+    let mut versions = BTreeMap::new();
+    versions.insert("bar".to_string(), "0.3.0".to_string());
+
+    let (updated, applied) =
+        update_manifest_versions(Path::new("mix.exs"), manifest, Some("0.2.0"), &versions).unwrap();
+
+    assert!(updated.contains(r#"@version "0.2.0""#));
+    assert!(updated.contains(r#"{:bar, "~> 0.3.0"}"#));
+    assert_eq!(applied, vec![("bar".to_string(), "0.3.0".to_string())]);
+}
