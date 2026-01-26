@@ -34,6 +34,22 @@ Principles for how automated agents and contributors generate code and docs here
 - Match the current project structure, naming, and style; do not create parallel patterns.
 - Explicit `use` imports for standard library types.
 
+## Changesets
+
+Changesets describe user-facing changes for the changelog. Follow this structure:
+
+1. **Verb first:** Start with `Added`, `Removed`, `Fixed`, `Changed`, `Deprecated`, or `Improved`.
+2. **Ecosystem prefix:** For ecosystem-specific changes, prefix with `In <Language> (<registry>) projects, ...` (e.g., `In Python (PyPI) projects, fixed...`).
+3. **Breaking changes:** Prefix with `**⚠️ breaking change:**` when applicable.
+4. **Usage example:** Include a minimal example if it clarifies the change.
+
+Keep changesets concise (1-2 sentences), actionable (what changed, not why), user-focused, and in English.
+
+Examples:
+- `Added \`--dry-run\` flag to preview publish without uploading.`
+- `In Elixir (Hex) projects, fixed version parsing for umbrella apps.`
+- `**⚠️ breaking change:** Removed deprecated \`legacy_mode\` option.`
+
 ## Changes & Dependencies
 
 - Do not alter CI/CD configuration unless explicitly instructed.

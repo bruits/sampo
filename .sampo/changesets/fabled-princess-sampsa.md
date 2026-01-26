@@ -1,5 +1,7 @@
 ---
 cargo/sampo-core: minor
+cargo/sampo: minor
+cargo/sampo-github-action: minor
 ---
 
-In Elixir we now support `@version` definitions which are way more common that defining `version` inline inside the `project` function
+In Elixir (Hex) projects, added support for `@version` module attribute definitions in `mix.exs`.

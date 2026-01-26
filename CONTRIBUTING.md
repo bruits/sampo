@@ -35,6 +35,23 @@ We’re also committed to fostering a welcoming and respectful community. Any is
 - As PRs will be squashed when merged, ensure your commit message follows the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. If you're unsure, just write a brief summary of your changes in the PR description, and we can help craft a good commit message when merging.
 - **PRs don't need to be perfect.** Submit your best effort, and we will gladly assist in polishing the work.
 
+## Writing Changesets
+
+Sampo helps users write better changelogs, let's lead by example with our own.
+
+**Structure:**
+1. **Verb first:** `Added`, `Removed`, `Fixed`, `Changed`, `Deprecated`, or `Improved`.
+2. **Ecosystem prefix (if applicable):** `In Python (PyPI) projects, ...` or `In Elixir (Hex) projects, ...`
+3. **Breaking changes:** Prefix with `**⚠️ breaking change:**`
+4. **Usage example (optional):** A minimal snippet if it clarifies the change.
+
+**Examples:**
+- `Added \`--dry-run\` flag to preview publish without uploading.`
+- `In Elixir (Hex) projects, fixed version parsing for umbrella apps.`
+- `**⚠️ breaking change:** Removed deprecated \`legacy_mode\` option.`
+
+**Keep changesets:** concise (1-2 sentences), specific (mention the command/option/API), actionable (what changed, not why), user-facing (written for changelog readers), and in English.
+
 ## Getting started
 
 Sampo is a fairly standard Rust project with a typical directory structure. It does not rely on any third-party build systems, complex configurations or dependencies in other languages. The only prerequisite is to have the latest stable version of [Rust](https://www.rust-lang.org/) installed.

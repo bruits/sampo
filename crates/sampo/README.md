@@ -223,42 +223,11 @@ For detailed command options, use `sampo help <command>` or `sampo <command> --h
 
 Sampo uses standard exit codes to indicate command outcomes, making it easy to integrate with CI/CD pipelines and shell scripts:
 
-| Exit Code | Meaning |
-| --------- | ------- |
-| `0` | Success — changes were made (or would be made with `--dry-run`) |
-| `1` | Error — command failed |
-| `2` | No changes — command succeeded but no action was needed |
-
-Commands that support exit code `2`:
-- `sampo release` — no pending changesets to process
-- `sampo publish` — no packages to publish (already published or no new versions)
-- `sampo pre` — packages already in the target pre-release state
-- `sampo update` — CLI is already at the latest version
-
-This allows you to detect whether changes occurred:
-
-```bash
-sampo release --dry-run
-case $? in
-  0) echo "Pending changesets found" ;;
-  2) echo "No changesets to process" ;;
-  *) echo "Error occurred"; exit 1 ;;
-esac
-```
-
-Or use it directly in conditionals:
-
-```bash
-if sampo release --dry-run; then
-  echo "Changes would be made, proceeding..."
-  sampo release
-elif [ $? -eq 2 ]; then
-  echo "Nothing to release"
-else
-  echo "Release failed"
-  exit 1
-fi
-```
+| Exit Code | Meaning                                                         |
+| --------- | --------------------------------------------------------------- |
+| `0`       | Success — changes were made (or would be made with `--dry-run`) |
+| `1`       | Error — command failed                                          |
+| `2`       | No changes — command succeeded but no action was needed         |
 
 ## Alternatives
 

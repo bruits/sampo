@@ -1,5 +1,7 @@
 ---
 cargo/sampo-core: minor
+cargo/sampo: minor
+cargo/sampo-github-action: minor
 ---
 
-Add packagist support to sampo allowing PHP libraries to be managed via sampo. It currently only support composer.toml for publishing. This is different to other supported packages because PHP doesn't work by publishing versions to a central repository but rather by tagging resources in Github.
+**PHP packages are now supported!** Sampo now automatically detects PHP packages managed by `composer.json` (for Packagist), and handles versioning and changelogs. Publishing works via Git tags rather than registry upload.
