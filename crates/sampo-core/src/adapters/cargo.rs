@@ -900,6 +900,32 @@ fn is_cargo_internal_dep(
     false
 }
 
+fn resolve_package_version(
+    pkg: &toml::map::Map<String, toml::Value>,
+    workspace_version: &Option<String>,
+    manifest_path: &Path,
+) -> std::result::Result<String, WorkspaceError> {
+    match pkg.get("version") {
+        Some(toml::Value::String(v)) => Ok(v.clone()),
+        Some(toml::Value::Table(t)) => {
+            if t.get("workspace")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                workspace_version.clone().ok_or_else(|| {
+                    WorkspaceError::InvalidManifest(format!(
+                        "{}: version.workspace = true requires workspace.package.version",
+                        manifest_path.display()
+                    ))
+                })
+            } else {
+                Ok(String::new())
+            }
+        }
+        _ => Ok(String::new()),
+    }
+}
+
 fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
     let cargo_toml_path = root.join(CARGO_MANIFEST);
     if !cargo_toml_path.exists() {
@@ -914,6 +940,13 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
     let root_toml: toml::Value = text.parse().map_err(|e| {
         WorkspaceError::InvalidManifest(format!("{}: {}", cargo_toml_path.display(), e))
     })?;
+
+    let workspace_version = root_toml
+        .get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     let member_dirs = if root_toml.get("workspace").is_some() {
         parse_cargo_workspace_members(root, &root_toml)?
@@ -951,11 +984,7 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
                 ))
             })?
             .to_string();
-        let version = pkg
-            .get("version")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let version = resolve_package_version(pkg, &workspace_version, &manifest_path)?;
         name_to_path.insert(name.clone(), member_dir.clone());
         crates.push((name, version, member_dir.clone(), value));
     }
