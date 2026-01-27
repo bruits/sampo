@@ -50,6 +50,11 @@ pub enum WorkspaceError {
     NotInitialized,
     #[error("No supported workspace manifest found in current directory")]
     NotFound,
+    #[error("Expected manifest '{manifest}' not found in {path}")]
+    ManifestNotFound {
+        manifest: &'static str,
+        path: std::path::PathBuf,
+    },
     #[error("No packages found. Check that `.sampo/` is at the workspace root.")]
     NoPackagesFound,
     #[error("Invalid manifest: {0}")]

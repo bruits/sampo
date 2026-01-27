@@ -898,10 +898,15 @@ fn is_cargo_internal_dep(
     false
 }
 
+const CARGO_MANIFEST: &str = "Cargo.toml";
+
 fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
-    let cargo_toml_path = root.join("Cargo.toml");
+    let cargo_toml_path = root.join(CARGO_MANIFEST);
     if !cargo_toml_path.exists() {
-        return Err(WorkspaceError::NotFound);
+        return Err(WorkspaceError::ManifestNotFound {
+            manifest: CARGO_MANIFEST,
+            path: root.to_path_buf(),
+        });
     }
 
     let text = fs::read_to_string(&cargo_toml_path)
