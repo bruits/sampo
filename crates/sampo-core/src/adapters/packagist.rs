@@ -375,7 +375,7 @@ pub fn update_manifest_versions(
             ))
         })?;
         if current != target_version {
-            let (start, end) = raw_span(version_raw, input);
+            let (start, end) = raw_span(version_raw, input)?;
             replacements.push(Replacement {
                 start,
                 end,
@@ -410,7 +410,7 @@ pub fn update_manifest_versions(
             if let Some(new_spec) = compute_dependency_constraint(&current_spec, new_version)
                 && new_spec != current_spec
             {
-                let (start, end) = raw_span(raw, input);
+                let (start, end) = raw_span(raw, input)?;
                 replacements.push(Replacement {
                     start,
                     end,
@@ -438,20 +438,23 @@ pub fn update_manifest_versions(
     Ok((output, applied))
 }
 
-fn raw_span(raw: &RawValue, source: &str) -> (usize, usize) {
+/// Compute the byte span of a `RawValue` within the original JSON source.
+fn raw_span(raw: &RawValue, source: &str) -> Result<(usize, usize)> {
     let slice = raw.get();
     let start = unsafe { slice.as_ptr().offset_from(source.as_ptr()) };
-    assert!(
-        start >= 0,
-        "raw JSON segment is not derived from the provided source"
-    );
+    if start < 0 {
+        return Err(SampoError::Release(
+            "internal error: RawValue is not derived from the provided JSON source".into(),
+        ));
+    }
     let start = start as usize;
-    assert!(
-        start + slice.len() <= source.len(),
-        "raw JSON segment exceeds source bounds"
-    );
+    if start + slice.len() > source.len() {
+        return Err(SampoError::Release(
+            "internal error: RawValue span exceeds JSON source bounds".into(),
+        ));
+    }
     let end = start + slice.len();
-    (start, end)
+    Ok((start, end))
 }
 
 /// Compute a new Composer version constraint based on the old constraint and new version.
