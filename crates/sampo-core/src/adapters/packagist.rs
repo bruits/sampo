@@ -222,11 +222,6 @@ impl PackagistAdapter {
         cmd.current_dir(manifest_dir);
         cmd.arg("validate");
 
-        // Add --strict for more thorough validation
-        if !has_flag(extra_args, "--strict") && !has_flag(extra_args, "--no-check-all") {
-            cmd.arg("--strict");
-        }
-
         if !extra_args.is_empty() {
             cmd.args(extra_args);
         }
@@ -577,16 +572,6 @@ fn discover_packagist(root: &Path) -> std::result::Result<Vec<PackageInfo>, Work
     Ok(packages)
 }
 
-fn has_flag(args: &[String], flag: &str) -> bool {
-    let prefix = format!("{flag}=");
-    for arg in args {
-        if arg == flag || arg.starts_with(&prefix) {
-            return true;
-        }
-    }
-    false
-}
-
 fn format_command_display(cmd: &Command) -> String {
     let mut text = cmd.get_program().to_string_lossy().into_owned();
     for arg in cmd.get_args() {
@@ -914,20 +899,5 @@ mod tests {
 
         let result = PackagistAdapter.is_publishable(&path).unwrap();
         assert!(!result);
-    }
-
-    #[test]
-    fn has_flag_detects_simple_flag() {
-        let args = vec!["--strict".to_string(), "--verbose".to_string()];
-        assert!(has_flag(&args, "--strict"));
-        assert!(has_flag(&args, "--verbose"));
-        assert!(!has_flag(&args, "--quiet"));
-    }
-
-    #[test]
-    fn has_flag_detects_value_flag() {
-        let args = vec!["--format=json".to_string()];
-        assert!(has_flag(&args, "--format"));
-        assert!(!has_flag(&args, "--output"));
     }
 }
