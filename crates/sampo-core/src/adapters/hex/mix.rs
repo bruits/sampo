@@ -16,11 +16,10 @@ pub(super) fn can_discover(root: &Path) -> bool {
 pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
     let manifest_path = root.join(MIX_MANIFEST);
     if !manifest_path.exists() {
-        return Err(WorkspaceError::InvalidWorkspace(format!(
-            "Expected {} in {}",
-            MIX_MANIFEST,
-            root.display()
-        )));
+        return Err(WorkspaceError::ManifestNotFound {
+            manifest: MIX_MANIFEST,
+            path: root.to_path_buf(),
+        });
     }
 
     let manifest_text = fs::read_to_string(&manifest_path)
@@ -404,9 +403,10 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
                 if let Some(literal) = parse_string_literal_node(source, value_node) {
                     metadata.version = Some(literal.value);
                 } else if is_module_attribute_reference(source_bytes, value_node, "version")
-                    && let Some(literal) = find_module_attribute_value(&tree, source, "version") {
-                        metadata.version = Some(literal.value);
-                    }
+                    && let Some(literal) = find_module_attribute_value(&tree, source, "version")
+                {
+                    metadata.version = Some(literal.value);
+                }
             }
             "apps_path" => {
                 if let Some(literal) = parse_string_literal_node(source, value_node) {
@@ -437,9 +437,10 @@ fn is_module_attribute_reference(source_bytes: &[u8], node: Node<'_>, attr_name:
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "identifier"
-            && let Ok(text) = child.utf8_text(source_bytes) {
-                return text == attr_name;
-            }
+            && let Ok(text) = child.utf8_text(source_bytes)
+        {
+            return text == attr_name;
+        }
     }
     false
 }
@@ -460,20 +461,19 @@ fn find_module_attribute_value(tree: &Tree, source: &str, attr_name: &str) -> Op
                     // Check if the call target matches the attribute name
                     if let Some(target) = first_named_child_any(child)
                         && target.kind() == "identifier"
-                            && let Ok(name) = target.utf8_text(source_bytes)
-                                && name == attr_name {
-                                    // Look for string in the call's arguments
-                                    if let Some(args) = first_named_child(child, "arguments") {
-                                        let mut args_cursor = args.walk();
-                                        for arg in args.named_children(&mut args_cursor) {
-                                            if let Some(literal) =
-                                                parse_string_literal_node(source, arg)
-                                            {
-                                                return Some(literal);
-                                            }
-                                        }
-                                    }
+                        && let Ok(name) = target.utf8_text(source_bytes)
+                        && name == attr_name
+                    {
+                        // Look for string in the call's arguments
+                        if let Some(args) = first_named_child(child, "arguments") {
+                            let mut args_cursor = args.walk();
+                            for arg in args.named_children(&mut args_cursor) {
+                                if let Some(literal) = parse_string_literal_node(source, arg) {
+                                    return Some(literal);
                                 }
+                            }
+                        }
+                    }
                 }
             }
         }

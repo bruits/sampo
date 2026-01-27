@@ -75,9 +75,10 @@ impl PackagistAdapter {
 
         // Check if package is abandoned
         if let Some(abandoned) = manifest.get("abandoned")
-            && (abandoned.as_bool() == Some(true) || abandoned.is_string()) {
-                return Ok(false);
-            }
+            && (abandoned.as_bool() == Some(true) || abandoned.is_string())
+        {
+            return Ok(false);
+        }
 
         Ok(true)
     }
@@ -365,22 +366,23 @@ pub fn update_manifest_versions(
 
     // Update package version
     if let Some(target_version) = new_pkg_version
-        && let Some(version_raw) = borrowed.version {
-            let current: String = serde_json::from_str(version_raw.get()).map_err(|err| {
-                SampoError::Release(format!(
-                    "Version field in {} is not a string: {err}",
-                    manifest_path.display()
-                ))
-            })?;
-            if current != target_version {
-                let (start, end) = raw_span(version_raw, input);
-                replacements.push(Replacement {
-                    start,
-                    end,
-                    replacement: format!("\"{target_version}\""),
-                });
-            }
+        && let Some(version_raw) = borrowed.version
+    {
+        let current: String = serde_json::from_str(version_raw.get()).map_err(|err| {
+            SampoError::Release(format!(
+                "Version field in {} is not a string: {err}",
+                manifest_path.display()
+            ))
+        })?;
+        if current != target_version {
+            let (start, end) = raw_span(version_raw, input);
+            replacements.push(Replacement {
+                start,
+                end,
+                replacement: format!("\"{target_version}\""),
+            });
         }
+    }
 
     // Update dependencies in require and require-dev sections
     let sections: [(&str, Option<&std::collections::HashMap<String, &RawValue>>); 2] = [
@@ -507,11 +509,10 @@ fn compute_dependency_constraint(old_spec: &str, new_version: &str) -> Option<St
 fn discover_packagist(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
     let manifest_path = root.join(COMPOSER_MANIFEST);
     if !manifest_path.exists() {
-        return Err(WorkspaceError::InvalidWorkspace(format!(
-            "Expected {} in {}",
-            COMPOSER_MANIFEST,
-            root.display()
-        )));
+        return Err(WorkspaceError::ManifestNotFound {
+            manifest: COMPOSER_MANIFEST,
+            path: root.to_path_buf(),
+        });
     }
 
     let text = fs::read_to_string(&manifest_path)

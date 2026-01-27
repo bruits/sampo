@@ -54,11 +54,10 @@ pub(super) fn can_discover(root: &Path) -> bool {
 pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
     let manifest_path = root.join(PYPROJECT_MANIFEST);
     if !manifest_path.exists() {
-        return Err(WorkspaceError::InvalidWorkspace(format!(
-            "Expected {} in {}",
-            PYPROJECT_MANIFEST,
-            root.display()
-        )));
+        return Err(WorkspaceError::ManifestNotFound {
+            manifest: PYPROJECT_MANIFEST,
+            path: root.to_path_buf(),
+        });
     }
 
     let manifest_text = fs::read_to_string(&manifest_path)
