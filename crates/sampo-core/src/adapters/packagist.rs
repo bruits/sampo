@@ -73,6 +73,18 @@ impl PackagistAdapter {
             )));
         }
 
+        // Require version field for publishing (Composer allows omitting it, but Sampo needs
+        // a version to create tags and track releases)
+        let version = manifest
+            .get("version")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if version.is_none() {
+            return Ok(false);
+        }
+
         // Check if package is abandoned
         if let Some(abandoned) = manifest.get("abandoned")
             && (abandoned.as_bool() == Some(true) || abandoned.is_string())
@@ -875,6 +887,33 @@ mod tests {
         let result = PackagistAdapter.is_publishable(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("vendor/package"));
+    }
+
+    #[test]
+    fn is_publishable_missing_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = r#"{
+    "name": "vendor/package"
+}"#;
+        let path = temp.path().join("composer.json");
+        std::fs::write(&path, manifest).unwrap();
+
+        let result = PackagistAdapter.is_publishable(&path).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn is_publishable_empty_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = r#"{
+    "name": "vendor/package",
+    "version": ""
+}"#;
+        let path = temp.path().join("composer.json");
+        std::fs::write(&path, manifest).unwrap();
+
+        let result = PackagistAdapter.is_publishable(&path).unwrap();
+        assert!(!result);
     }
 
     #[test]
