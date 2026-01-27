@@ -15,6 +15,7 @@ Principles for how automated agents and contributors generate code and docs here
 - Keep tests deterministic and independent of global state.
 
 ## Errors
+
 - Common errors live in `sampo-core`'s `errors.rs`, while crate-specific errors live in their respective crates' `error.rs`.
 - Use typed error enums with `thiserror` for a stable, explicit API.
 - Keep error messages concise and in English; add context at the boundary (CLI/action) rather than deep in core.
