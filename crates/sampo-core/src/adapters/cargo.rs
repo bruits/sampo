@@ -11,6 +11,8 @@ use std::process::Command;
 use std::time::Duration;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
+const CARGO_MANIFEST: &str = "Cargo.toml";
+
 /// Stateless adapter for all Cargo operations (discovery, publish, registry, lockfile).
 pub(super) struct CargoAdapter;
 
@@ -897,8 +899,6 @@ fn is_cargo_internal_dep(
     }
     false
 }
-
-const CARGO_MANIFEST: &str = "Cargo.toml";
 
 fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
     let cargo_toml_path = root.join(CARGO_MANIFEST);
