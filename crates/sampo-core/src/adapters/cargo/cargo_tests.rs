@@ -236,3 +236,81 @@ fn converts_simple_dep_without_quotes() {
     assert!(applied.contains(&("bar".to_string(), "0.2.0".to_string())));
     assert!(out.contains("bar = \"0.2.0\""));
 }
+
+#[test]
+fn cargo_discoverer_handles_workspace_version_inheritance() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    // Create workspace with workspace.package.version
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.3.0"
+"#,
+    )
+    .unwrap();
+
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+
+    // pkg-a uses workspace version inheritance
+    fs::write(
+        crates_dir.join("pkg-a/Cargo.toml"),
+        r#"[package]
+name = "pkg-a"
+version.workspace = true
+"#,
+    )
+    .unwrap();
+
+    // pkg-b uses explicit version
+    fs::write(
+        crates_dir.join("pkg-b/Cargo.toml"),
+        r#"[package]
+name = "pkg-b"
+version = "0.2.0"
+"#,
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    assert_eq!(packages.len(), 2);
+
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+    let pkg_b = packages.iter().find(|p| p.name == "pkg-b").unwrap();
+
+    // pkg-a should inherit version from workspace.package.version
+    assert_eq!(pkg_a.version, "0.3.0");
+    // pkg-b should use its explicit version
+    assert_eq!(pkg_b.version, "0.2.0");
+}
+
+#[test]
+fn cargo_discoverer_rejects_workspace_inheritance_without_workspace_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"pkg-a\"]\n",
+    )
+    .unwrap();
+
+    fs::create_dir_all(root.join("pkg-a")).unwrap();
+    fs::write(
+        root.join("pkg-a/Cargo.toml"),
+        "[package]\nname = \"pkg-a\"\nversion.workspace = true\n",
+    )
+    .unwrap();
+
+    let result = discover_cargo(root);
+    assert!(result.is_err());
+
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("version.workspace = true requires workspace.package.version"));
+}
