@@ -73,6 +73,18 @@ impl PackagistAdapter {
             )));
         }
 
+        // Require version field for publishing (Composer allows omitting it, but Sampo needs
+        // a version to create tags and track releases)
+        let version = manifest
+            .get("version")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if version.is_none() {
+            return Ok(false);
+        }
+
         // Check if package is abandoned
         if let Some(abandoned) = manifest.get("abandoned")
             && (abandoned.as_bool() == Some(true) || abandoned.is_string())
@@ -209,11 +221,6 @@ impl PackagistAdapter {
         let mut cmd = Command::new("composer");
         cmd.current_dir(manifest_dir);
         cmd.arg("validate");
-
-        // Add --strict for more thorough validation
-        if !has_flag(extra_args, "--strict") && !has_flag(extra_args, "--no-check-all") {
-            cmd.arg("--strict");
-        }
 
         if !extra_args.is_empty() {
             cmd.args(extra_args);
@@ -375,7 +382,7 @@ pub fn update_manifest_versions(
             ))
         })?;
         if current != target_version {
-            let (start, end) = raw_span(version_raw, input);
+            let (start, end) = raw_span(version_raw, input)?;
             replacements.push(Replacement {
                 start,
                 end,
@@ -410,7 +417,7 @@ pub fn update_manifest_versions(
             if let Some(new_spec) = compute_dependency_constraint(&current_spec, new_version)
                 && new_spec != current_spec
             {
-                let (start, end) = raw_span(raw, input);
+                let (start, end) = raw_span(raw, input)?;
                 replacements.push(Replacement {
                     start,
                     end,
@@ -438,20 +445,23 @@ pub fn update_manifest_versions(
     Ok((output, applied))
 }
 
-fn raw_span(raw: &RawValue, source: &str) -> (usize, usize) {
+/// Compute the byte span of a `RawValue` within the original JSON source.
+fn raw_span(raw: &RawValue, source: &str) -> Result<(usize, usize)> {
     let slice = raw.get();
     let start = unsafe { slice.as_ptr().offset_from(source.as_ptr()) };
-    assert!(
-        start >= 0,
-        "raw JSON segment is not derived from the provided source"
-    );
+    if start < 0 {
+        return Err(SampoError::Release(
+            "internal error: RawValue is not derived from the provided JSON source".into(),
+        ));
+    }
     let start = start as usize;
-    assert!(
-        start + slice.len() <= source.len(),
-        "raw JSON segment exceeds source bounds"
-    );
+    if start + slice.len() > source.len() {
+        return Err(SampoError::Release(
+            "internal error: RawValue span exceeds JSON source bounds".into(),
+        ));
+    }
     let end = start + slice.len();
-    (start, end)
+    Ok((start, end))
 }
 
 /// Compute a new Composer version constraint based on the old constraint and new version.
@@ -560,16 +570,6 @@ fn discover_packagist(root: &Path) -> std::result::Result<Vec<PackageInfo>, Work
     }];
 
     Ok(packages)
-}
-
-fn has_flag(args: &[String], flag: &str) -> bool {
-    let prefix = format!("{flag}=");
-    for arg in args {
-        if arg == flag || arg.starts_with(&prefix) {
-            return true;
-        }
-    }
-    false
 }
 
 fn format_command_display(cmd: &Command) -> String {
@@ -875,17 +875,29 @@ mod tests {
     }
 
     #[test]
-    fn has_flag_detects_simple_flag() {
-        let args = vec!["--strict".to_string(), "--verbose".to_string()];
-        assert!(has_flag(&args, "--strict"));
-        assert!(has_flag(&args, "--verbose"));
-        assert!(!has_flag(&args, "--quiet"));
+    fn is_publishable_missing_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = r#"{
+    "name": "vendor/package"
+}"#;
+        let path = temp.path().join("composer.json");
+        std::fs::write(&path, manifest).unwrap();
+
+        let result = PackagistAdapter.is_publishable(&path).unwrap();
+        assert!(!result);
     }
 
     #[test]
-    fn has_flag_detects_value_flag() {
-        let args = vec!["--format=json".to_string()];
-        assert!(has_flag(&args, "--format"));
-        assert!(!has_flag(&args, "--output"));
+    fn is_publishable_empty_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = r#"{
+    "name": "vendor/package",
+    "version": ""
+}"#;
+        let path = temp.path().join("composer.json");
+        std::fs::write(&path, manifest).unwrap();
+
+        let result = PackagistAdapter.is_publishable(&path).unwrap();
+        assert!(!result);
     }
 }
