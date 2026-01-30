@@ -1,5 +1,6 @@
 use crate::errors::SampoError;
 use rustc_hash::FxHashSet;
+use semver::Version;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -364,35 +365,30 @@ impl Config {
 
     /// Parses a tag and returns (package_name, version).
     pub fn parse_tag(&self, tag: &str) -> Option<(String, String)> {
-        // Try short tag format first (v1.2.3)
-        if let Some(ref short_pkg) = self.git_short_tags {
-            if tag.starts_with('v') && !tag.contains('-') {
-                let version = tag.trim_start_matches('v');
-                if !version.is_empty() {
-                    return Some((short_pkg.clone(), version.to_string()));
-                }
-            }
-            // Also match if it looks like vX.Y.Z-prerelease (short tag with prerelease)
-            if tag.starts_with('v') {
-                let rest = tag.trim_start_matches('v');
-                // Check if this is a version string (starts with digit)
-                if rest.starts_with(|c: char| c.is_ascii_digit()) {
-                    // Verify there's no -v pattern which would indicate standard format
-                    if !rest.contains("-v") {
-                        return Some((short_pkg.clone(), rest.to_string()));
-                    }
-                }
+        if let Some(short_pkg) = self
+            .git_short_tags
+            .as_ref()
+            .filter(|_| tag.starts_with('v'))
+        {
+            let version_str = tag.trim_start_matches('v');
+            if Version::parse(version_str).is_ok() {
+                return Some((short_pkg.clone(), version_str.to_string()));
             }
         }
 
-        // Standard format: {name}-v{version}
-        let idx = tag.rfind("-v")?;
-        let (name, ver) = tag.split_at(idx);
-        let version = ver.trim_start_matches("-v").to_string();
-        if name.is_empty() || version.is_empty() {
-            return None;
+        // Iterate over all "-v" positions to handle prereleases containing "-v" (e.g., "pkg-v1.2.3-v1").
+        for (idx, _) in tag.match_indices("-v") {
+            let name = &tag[..idx];
+            let version = &tag[idx + 2..];
+            if name.is_empty() || version.is_empty() {
+                continue;
+            }
+            if Version::parse(version).is_ok() {
+                return Some((name.to_string(), version.to_string()));
+            }
         }
-        Some((name.to_string(), version))
+
+        None
     }
 }
 
@@ -787,12 +783,10 @@ mod tests {
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
-        // Short format
         assert_eq!(
             config.parse_tag("v1.2.3"),
             Some(("my-package".to_string(), "1.2.3".to_string()))
         );
-        // Short format with prerelease
         assert_eq!(
             config.parse_tag("v1.2.3-alpha.1"),
             Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
@@ -805,15 +799,81 @@ mod tests {
     }
 
     #[test]
+    fn parse_tag_short_format_with_v_in_prerelease() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\nshort_tags = \"my-package\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+
+        // Prerelease containing -v (the bug case)
+        assert_eq!(
+            config.parse_tag("v1.2.3-v1"),
+            Some(("my-package".to_string(), "1.2.3-v1".to_string()))
+        );
+        assert_eq!(
+            config.parse_tag("v1.0.0-preview1"),
+            Some(("my-package".to_string(), "1.0.0-preview1".to_string()))
+        );
+        assert_eq!(
+            config.parse_tag("v2.0.0-v2-beta"),
+            Some(("my-package".to_string(), "2.0.0-v2-beta".to_string()))
+        );
+        assert_eq!(
+            config.parse_tag("v1.2.3+build.123"),
+            Some(("my-package".to_string(), "1.2.3+build.123".to_string()))
+        );
+        assert_eq!(
+            config.parse_tag("v1.2.3-alpha.1+build.456"),
+            Some((
+                "my-package".to_string(),
+                "1.2.3-alpha.1+build.456".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_tag_rejects_invalid_short_tags() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\nshort_tags = \"my-package\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+
+        assert_eq!(config.parse_tag("v1.2"), None);
+        assert_eq!(config.parse_tag("vfoo"), None);
+        assert_eq!(config.parse_tag("v01.2.3"), None);
+        assert_eq!(config.parse_tag("v"), None);
+    }
+
+    #[test]
     fn parse_tag_without_short_tags_config() {
         let temp = tempfile::tempdir().unwrap();
         let config = Config::load(temp.path()).unwrap();
-        // Without short_tags configured, short format returns None
+
         assert_eq!(config.parse_tag("v1.2.3"), None);
-        // Standard format works
         assert_eq!(
             config.parse_tag("my-package-v1.2.3"),
             Some(("my-package".to_string(), "1.2.3".to_string()))
         );
+        assert_eq!(
+            config.parse_tag("my-package-v1.2.3-alpha.1"),
+            Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
+        );
+        // -v in prerelease requires semver validation to parse correctly
+        assert_eq!(
+            config.parse_tag("my-package-v1.2.3-v1"),
+            Some(("my-package".to_string(), "1.2.3-v1".to_string()))
+        );
+        assert_eq!(config.parse_tag("my-package-vfoo"), None);
+        assert_eq!(config.parse_tag("my-package-v1.2"), None);
     }
 }
