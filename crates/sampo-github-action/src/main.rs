@@ -766,13 +766,20 @@ fn create_github_release_for_tag(
     workspace: &Path,
     github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
+    // Load config for short tag support
+    let config = SampoConfig::load(workspace).ok();
+
     let body = match build_release_body_from_changelog(workspace, tag) {
         Some(body) => body,
         None => format!("Automated release for tag {}", tag),
     };
 
     // Create the release and get upload URL (or find the existing release)
-    let upload_url = match github_client.create_release(tag, &body, tag_is_prerelease(tag)) {
+    let upload_url = match github_client.create_release(
+        tag,
+        &body,
+        tag_is_prerelease_with_config(tag, config.as_ref()),
+    ) {
         Ok(url) => url,
         Err(e) => {
             eprintln!(
@@ -821,7 +828,7 @@ fn create_github_release_for_tag(
     }
 
     // Optionally open a Discussion for this release (based on filter)
-    if let Some((package_name, _version)) = parse_tag(tag)
+    if let Some((package_name, _version)) = parse_tag_with_config(tag, config.as_ref())
         && github_options
             .open_discussion
             .should_open_for(&package_name)
@@ -839,7 +846,9 @@ fn create_github_release_for_tag(
 
 /// Build a release body by extracting the matching section from the crate's CHANGELOG.md
 fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<String> {
-    let (crate_name, version) = parse_tag(tag)?;
+    // Load config to handle short tags
+    let config = SampoConfig::load(workspace).ok();
+    let (crate_name, version) = parse_tag_with_config(tag, config.as_ref())?;
 
     // Find crate directory by name using the workspace API
     let ws = discover_workspace(workspace).ok()?;
@@ -855,7 +864,17 @@ fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<Stri
     extract_changelog_section(&changelog, &version)
 }
 
-/// Parse tags in the format "<crate>-v<version>"
+/// Parse tag using config for short tag support, falling back to standard format.
+fn parse_tag_with_config(tag: &str, config: Option<&SampoConfig>) -> Option<(String, String)> {
+    if let Some(cfg) = config {
+        cfg.parse_tag(tag)
+    } else {
+        // Fallback to standard format only when no config is available
+        parse_tag(tag)
+    }
+}
+
+/// Parse tags in standard format `<crate>-v<version>`.
 fn parse_tag(tag: &str) -> Option<(String, String)> {
     let idx = tag.rfind("-v")?;
     let (name, ver) = tag.split_at(idx);
@@ -866,11 +885,25 @@ fn parse_tag(tag: &str) -> Option<(String, String)> {
     Some((name.to_string(), version))
 }
 
-fn tag_is_prerelease(tag: &str) -> bool {
-    parse_tag(tag)
+fn tag_is_prerelease_with_config(tag: &str, config: Option<&SampoConfig>) -> bool {
+    parse_tag_with_config(tag, config)
         .and_then(|(_name, version)| Version::parse(&version).ok())
         .map(|parsed| !parsed.pre.is_empty())
-        .unwrap_or(false)
+        .unwrap_or_else(|| {
+            // Fallback: try to parse version directly from short tag format
+            if tag.starts_with('v') {
+                Version::parse(tag.trim_start_matches('v'))
+                    .map(|v| !v.pre.is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
+}
+
+#[cfg(test)]
+fn tag_is_prerelease(tag: &str) -> bool {
+    tag_is_prerelease_with_config(tag, None)
 }
 
 /// Extract the section that follows the first `##` heading until the next `##` or EOF.
@@ -939,7 +972,9 @@ fn resolve_release_assets(
         return Ok(Vec::new());
     }
 
-    let parsed_tag = parse_tag(tag);
+    // Load config for short tag support
+    let config = SampoConfig::load(workspace).ok();
+    let parsed_tag = parse_tag_with_config(tag, config.as_ref());
     let crate_name = parsed_tag.as_ref().map(|(name, _)| name.as_str());
     let version = parsed_tag.as_ref().map(|(_, ver)| ver.as_str());
 
