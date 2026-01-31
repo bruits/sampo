@@ -21,6 +21,10 @@ const PACKAGIST_RATE_LIMIT: Duration = Duration::from_millis(200);
 static PACKAGIST_LAST_CALL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
 /// Stateless adapter for Packagist/Composer packages.
+///
+/// Packagist auto-updates from VCS tags, but Composer only recognizes `vX.Y.Z` format.
+/// Use `git.short_tags` config for compatibility (see README). Monorepos with multiple
+/// Packagist packages are not supported due to this tag format constraint.
 pub(super) struct PackagistAdapter;
 
 impl PackagistAdapter {

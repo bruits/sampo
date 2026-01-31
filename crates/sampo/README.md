@@ -155,6 +155,11 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 > [!TIP]
 > At runtime you can override the detected branch with the `SAMPO_RELEASE_BRANCH` environment variable, which is useful for local testing or custom CI setups.
 
+`short_tags`: Optional package name that should use short tag format (`v{version}`) instead of the standard format (`{package}-v{version}`).
+
+> [!IMPORTANT]
+> For publishable PHP packages, this option is required as Packagist only detects short version tags. Sadly, the Packagist adapter does not support monorepos with multiple publishable PHP packages, as `vX.Y.Z` tags cannot distinguish between packages.
+
 ### `[github]` section
 
 `repository`: The GitHub repository slug in the format "owner/repo". If not set, Sampo uses the `GITHUB_REPOSITORY` environment variable or attempts to detect it from the `origin` git remote. This setting is used to enrich changelog messages with commit hash links and author acknowledgments, especially for first-time contributors.

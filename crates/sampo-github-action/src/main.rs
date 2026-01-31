@@ -766,13 +766,19 @@ fn create_github_release_for_tag(
     workspace: &Path,
     github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
+    let config = SampoConfig::load(workspace).ok();
+
     let body = match build_release_body_from_changelog(workspace, tag) {
         Some(body) => body,
         None => format!("Automated release for tag {}", tag),
     };
 
     // Create the release and get upload URL (or find the existing release)
-    let upload_url = match github_client.create_release(tag, &body, tag_is_prerelease(tag)) {
+    let upload_url = match github_client.create_release(
+        tag,
+        &body,
+        tag_is_prerelease_with_config(tag, config.as_ref()),
+    ) {
         Ok(url) => url,
         Err(e) => {
             eprintln!(
@@ -821,7 +827,7 @@ fn create_github_release_for_tag(
     }
 
     // Optionally open a Discussion for this release (based on filter)
-    if let Some((package_name, _version)) = parse_tag(tag)
+    if let Some((package_name, _version)) = parse_tag_with_config(tag, config.as_ref())
         && github_options
             .open_discussion
             .should_open_for(&package_name)
@@ -839,7 +845,8 @@ fn create_github_release_for_tag(
 
 /// Build a release body by extracting the matching section from the crate's CHANGELOG.md
 fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<String> {
-    let (crate_name, version) = parse_tag(tag)?;
+    let config = SampoConfig::load(workspace).ok();
+    let (crate_name, version) = parse_tag_with_config(tag, config.as_ref())?;
 
     // Find crate directory by name using the workspace API
     let ws = discover_workspace(workspace).ok()?;
@@ -855,7 +862,17 @@ fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<Stri
     extract_changelog_section(&changelog, &version)
 }
 
-/// Parse tags in the format "<crate>-v<version>"
+/// Parse tag using config for short tag support, falling back to standard format.
+fn parse_tag_with_config(tag: &str, config: Option<&SampoConfig>) -> Option<(String, String)> {
+    if let Some(cfg) = config {
+        cfg.parse_tag(tag)
+    } else {
+        // Fallback to standard format only when no config is available
+        parse_tag(tag)
+    }
+}
+
+/// Parse tags in standard format `<crate>-v<version>`.
 fn parse_tag(tag: &str) -> Option<(String, String)> {
     let idx = tag.rfind("-v")?;
     let (name, ver) = tag.split_at(idx);
@@ -866,11 +883,20 @@ fn parse_tag(tag: &str) -> Option<(String, String)> {
     Some((name.to_string(), version))
 }
 
-fn tag_is_prerelease(tag: &str) -> bool {
-    parse_tag(tag)
+fn tag_is_prerelease_with_config(tag: &str, config: Option<&SampoConfig>) -> bool {
+    parse_tag_with_config(tag, config)
         .and_then(|(_name, version)| Version::parse(&version).ok())
         .map(|parsed| !parsed.pre.is_empty())
-        .unwrap_or(false)
+        .unwrap_or_else(|| {
+            // Fallback: try to parse version directly from short tag format
+            if tag.starts_with('v') {
+                Version::parse(tag.trim_start_matches('v'))
+                    .map(|v| !v.pre.is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
 }
 
 /// Extract the section that follows the first `##` heading until the next `##` or EOF.
@@ -939,7 +965,8 @@ fn resolve_release_assets(
         return Ok(Vec::new());
     }
 
-    let parsed_tag = parse_tag(tag);
+    let config = SampoConfig::load(workspace).ok();
+    let parsed_tag = parse_tag_with_config(tag, config.as_ref());
     let crate_name = parsed_tag.as_ref().map(|(name, _)| name.as_str());
     let version = parsed_tag.as_ref().map(|(_, ver)| ver.as_str());
 
@@ -1057,6 +1084,10 @@ fn render_asset_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tag_is_prerelease(tag: &str) -> bool {
+        tag_is_prerelease_with_config(tag, None)
+    }
 
     #[test]
     fn default_branch_slugifies_path_segments() {
@@ -1266,6 +1297,148 @@ mod tests {
         );
         assert_eq!(parse_tag("nope"), None);
         assert_eq!(parse_tag("-v1.0.0"), None);
+    }
+
+    #[test]
+    fn parse_tag_with_config_handles_short_format() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\nshort_tags = \"my-package\"\n",
+        )
+        .unwrap();
+
+        let config = SampoConfig::load(temp.path()).unwrap();
+
+        assert_eq!(
+            parse_tag_with_config("v1.2.3", Some(&config)),
+            Some(("my-package".to_string(), "1.2.3".to_string()))
+        );
+
+        assert_eq!(
+            parse_tag_with_config("v1.2.3-alpha.1", Some(&config)),
+            Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
+        );
+
+        // Standard format still works for other packages
+        assert_eq!(
+            parse_tag_with_config("other-package-v2.0.0", Some(&config)),
+            Some(("other-package".to_string(), "2.0.0".to_string()))
+        );
+
+        assert_eq!(parse_tag_with_config("v1.2", Some(&config)), None);
+        assert_eq!(parse_tag_with_config("vfoo", Some(&config)), None);
+    }
+
+    #[test]
+    fn parse_tag_with_config_falls_back_without_config() {
+        assert_eq!(
+            parse_tag_with_config("my-crate-v1.2.3", None),
+            Some(("my-crate".to_string(), "1.2.3".to_string()))
+        );
+
+        assert_eq!(parse_tag_with_config("v1.2.3", None), None);
+    }
+
+    #[test]
+    fn tag_is_prerelease_with_config_detects_short_format_prereleases() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\nshort_tags = \"my-package\"\n",
+        )
+        .unwrap();
+
+        let config = SampoConfig::load(temp.path()).unwrap();
+
+        assert!(tag_is_prerelease_with_config(
+            "v1.0.0-alpha.1",
+            Some(&config)
+        ));
+        assert!(tag_is_prerelease_with_config("v2.0.0-beta", Some(&config)));
+        assert!(tag_is_prerelease_with_config("v1.0.0-rc.1", Some(&config)));
+
+        assert!(!tag_is_prerelease_with_config("v1.0.0", Some(&config)));
+        assert!(!tag_is_prerelease_with_config("v2.3.4", Some(&config)));
+
+        assert!(tag_is_prerelease_with_config(
+            "other-v1.0.0-alpha.1",
+            Some(&config)
+        ));
+        assert!(!tag_is_prerelease_with_config(
+            "other-v1.0.0",
+            Some(&config)
+        ));
+    }
+
+    #[test]
+    fn resolve_release_assets_with_short_tags() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path();
+
+        fs::create_dir_all(workspace.join(".sampo")).unwrap();
+        fs::write(
+            workspace.join(".sampo/config.toml"),
+            "[git]\nshort_tags = \"my-package\"\n",
+        )
+        .unwrap();
+
+        let dist_dir = workspace.join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+        let artifact_path = dist_dir.join("my-package-1.0.0-x86_64.tar.gz");
+        fs::write(&artifact_path, b"dummy").unwrap();
+
+        let specs = vec![AssetSpec {
+            pattern: "dist/{{crate}}-{{version}}-*.tar.gz".to_string(),
+            rename: Some("{{crate}}-{{version}}-release.tar.gz".to_string()),
+        }];
+
+        // Short tag format: v1.0.0 -> crate=my-package, version=1.0.0
+        let assets = resolve_release_assets(workspace, "v1.0.0", &specs)
+            .expect("asset resolution should succeed with short tags");
+
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].asset_name, "my-package-1.0.0-release.tar.gz");
+        assert_eq!(assets[0].path, artifact_path);
+    }
+
+    #[test]
+    fn resolve_release_assets_short_tags_with_prerelease() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path();
+
+        fs::create_dir_all(workspace.join(".sampo")).unwrap();
+        fs::write(
+            workspace.join(".sampo/config.toml"),
+            "[git]\nshort_tags = \"my-package\"\n",
+        )
+        .unwrap();
+
+        let dist_dir = workspace.join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+        let artifact_path = dist_dir.join("my-package-1.0.0-alpha.1-linux.tar.gz");
+        fs::write(&artifact_path, b"dummy").unwrap();
+
+        let specs = vec![AssetSpec {
+            pattern: "dist/{{crate}}-{{version}}-linux.tar.gz".to_string(),
+            rename: None,
+        }];
+
+        let assets = resolve_release_assets(workspace, "v1.0.0-alpha.1", &specs)
+            .expect("asset resolution should succeed with short tag prerelease");
+
+        assert_eq!(assets.len(), 1);
+        // When no rename, asset_name is the original filename
+        assert_eq!(
+            assets[0].asset_name,
+            "my-package-1.0.0-alpha.1-linux.tar.gz"
+        );
     }
 
     #[test]

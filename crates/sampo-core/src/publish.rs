@@ -205,11 +205,12 @@ pub fn run_publish(
         adapter.publish(manifest.as_path(), dry_run, publish_args)?;
         any_published = true;
 
-        let tag = build_tag_name(&package.name, &package.version);
+        let tag = config.build_tag_name(&package.name, &package.version);
 
         // Tag immediately after successful publish to ensure partial failures still tag what succeeded
         if !dry_run {
-            if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
+            if let Err(e) = tag_published_crate(&ws.root, &config, &package.name, &package.version)
+            {
                 eprintln!(
                     "Warning: failed to create tag for {}@{}: {}",
                     package.name, package.version, e
@@ -217,7 +218,7 @@ pub fn run_publish(
             } else {
                 tags_to_create.push(tag);
             }
-        } else if !package_tag_exists(&ws.root, &package.name, &package.version)? {
+        } else if !package_tag_exists(&ws.root, &config, &package.name, &package.version)? {
             tags_to_create.push(tag);
         }
     }
@@ -232,16 +233,18 @@ pub fn run_publish(
         if publishable.contains(package.canonical_identifier()) {
             continue;
         }
-        if !package_tag_exists(&ws.root, &package.name, &package.version)? {
+        if !package_tag_exists(&ws.root, &config, &package.name, &package.version)? {
             private_packages_to_tag.push(*package);
         }
     }
 
     if any_published || !private_packages_to_tag.is_empty() {
         for package in &private_packages_to_tag {
-            let tag = build_tag_name(&package.name, &package.version);
+            let tag = config.build_tag_name(&package.name, &package.version);
             if !dry_run {
-                if let Err(e) = tag_published_crate(&ws.root, &package.name, &package.version) {
+                if let Err(e) =
+                    tag_published_crate(&ws.root, &config, &package.name, &package.version)
+                {
                     eprintln!(
                         "Warning: failed to create tag for {}@{}: {}",
                         package.name, package.version, e
@@ -267,16 +270,17 @@ pub fn run_publish(
     })
 }
 
-fn build_tag_name(crate_name: &str, version: &str) -> String {
-    format!("{}-v{}", crate_name, version)
-}
-
-fn package_tag_exists(repo_root: &Path, crate_name: &str, version: &str) -> Result<bool> {
+fn package_tag_exists(
+    repo_root: &Path,
+    config: &Config,
+    crate_name: &str,
+    version: &str,
+) -> Result<bool> {
     if !repo_root.join(".git").exists() {
         return Ok(false);
     }
 
-    let tag = build_tag_name(crate_name, version);
+    let tag = config.build_tag_name(crate_name, version);
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -296,38 +300,21 @@ fn package_tag_exists(repo_root: &Path, crate_name: &str, version: &str) -> Resu
 
 /// Creates an annotated git tag for a published crate.
 ///
-/// Creates a tag in the format `{crate_name}-v{version}` (e.g., "my-crate-v1.2.3")
-/// with a descriptive message. Skips tagging if not in a git repository or if
-/// the tag already exists.
-///
-/// # Arguments
-/// * `repo_root` - Path to the git repository root
-/// * `crate_name` - Name of the crate that was published
-/// * `version` - Version that was published
-///
-/// # Returns
-/// `Ok(true)` if a new tag was created, `Ok(false)` if the tag already existed or
-/// not in a git repository.
-///
-/// # Examples
-/// ```no_run
-/// use std::path::Path;
-/// use sampo_core::tag_published_crate;
-///
-/// // Tag a published crate
-/// let created = tag_published_crate(Path::new("."), "my-crate", "1.2.3").unwrap();
-/// // Creates tag: "my-crate-v1.2.3" with message "Release my-crate 1.2.3"
-/// // Returns true if tag was created, false if it already existed
-/// ```
-pub fn tag_published_crate(repo_root: &Path, crate_name: &str, version: &str) -> Result<bool> {
+/// Skips tagging if not in a git repository or if the tag already exists.
+pub fn tag_published_crate(
+    repo_root: &Path,
+    config: &Config,
+    crate_name: &str,
+    version: &str,
+) -> Result<bool> {
     if !repo_root.join(".git").exists() {
         // Not a git repo, skip
         return Ok(false);
     }
-    if package_tag_exists(repo_root, crate_name, version)? {
+    if package_tag_exists(repo_root, config, crate_name, version)? {
         return Ok(false);
     }
-    let tag = build_tag_name(crate_name, version);
+    let tag = config.build_tag_name(crate_name, version);
 
     let msg = format!("Release {} {}", crate_name, version);
     let status = Command::new("git")

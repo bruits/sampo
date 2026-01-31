@@ -1242,6 +1242,7 @@ tempfile = "3.0"
             ignore: vec![],
             git_default_branch: None,
             git_release_branches: Vec::new(),
+            git_short_tags: None,
         };
 
         // Create changeset that affects pkg-b only

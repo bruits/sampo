@@ -43,7 +43,7 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish -- --tag beta\n\nBehavior:\n  - Publishes only packages that have a git tag of the form <name>-v<version> for their current version.\n  - Skips packages whose current version already exists on their registry.\n\nAll arguments after `--` are forwarded to the underlying publish command (separator required).")]
+Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n\nAll arguments after `--` are forwarded to the underlying publish command (separator required).")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
