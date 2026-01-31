@@ -766,7 +766,6 @@ fn create_github_release_for_tag(
     workspace: &Path,
     github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
-    // Load config for short tag support
     let config = SampoConfig::load(workspace).ok();
 
     let body = match build_release_body_from_changelog(workspace, tag) {
@@ -901,11 +900,6 @@ fn tag_is_prerelease_with_config(tag: &str, config: Option<&SampoConfig>) -> boo
         })
 }
 
-#[cfg(test)]
-fn tag_is_prerelease(tag: &str) -> bool {
-    tag_is_prerelease_with_config(tag, None)
-}
-
 /// Extract the section that follows the first `##` heading until the next `##` or EOF.
 ///
 /// The leading heading itself is stripped because the GitHub release title already
@@ -972,7 +966,6 @@ fn resolve_release_assets(
         return Ok(Vec::new());
     }
 
-    // Load config for short tag support
     let config = SampoConfig::load(workspace).ok();
     let parsed_tag = parse_tag_with_config(tag, config.as_ref());
     let crate_name = parsed_tag.as_ref().map(|(name, _)| name.as_str());
@@ -1092,6 +1085,10 @@ fn render_asset_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tag_is_prerelease(tag: &str) -> bool {
+        tag_is_prerelease_with_config(tag, None)
+    }
 
     #[test]
     fn default_branch_slugifies_path_segments() {

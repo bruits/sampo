@@ -301,7 +301,6 @@ fn package_tag_exists(
 /// Creates an annotated git tag for a published crate.
 ///
 /// Skips tagging if not in a git repository or if the tag already exists.
-/// Tag format depends on `config.git_short_tags` setting.
 pub fn tag_published_crate(
     repo_root: &Path,
     config: &Config,
