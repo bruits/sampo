@@ -845,7 +845,6 @@ fn create_github_release_for_tag(
 
 /// Build a release body by extracting the matching section from the crate's CHANGELOG.md
 fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<String> {
-    // Load config to handle short tags
     let config = SampoConfig::load(workspace).ok();
     let (crate_name, version) = parse_tag_with_config(tag, config.as_ref())?;
 
