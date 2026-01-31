@@ -1,5 +1,19 @@
 # sampo
 
+## 0.16.0 — 2026-01-31
+
+### Minor changes
+
+- [b33b71c](https://github.com/bruits/sampo/commit/b33b71ce0b9fe8962774b80320eea517b066f621) In Elixir (Hex) projects, added support for `@version` module attribute definitions in `mix.exs`. — Thanks @rafaeelaudibert!
+- [19e112a](https://github.com/bruits/sampo/commit/19e112ae1d0e33b6f330bd227716280bb8994dd7) **PHP packages are now supported!** Sampo now automatically detects PHP packages managed by `composer.json` (for Packagist), and handles versioning and changelogs. Publishing works via Git tags rather than registry upload. — Thanks @rafaeelaudibert!
+- [1748ebc](https://github.com/bruits/sampo/commit/1748ebc377581da66af448ce263ed5553a186425) Changed exit codes to distinguish between success with changes applied, and success with no pending changes. — Thanks @rafaeelaudibert!
+- [4655864](https://github.com/bruits/sampo/commit/465586474fc8f487ab9ff470ca06bc6e1bbd2b44) Added `git.short_tags` configuration option to create short version tags (`vX.Y.Z`) for a single package. In PHP (Packagist) projects, this enables Composer-compatible releases, with the limitation of not supporting monorepos with multiple publishable PHP packages. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [aa52383](https://github.com/bruits/sampo/commit/aa523834cec193268b773e6f2c4847f2d72d2039) In Rust (Cargo) projects, fixed version detection for packages using `version.workspace = true`. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.12.0
+
 ## 0.15.0 — 2026-01-12
 
 ### Minor changes
