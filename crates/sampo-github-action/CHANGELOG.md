@@ -1,5 +1,11 @@
 # sampo-github-action
 
+## 0.14.1 — 2026-02-06
+
+### Patch changes
+
+- [d979b54](https://github.com/bruits/sampo/commit/d979b54c4bb0cee7c6f6c4a87611f2f9e08cdd63) Disambiguate same-name packages for prereleases — Thanks @rickmartensnl for your first contribution 🎉!
+
 ## 0.14.0 — 2026-01-31
 
 ### Minor changes
