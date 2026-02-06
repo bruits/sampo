@@ -666,7 +666,7 @@ fn collect_prerelease_packages(workspace: &Path) -> Result<Vec<String>> {
         .members
         .iter()
         .filter(|info| info.version.contains('-'))
-        .map(|info| info.name.clone())
+        .map(|info| info.identifier.clone())
         .collect();
     names.sort();
     names.dedup();
@@ -1156,7 +1156,43 @@ mod tests {
         .unwrap();
 
         let packages = collect_prerelease_packages(root).unwrap();
-        assert_eq!(packages, vec!["foo".to_string()]);
+        assert_eq!(packages, vec!["cargo/foo".to_string()]);
+    }
+
+    #[test]
+    fn collect_prerelease_packages_disambiguates_same_name() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/foo\"]\n",
+        )
+        .unwrap();
+
+        let foo_dir = root.join("crates/foo");
+        fs::create_dir_all(&foo_dir).unwrap();
+
+        fs::write(
+            foo_dir.join("Cargo.toml"),
+            "[package]\nname=\"foo\"\nversion=\"0.2.0-beta.3\"\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"foo","version":"1.0.0-rc.1","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+
+        let packages = collect_prerelease_packages(root).unwrap();
+
+        assert!(packages.contains(&"cargo/foo".to_string()));
+        assert!(packages.contains(&"npm/foo".to_string()));
+        assert_eq!(packages.len(), 2);
     }
 
     #[test]
