@@ -507,7 +507,11 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             });
         }
 
-        let workspace_in_prerelease = workspace.members.iter().any(|m| m.version.contains('-'));
+        let workspace_in_prerelease = workspace.members.iter().any(|m| {
+            Version::parse(&m.version)
+                .map(|v| !v.pre.is_empty())
+                .unwrap_or(false)
+        });
         if workspace_in_prerelease {
             println!(
                 "No new changesets found. Preserved changesets exist but workspace \
