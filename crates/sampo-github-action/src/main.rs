@@ -666,7 +666,7 @@ fn collect_prerelease_packages(workspace: &Path) -> Result<Vec<String>> {
         .members
         .iter()
         .filter(|info| info.version.contains('-'))
-        .map(|info| info.name.clone())
+        .map(|info| format!("{}/{}", info.kind.as_str(), info.name))
         .collect();
     names.sort();
     names.dedup();
