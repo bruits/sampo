@@ -506,6 +506,19 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
                 dry_run,
             });
         }
+
+        let workspace_in_prerelease = workspace.members.iter().any(|m| m.version.contains('-'));
+        if workspace_in_prerelease {
+            println!(
+                "No new changesets found. Preserved changesets exist but workspace \
+                 is in pre-release mode; skipping to avoid duplicate bump."
+            );
+            return Ok(ReleaseOutput {
+                released_packages: vec![],
+                dry_run,
+            });
+        }
+
         using_preserved = true;
     } else {
         match compute_plan_state(&current_changesets, &workspace, &config)? {
