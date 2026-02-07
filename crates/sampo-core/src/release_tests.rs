@@ -369,6 +369,29 @@ mod tests {
     }
 
     #[test]
+    fn preserved_changesets_do_not_retrigger_prerelease_bump() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("foo", "0.1.0-alpha.1");
+
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        fs::create_dir_all(&prerelease_dir).unwrap();
+        fs::write(
+            prerelease_dir.join("some-feature.md"),
+            "---\nfoo: minor\n---\n\nAdded some feature\n",
+        )
+        .unwrap();
+
+        let output = workspace
+            .run_release(true)
+            .expect("release should succeed");
+
+        assert!(
+            output.released_packages.is_empty(),
+            "preserved changesets should NOT trigger a new prerelease bump"
+        );
+    }
+
+    #[test]
     fn switching_prerelease_label_restores_changesets() {
         let mut workspace = TestWorkspace::new();
         let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
