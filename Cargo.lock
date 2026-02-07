@@ -1338,9 +1338,9 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "memchr"
-version = "2.7.6"
+version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "mime"
@@ -2106,7 +2106,7 @@ checksum = "a50f4cf475b65d88e057964e0e9bb1f0aa9bbb2036dc65c64596b42932536984"
 
 [[package]]
 name = "sampo"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "clap",
  "dialoguer",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-core"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cargo_metadata",
  "changesets",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-action"
-version = "0.14.1"
+version = "0.14.2"
 dependencies = [
  "glob",
  "reqwest 0.12.28",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-bot"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "axum",
  "base64 0.22.1",

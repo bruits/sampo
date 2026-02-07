@@ -1,5 +1,11 @@
 # sampo-core
 
+## 0.12.1 — 2026-02-07
+
+### Patch changes
+
+- [dbc649d](https://github.com/bruits/sampo/commit/dbc649d0a7dc899b26f19f1b86226af30902f84b) Fixed preserved changesets causing infinite release PR loop in prerelease mode — Thanks @rickmartensnl for your first contribution 🎉!
+
 ## 0.12.0 — 2026-01-31
 
 ### Minor changes
