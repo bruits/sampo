@@ -1657,4 +1657,60 @@ tempfile = "3.0"
             detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
         assert!(explanations.is_empty());
     }
+
+    #[test]
+    fn preserved_mixed_changeset_does_not_overwrite_existing_changeset() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0");
+
+        // Mixed preserved changeset: a (prerelease) + b (stable)
+        workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added shared feature");
+
+        // Place a pre-existing changeset in changesets_dir with the SAME filename
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        fs::create_dir_all(&changesets_dir).unwrap();
+        let colliding_name = "addedsharedfeature.md";
+        let original_content = "---\nb: patch\n---\n\nOriginal unrelated changeset\n";
+        fs::write(changesets_dir.join(colliding_name), original_content).unwrap();
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        let released_names: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(released_names.contains(&"b"), "b should be released");
+        assert!(!released_names.contains(&"a"), "a should NOT be released");
+
+        // Both the original changeset and the stable split were consumed during
+        // release. The key invariant is that the original file was NOT silently
+        // overwritten before the release consumed it — both changesets contributed
+        // independently to the release plan. The minor bump wins over patch, so
+        // b ends up at 2.1.0, which can only happen if both files existed at
+        // read time.
+        workspace.assert_crate_version("b", "2.1.0");
+
+        // Prerelease entry for a should remain preserved
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "md")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            preserved_files.len(),
+            1,
+            "prerelease dir should keep the rewritten mixed changeset"
+        );
+    }
 }

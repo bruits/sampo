@@ -753,6 +753,7 @@ pub(crate) fn restore_prerelease_changesets(
             continue;
         }
 
+        // Ignore the new location; only errors matter here
         let _ = move_changeset_file(&path, changesets_dir)?;
     }
 
@@ -812,7 +813,10 @@ fn restore_stable_preserved_changesets(
             let file_name = path
                 .file_name()
                 .ok_or_else(|| SampoError::Changeset("Invalid changeset file name".to_string()))?;
-            let stable_path = changesets_dir.join(file_name);
+            let mut stable_path = changesets_dir.join(file_name);
+            if stable_path.exists() {
+                stable_path = unique_destination_path(changesets_dir, file_name);
+            }
             fs::write(&stable_path, stable_content)
                 .map_err(|e| SampoError::Io(io_error_with_path(e, &stable_path)))?;
 
