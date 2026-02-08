@@ -6,7 +6,8 @@ use crate::types::{
     ReleaseOutput, ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
 };
 use crate::{
-    changeset::ChangesetInfo, config::Config, current_branch, detect_github_repo_slug_with_config,
+    changeset::{parse_changeset, render_changeset_markdown_with_tags, ChangesetInfo},
+    config::Config, current_branch, detect_github_repo_slug_with_config,
     discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use chrono::{DateTime, FixedOffset, Local, Utc};
@@ -507,15 +508,10 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             });
         }
 
-        let workspace_in_prerelease = workspace.members.iter().any(|m| {
-            Version::parse(&m.version)
-                .map(|v| !v.pre.is_empty())
-                .unwrap_or(false)
-        });
-        if workspace_in_prerelease {
+        if all_preserved_targets_in_prerelease(&preserved_changesets, &workspace)? {
             println!(
-                "No new changesets found. Preserved changesets exist but workspace \
-                 is in pre-release mode; skipping to avoid duplicate bump."
+                "No new changesets found. Preserved changesets exist but all referenced \
+                 packages are in pre-release mode; skipping to avoid duplicate bump."
             );
             return Ok(ReleaseOutput {
                 released_packages: vec![],
@@ -560,10 +556,17 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let mut final_changesets;
     let plan_state = if using_preserved {
         if dry_run {
+            let filtered_preserved =
+                filter_prerelease_entries(preserved_changesets, &workspace)?;
             final_changesets = current_changesets;
-            final_changesets.extend(preserved_changesets);
+            final_changesets.extend(filtered_preserved);
         } else {
-            restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
+            restore_stable_preserved_changesets(
+                &prerelease_dir,
+                &changesets_dir,
+                &workspace,
+                &config.changesets_tags,
+            )?;
             final_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
         }
 
@@ -705,6 +708,42 @@ fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
     })
 }
 
+fn is_spec_in_prerelease(workspace: &Workspace, spec: &PackageSpecifier) -> Result<bool> {
+    let info = resolve_package_spec(workspace, spec)?;
+
+    let version = Version::parse(&info.version).map_err(|e| {
+        SampoError::Release(format!(
+            "failed to parse version '{}' for package spec {}: {}",
+            info.version, spec, e
+        ))
+    })?;
+
+    Ok(!version.pre.is_empty())
+}
+
+fn all_preserved_targets_in_prerelease(
+    changesets: &[ChangesetInfo],
+    workspace: &Workspace,
+) -> Result<bool> {
+    let specs: Vec<&PackageSpecifier> = changesets
+        .iter()
+        .flat_map(|cs| cs.entries.iter().map(|(spec, _, _)| spec))
+        .collect();
+
+    if specs.is_empty() {
+        return Ok(false);
+    }
+
+    for spec in &specs {
+        if !is_spec_in_prerelease(workspace, spec)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Move all preserved changeset files from the prerelease directory to the
+/// changesets directory without filtering. Used when exiting prerelease mode.
 pub(crate) fn restore_prerelease_changesets(
     prerelease_dir: &Path,
     changesets_dir: &Path,
@@ -728,6 +767,107 @@ pub(crate) fn restore_prerelease_changesets(
     }
 
     Ok(())
+}
+
+/// Restore preserved changesets to the changesets directory, filtering out
+/// entries that target packages currently in prerelease.
+///
+/// For each preserved changeset file:
+/// - If all entries target stable packages: move the entire file to changesets dir
+/// - If all entries target prerelease packages: leave untouched in prerelease dir
+/// - If mixed: write stable entries to a new file in changesets dir, rewrite
+///   the prerelease dir file with only the prerelease entries
+///
+/// The mixed case writes the stable split first, then rewrites the prerelease
+/// file in place to remove the stable entries.
+fn restore_stable_preserved_changesets(
+    prerelease_dir: &Path,
+    changesets_dir: &Path,
+    workspace: &Workspace,
+    allowed_tags: &[String],
+) -> Result<()> {
+    if !prerelease_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(prerelease_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+
+        let text = fs::read_to_string(&path)
+            .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
+        let parsed = match parse_changeset(&text, &path, allowed_tags)? {
+            Some(cs) => cs,
+            None => continue,
+        };
+
+        let mut stable_entries = Vec::new();
+        let mut prerelease_entries = Vec::new();
+        for entry in parsed.entries.iter().cloned() {
+            if is_spec_in_prerelease(workspace, &entry.0)? {
+                prerelease_entries.push(entry);
+            } else {
+                stable_entries.push(entry);
+            }
+        }
+
+        if prerelease_entries.is_empty() {
+            // All entries target stable packages — move entire file
+            let _ = move_changeset_file(&path, changesets_dir)?;
+        } else if stable_entries.is_empty() {
+            // All entries target prerelease packages — leave untouched
+        } else {
+            // Mixed: write stable entries to changesets dir, rewrite prerelease file
+            fs::create_dir_all(changesets_dir)?;
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| SampoError::Changeset("Invalid changeset file name".to_string()))?;
+            let mut stable_path = changesets_dir.join(file_name);
+            if stable_path.exists() {
+                stable_path = unique_destination_path(changesets_dir, file_name);
+            }
+
+            let stable_content =
+                render_changeset_markdown_with_tags(&stable_entries, &parsed.message);
+            fs::write(&stable_path, &stable_content)
+                .map_err(|e| SampoError::Io(io_error_with_path(e, &stable_path)))?;
+
+            let prerelease_content =
+                render_changeset_markdown_with_tags(&prerelease_entries, &parsed.message);
+            fs::write(&path, prerelease_content)
+                .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Filter preserved changesets in memory for the dry-run path, removing entries
+/// that target packages currently in prerelease. Drops changesets that become empty.
+fn filter_prerelease_entries(
+    changesets: Vec<ChangesetInfo>,
+    workspace: &Workspace,
+) -> Result<Vec<ChangesetInfo>> {
+    let mut result = Vec::new();
+    for mut cs in changesets {
+        let mut kept = Vec::new();
+        for entry in cs.entries {
+            if !is_spec_in_prerelease(workspace, &entry.0)? {
+                kept.push(entry);
+            }
+        }
+        cs.entries = kept;
+        if !cs.entries.is_empty() {
+            result.push(cs);
+        }
+    }
+    Ok(result)
 }
 
 fn finalize_consumed_changesets(

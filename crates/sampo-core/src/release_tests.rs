@@ -123,19 +123,21 @@ mod tests {
             self
         }
 
-        fn add_changeset(&self, packages: &[&str], release: Bump, message: &str) -> &Self {
-            let changesets_dir = self.root.join(".sampo/changesets");
-            fs::create_dir_all(&changesets_dir).unwrap();
+        fn write_changeset_to_dir(
+            dir: &std::path::Path,
+            packages: &[&str],
+            release: Bump,
+            message: &str,
+        ) {
+            fs::create_dir_all(dir).unwrap();
 
-            // YAML-like mapping frontmatter: one line per package
             let mut frontmatter = String::from("---\n");
             for p in packages {
                 frontmatter.push_str(&format!("{}: {}\n", p, release));
             }
             frontmatter.push_str("---\n\n");
-            let changeset_content = format!("{}{}\n", frontmatter, message);
+            let content = format!("{}{}\n", frontmatter, message);
 
-            // Use message slug as filename to avoid conflicts
             let filename = message
                 .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '-')
@@ -143,7 +145,31 @@ mod tests {
                 .to_lowercase()
                 + ".md";
 
-            fs::write(changesets_dir.join(filename), changeset_content).unwrap();
+            fs::write(dir.join(filename), content).unwrap();
+        }
+
+        fn add_changeset(&self, packages: &[&str], release: Bump, message: &str) -> &Self {
+            Self::write_changeset_to_dir(
+                &self.root.join(".sampo/changesets"),
+                packages,
+                release,
+                message,
+            );
+            self
+        }
+
+        fn add_preserved_changeset(
+            &self,
+            packages: &[&str],
+            release: Bump,
+            message: &str,
+        ) -> &Self {
+            Self::write_changeset_to_dir(
+                &self.root.join(".sampo/prerelease"),
+                packages,
+                release,
+                message,
+            );
             self
         }
 
@@ -372,14 +398,7 @@ mod tests {
     fn preserved_changesets_do_not_retrigger_prerelease_bump() {
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("foo", "0.1.0-alpha.1");
-
-        let prerelease_dir = workspace.root.join(".sampo/prerelease");
-        fs::create_dir_all(&prerelease_dir).unwrap();
-        fs::write(
-            prerelease_dir.join("some-feature.md"),
-            "---\nfoo: minor\n---\n\nAdded some feature\n",
-        )
-        .unwrap();
+        workspace.add_preserved_changeset(&["foo"], Bump::Minor, "Added some feature");
 
         let output = workspace
             .run_release(true)
@@ -389,6 +408,302 @@ mod tests {
             output.released_packages.is_empty(),
             "preserved changesets should NOT trigger a new prerelease bump"
         );
+    }
+
+    #[test]
+    fn preserved_changesets_proceed_when_target_is_stable() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0");
+        workspace.add_preserved_changeset(&["b"], Bump::Minor, "Added feature for b");
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        assert_eq!(output.released_packages.len(), 1);
+        assert_eq!(output.released_packages[0].name, "b");
+        assert_eq!(output.released_packages[0].new_version, "2.1.0");
+
+        workspace.assert_crate_version("a", "1.0.0-alpha.1");
+    }
+
+    #[test]
+    fn preserved_changesets_skip_when_all_targets_prerelease() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0");
+        workspace.add_preserved_changeset(&["a"], Bump::Minor, "Added feature for a");
+
+        let output = workspace
+            .run_release(true)
+            .expect("release should succeed");
+
+        assert!(
+            output.released_packages.is_empty(),
+            "should skip when all preserved targets are in prerelease"
+        );
+    }
+
+    #[test]
+    fn preserved_changesets_proceed_when_mixed_targets() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0");
+        workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added shared feature");
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        let released_names: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(
+            released_names.contains(&"b"),
+            "stable package B should be released"
+        );
+        assert!(
+            !released_names.contains(&"a"),
+            "prerelease package A should NOT be released (entry stays preserved)"
+        );
+
+        workspace.assert_crate_version("b", "2.1.0");
+        workspace.assert_crate_version("a", "1.0.0-alpha.1");
+
+        // The prerelease entry for 'a' should remain in the prerelease dir
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "md")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            preserved_files.len(),
+            1,
+            "one preserved changeset should remain for prerelease entry"
+        );
+
+        // Verify the preserved file only contains the prerelease entry for 'a'
+        let preserved_content =
+            fs::read_to_string(preserved_files[0].path()).unwrap();
+        assert!(
+            preserved_content.contains("a:"),
+            "preserved file should contain entry for 'a'"
+        );
+        assert!(
+            !preserved_content.contains("b:"),
+            "preserved file should NOT contain entry for 'b'"
+        );
+    }
+
+    #[test]
+    fn preserved_changesets_skip_when_all_workspace_prerelease() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0-beta.1");
+        workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added cross feature");
+
+        let output = workspace
+            .run_release(true)
+            .expect("release should succeed");
+
+        assert!(
+            output.released_packages.is_empty(),
+            "should skip when all targets in preserved changesets are in prerelease"
+        );
+    }
+
+    #[test]
+    fn preserved_mixed_changeset_keeps_prerelease_entries_preserved() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0")
+            .add_crate("c", "3.0.0");
+        // Mixed changeset: a (prerelease) + b (stable)
+        workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added shared feature");
+        // Pure stable changeset for c
+        workspace.add_preserved_changeset(&["c"], Bump::Patch, "Fixed c bug");
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        let released_names: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        // b and c should be released, a should not
+        assert!(released_names.contains(&"b"), "b should be released");
+        assert!(released_names.contains(&"c"), "c should be released");
+        assert!(!released_names.contains(&"a"), "a should NOT be released");
+
+        workspace.assert_crate_version("b", "2.1.0");
+        workspace.assert_crate_version("c", "3.0.1");
+        workspace.assert_crate_version("a", "1.0.0-alpha.1");
+
+        // The prerelease entry for a should remain preserved
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "md")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            preserved_files.len(),
+            1,
+            "one file should remain in prerelease dir (the rewritten mixed changeset)"
+        );
+
+        let preserved_content =
+            fs::read_to_string(preserved_files[0].path()).unwrap();
+        assert!(
+            preserved_content.contains("a:"),
+            "preserved file should still have entry for prerelease package a"
+        );
+        assert!(
+            !preserved_content.contains("b:"),
+            "preserved file should NOT have entry for stable package b"
+        );
+
+        // Changesets dir should be empty (all consumed)
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        let remaining: Vec<_> = fs::read_dir(&changesets_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "md")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            remaining.is_empty(),
+            "changesets dir should be empty after release"
+        );
+    }
+
+    #[test]
+    fn preserved_mixed_changeset_dry_run_only_plans_stable() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0");
+        workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added shared feature");
+
+        let output = workspace
+            .run_release(true)
+            .expect("dry-run release should succeed");
+
+        let released_names: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        assert!(
+            released_names.contains(&"b"),
+            "stable package b should appear in dry-run plan"
+        );
+        assert!(
+            !released_names.contains(&"a"),
+            "prerelease package a should NOT appear in dry-run plan"
+        );
+        assert!(output.dry_run);
+    }
+
+    #[test]
+    fn prerelease_second_changeset_bumps_again() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg1", "1.0.0-alpha");
+        workspace.add_crate("pkg2", "1.0.0");
+        workspace.add_crate("pkg3", "1.0.0");
+        workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: first prerelease change");
+
+        let output = workspace.run_release(false).expect("first release should succeed");
+        assert_eq!(output.released_packages.len(), 1);
+        assert_eq!(output.released_packages[0].name, "pkg1");
+        workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
+
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        assert!(prerelease_dir.exists());
+
+        workspace.add_changeset(&["pkg1"], Bump::Patch, "fix: second prerelease fix");
+
+        let output = workspace.run_release(false).expect("second release should succeed");
+        assert_eq!(output.released_packages.len(), 1);
+        assert_eq!(output.released_packages[0].name, "pkg1");
+        workspace.assert_crate_version("pkg1", "1.0.0-alpha.2");
+        workspace.assert_crate_version("pkg2", "1.0.0");
+        workspace.assert_crate_version("pkg3", "1.0.0");
+    }
+
+    #[test]
+    fn new_stable_changeset_with_preserved_prerelease_changesets() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg1", "1.0.0-alpha");
+        workspace.add_crate("pkg2", "1.0.0");
+        workspace.add_crate("pkg3", "1.0.0");
+        workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: prerelease feature");
+
+        workspace.run_release(false).expect("prerelease should succeed");
+        workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
+
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        assert!(prerelease_dir.exists());
+
+        workspace.add_changeset(&["pkg2"], Bump::Patch, "fix: stable bug fix");
+
+        let output = workspace.run_release(false).expect("release should succeed");
+        let released_names: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+
+        assert!(
+            released_names.contains(&"pkg2"),
+            "pkg2 should be released, got: {:?}",
+            released_names
+        );
+        workspace.assert_crate_version("pkg2", "1.0.1");
+        workspace.assert_crate_version("pkg3", "1.0.0");
+    }
+
+    #[test]
+    fn preserved_changesets_after_exit_prerelease_proceeds() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg1", "1.0.0");
+        workspace.add_crate("pkg2", "2.0.0");
+        workspace.add_preserved_changeset(&["pkg1"], Bump::Minor, "feat: from prerelease era");
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        assert_eq!(output.released_packages.len(), 1);
+        assert_eq!(output.released_packages[0].name, "pkg1");
+        workspace.assert_crate_version("pkg1", "1.1.0");
     }
 
     #[test]
@@ -1342,4 +1657,63 @@ tempfile = "3.0"
             detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
         assert!(explanations.is_empty());
     }
+
+    #[test]
+    fn preserved_mixed_changeset_does_not_overwrite_existing_changeset() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0-alpha.1")
+            .add_crate("b", "2.0.0");
+
+        // Mixed preserved changeset: a (prerelease) + b (stable)
+        workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added shared feature");
+
+        // Place a pre-existing changeset in changesets_dir with the SAME filename
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        fs::create_dir_all(&changesets_dir).unwrap();
+        let colliding_name = "addedsharedfeature.md";
+        let original_content = "---\nb: patch\n---\n\nOriginal unrelated changeset\n";
+        fs::write(changesets_dir.join(colliding_name), original_content).unwrap();
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        let released_names: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(released_names.contains(&"b"), "b should be released");
+        assert!(!released_names.contains(&"a"), "a should NOT be released");
+
+        // The minor bump from the preserved changeset wins over the patch from
+        // the original, so b ends up at 2.1.0.
+        workspace.assert_crate_version("b", "2.1.0");
+
+        // The real invariant: both changeset messages must appear in b's
+        // changelog. If the stable split had overwritten the pre-existing file,
+        // "Original unrelated changeset" would be lost.
+        workspace.assert_changelog_contains("b", "Original unrelated changeset");
+        workspace.assert_changelog_contains("b", "Added shared feature");
+
+        // Prerelease entry for a should remain preserved
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .map(|ext| ext == "md")
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(
+            preserved_files.len(),
+            1,
+            "prerelease dir should keep the rewritten mixed changeset"
+        );
+    }
+
 }
