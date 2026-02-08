@@ -778,8 +778,8 @@ pub(crate) fn restore_prerelease_changesets(
 /// - If mixed: write stable entries to a new file in changesets dir, rewrite
 ///   the prerelease dir file with only the prerelease entries
 ///
-/// The mixed case uses a deliberate write order (temp file → shrink prerelease →
-/// rename) so that a crash never leaves stable entries visible in both directories.
+/// The mixed case writes the stable split first, then rewrites the prerelease
+/// file in place to remove the stable entries.
 fn restore_stable_preserved_changesets(
     prerelease_dir: &Path,
     changesets_dir: &Path,
