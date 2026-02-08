@@ -1,5 +1,11 @@
 # sampo-github-action
 
+## 0.14.2 — 2026-02-08
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.12.1
+
 ## 0.14.1 — 2026-02-06
 
 ### Patch changes
