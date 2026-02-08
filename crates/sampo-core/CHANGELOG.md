@@ -1,5 +1,12 @@
 # sampo-core
 
+## 0.12.1 — 2026-02-08
+
+### Patch changes
+
+- [c8b2389](https://github.com/bruits/sampo/commit/c8b2389e7d55da858d11218cbed942a96806ba92) Fixed prerelease guard in release to only skip preserved changesets when all referenced packages are in prerelease, not when any workspace member is. — Thanks @rickmartensnl!
+- [dbc649d](https://github.com/bruits/sampo/commit/dbc649d0a7dc899b26f19f1b86226af30902f84b) Fixed preserved changesets causing infinite release PR loop in prerelease mode — Thanks @rickmartensnl!
+
 ## 0.12.0 — 2026-01-31
 
 ### Minor changes
