@@ -1687,13 +1687,15 @@ tempfile = "3.0"
         assert!(released_names.contains(&"b"), "b should be released");
         assert!(!released_names.contains(&"a"), "a should NOT be released");
 
-        // Both the original changeset and the stable split were consumed during
-        // release. The key invariant is that the original file was NOT silently
-        // overwritten before the release consumed it — both changesets contributed
-        // independently to the release plan. The minor bump wins over patch, so
-        // b ends up at 2.1.0, which can only happen if both files existed at
-        // read time.
+        // The minor bump from the preserved changeset wins over the patch from
+        // the original, so b ends up at 2.1.0.
         workspace.assert_crate_version("b", "2.1.0");
+
+        // The real invariant: both changeset messages must appear in b's
+        // changelog. If the stable split had overwritten the pre-existing file,
+        // "Original unrelated changeset" would be lost.
+        workspace.assert_changelog_contains("b", "Original unrelated changeset");
+        workspace.assert_changelog_contains("b", "Added shared feature");
 
         // Prerelease entry for a should remain preserved
         let prerelease_dir = workspace.root.join(".sampo/prerelease");
