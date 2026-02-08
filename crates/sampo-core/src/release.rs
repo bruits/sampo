@@ -714,13 +714,25 @@ fn all_preserved_targets_in_prerelease(
     }
 
     specs.iter().all(|spec| {
-        resolve_package_spec(workspace, spec)
-            .map(|info| {
-                Version::parse(&info.version)
-                    .map(|v| !v.pre.is_empty())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
+        match resolve_package_spec(workspace, spec) {
+            Ok(info) => match Version::parse(&info.version) {
+                Ok(v) => !v.pre.is_empty(),
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to parse version '{}' for preserved changeset target {:?}: {:?}",
+                        info.version, spec, e
+                    );
+                    false
+                }
+            },
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to resolve preserved changeset target {:?}: {:?}",
+                    spec, err
+                );
+                false
+            }
+        }
     })
 }
 
