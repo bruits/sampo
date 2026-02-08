@@ -768,6 +768,9 @@ pub(crate) fn restore_prerelease_changesets(
 /// - If all entries target prerelease packages: leave untouched in prerelease dir
 /// - If mixed: write stable entries to a new file in changesets dir, rewrite
 ///   the prerelease dir file with only the prerelease entries
+///
+/// The mixed case uses a deliberate write order (temp file → shrink prerelease →
+/// rename) so that a crash never leaves stable entries visible in both directories.
 fn restore_stable_preserved_changesets(
     prerelease_dir: &Path,
     changesets_dir: &Path,
@@ -806,10 +809,12 @@ fn restore_stable_preserved_changesets(
         } else if stable_entries.is_empty() {
             // All entries target prerelease packages — leave untouched
         } else {
-            // Mixed: write stable entries to changesets dir, rewrite prerelease file
+            // Mixed: write stable entries to changesets dir, rewrite prerelease file.
+            // Write order ensures a crash never duplicates stable entries in both dirs:
+            //   1. Write stable content to a .md.tmp file (invisible to load_changesets)
+            //   2. Shrink the prerelease file (remove stable entries)
+            //   3. Atomically rename .md.tmp → .md to make stable file visible
             fs::create_dir_all(changesets_dir)?;
-            let stable_content =
-                render_changeset_markdown_with_tags(&stable_entries, &parsed.message);
             let file_name = path
                 .file_name()
                 .ok_or_else(|| SampoError::Changeset("Invalid changeset file name".to_string()))?;
@@ -817,13 +822,20 @@ fn restore_stable_preserved_changesets(
             if stable_path.exists() {
                 stable_path = unique_destination_path(changesets_dir, file_name);
             }
-            fs::write(&stable_path, stable_content)
-                .map_err(|e| SampoError::Io(io_error_with_path(e, &stable_path)))?;
+
+            let tmp_path = stable_path.with_extension("md.tmp");
+            let stable_content =
+                render_changeset_markdown_with_tags(&stable_entries, &parsed.message);
+            fs::write(&tmp_path, &stable_content)
+                .map_err(|e| SampoError::Io(io_error_with_path(e, &tmp_path)))?;
 
             let prerelease_content =
                 render_changeset_markdown_with_tags(&prerelease_entries, &parsed.message);
             fs::write(&path, prerelease_content)
                 .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
+
+            fs::rename(&tmp_path, &stable_path)
+                .map_err(|e| SampoError::Io(io_error_with_path(e, &stable_path)))?;
         }
     }
 
