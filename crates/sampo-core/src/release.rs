@@ -490,6 +490,10 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let changesets_dir = workspace.root.join(".sampo").join("changesets");
     let prerelease_dir = workspace.root.join(".sampo").join("prerelease");
 
+    // Recover any .md.tmp files left by a previously interrupted mixed-changeset
+    // split before loading, so they are visible to load_changesets.
+    promote_leftover_tmp_files(&changesets_dir)?;
+
     let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
     let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
 
@@ -771,6 +775,7 @@ pub(crate) fn restore_prerelease_changesets(
 ///
 /// The mixed case uses a deliberate write order (temp file → shrink prerelease →
 /// rename) so that a crash never leaves stable entries visible in both directories.
+/// On entry we promote any leftover `.md.tmp` files from a previous interrupted run.
 fn restore_stable_preserved_changesets(
     prerelease_dir: &Path,
     changesets_dir: &Path,
@@ -839,6 +844,35 @@ fn restore_stable_preserved_changesets(
         }
     }
 
+    Ok(())
+}
+
+/// Promote any `.md.tmp` files left behind by a previous interrupted mixed-changeset
+/// split. These files contain stable entries that were written but never renamed
+/// into place before the process crashed.
+fn promote_leftover_tmp_files(changesets_dir: &Path) -> Result<()> {
+    if !changesets_dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(changesets_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) if n.ends_with(".md.tmp") => n,
+            _ => continue,
+        };
+        // Strip the ".tmp" suffix to get the intended .md path
+        let target_name = &name[..name.len() - ".tmp".len()];
+        let mut target = changesets_dir.join(target_name);
+        if target.exists() {
+            target = unique_destination_path(changesets_dir, target_name.as_ref());
+        }
+        fs::rename(&path, &target)
+            .map_err(|e| SampoError::Io(io_error_with_path(e, &target)))?;
+    }
     Ok(())
 }
 
