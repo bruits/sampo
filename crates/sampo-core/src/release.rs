@@ -507,15 +507,10 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             });
         }
 
-        let workspace_in_prerelease = workspace.members.iter().any(|m| {
-            Version::parse(&m.version)
-                .map(|v| !v.pre.is_empty())
-                .unwrap_or(false)
-        });
-        if workspace_in_prerelease {
+        if all_preserved_targets_in_prerelease(&preserved_changesets, &workspace) {
             println!(
-                "No new changesets found. Preserved changesets exist but workspace \
-                 is in pre-release mode; skipping to avoid duplicate bump."
+                "No new changesets found. Preserved changesets exist but all referenced \
+                 packages are in pre-release mode; skipping to avoid duplicate bump."
             );
             return Ok(ReleaseOutput {
                 released_packages: vec![],
@@ -701,6 +696,30 @@ fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
     releases.iter().any(|(_, _, new_version)| {
         Version::parse(new_version)
             .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+fn all_preserved_targets_in_prerelease(
+    changesets: &[ChangesetInfo],
+    workspace: &Workspace,
+) -> bool {
+    let specs: Vec<&PackageSpecifier> = changesets
+        .iter()
+        .flat_map(|cs| cs.entries.iter().map(|(spec, _, _)| spec))
+        .collect();
+
+    if specs.is_empty() {
+        return false;
+    }
+
+    specs.iter().all(|spec| {
+        resolve_package_spec(workspace, spec)
+            .map(|info| {
+                Version::parse(&info.version)
+                    .map(|v| !v.pre.is_empty())
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
     })
 }
