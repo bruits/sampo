@@ -1716,37 +1716,4 @@ tempfile = "3.0"
         );
     }
 
-    #[test]
-    fn leftover_tmp_file_is_recovered_after_interrupted_split() {
-        // Simulate the post-crash state: the prerelease file was already shrunk
-        // (step 2 completed) but the .md.tmp was never renamed (step 3 failed).
-        let mut workspace = TestWorkspace::new();
-        workspace
-            .add_crate("a", "1.0.0-alpha.1")
-            .add_crate("b", "2.0.0");
-
-        // Prerelease file already shrunk to only the prerelease entry
-        workspace.add_preserved_changeset(&["a"], Bump::Minor, "Added shared feature");
-
-        // Leftover .md.tmp in changesets dir — the stable split that was never renamed
-        let changesets_dir = workspace.root.join(".sampo/changesets");
-        fs::create_dir_all(&changesets_dir).unwrap();
-        let tmp_content = "---\nb: minor\n---\n\nAdded shared feature\n";
-        fs::write(changesets_dir.join("addedsharedfeature.md.tmp"), tmp_content).unwrap();
-
-        let output = workspace
-            .run_release(false)
-            .expect("release should succeed");
-
-        let released_names: Vec<&str> = output
-            .released_packages
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect();
-        assert!(released_names.contains(&"b"), "b should be released");
-
-        // The recovered temp file should have contributed to the release
-        workspace.assert_crate_version("b", "2.1.0");
-        workspace.assert_changelog_contains("b", "Added shared feature");
-    }
 }

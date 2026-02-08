@@ -490,10 +490,6 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let changesets_dir = workspace.root.join(".sampo").join("changesets");
     let prerelease_dir = workspace.root.join(".sampo").join("prerelease");
 
-    // Recover any .md.tmp files left by a previously interrupted mixed-changeset
-    // split before loading, so they are visible to load_changesets.
-    promote_leftover_tmp_files(&changesets_dir)?;
-
     let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
     let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
 
@@ -512,7 +508,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             });
         }
 
-        if all_preserved_targets_in_prerelease(&preserved_changesets, &workspace) {
+        if all_preserved_targets_in_prerelease(&preserved_changesets, &workspace)? {
             println!(
                 "No new changesets found. Preserved changesets exist but all referenced \
                  packages are in pre-release mode; skipping to avoid duplicate bump."
@@ -561,7 +557,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let plan_state = if using_preserved {
         if dry_run {
             let filtered_preserved =
-                filter_prerelease_entries(preserved_changesets, &workspace);
+                filter_prerelease_entries(preserved_changesets, &workspace)?;
             final_changesets = current_changesets;
             final_changesets.extend(filtered_preserved);
         } else {
@@ -712,38 +708,38 @@ fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
     })
 }
 
-fn is_spec_in_prerelease(workspace: &Workspace, spec: &PackageSpecifier) -> bool {
-    let info = resolve_package_spec(workspace, spec).unwrap_or_else(|e| {
-        panic!(
-            "failed to resolve package spec {:?} while checking prerelease status: {}",
-            spec, e
-        )
-    });
+fn is_spec_in_prerelease(workspace: &Workspace, spec: &PackageSpecifier) -> Result<bool> {
+    let info = resolve_package_spec(workspace, spec)?;
 
-    let version = Version::parse(&info.version).unwrap_or_else(|e| {
-        panic!(
-            "failed to parse version '{}' for package spec {:?}: {}",
+    let version = Version::parse(&info.version).map_err(|e| {
+        SampoError::Release(format!(
+            "failed to parse version '{}' for package spec {}: {}",
             info.version, spec, e
-        )
-    });
+        ))
+    })?;
 
-    !version.pre.is_empty()
+    Ok(!version.pre.is_empty())
 }
 
 fn all_preserved_targets_in_prerelease(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
-) -> bool {
+) -> Result<bool> {
     let specs: Vec<&PackageSpecifier> = changesets
         .iter()
         .flat_map(|cs| cs.entries.iter().map(|(spec, _, _)| spec))
         .collect();
 
     if specs.is_empty() {
-        return false;
+        return Ok(false);
     }
 
-    specs.iter().all(|spec| is_spec_in_prerelease(workspace, spec))
+    for spec in &specs {
+        if !is_spec_in_prerelease(workspace, spec)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Move all preserved changeset files from the prerelease directory to the
@@ -784,7 +780,6 @@ pub(crate) fn restore_prerelease_changesets(
 ///
 /// The mixed case uses a deliberate write order (temp file → shrink prerelease →
 /// rename) so that a crash never leaves stable entries visible in both directories.
-/// On entry we promote any leftover `.md.tmp` files from a previous interrupted run.
 fn restore_stable_preserved_changesets(
     prerelease_dir: &Path,
     changesets_dir: &Path,
@@ -812,10 +807,15 @@ fn restore_stable_preserved_changesets(
             None => continue,
         };
 
-        let (stable_entries, prerelease_entries): (Vec<_>, Vec<_>) =
-            parsed.entries.iter().cloned().partition(|(spec, _, _)| {
-                !is_spec_in_prerelease(workspace, spec)
-            });
+        let mut stable_entries = Vec::new();
+        let mut prerelease_entries = Vec::new();
+        for entry in parsed.entries.iter().cloned() {
+            if is_spec_in_prerelease(workspace, &entry.0)? {
+                prerelease_entries.push(entry);
+            } else {
+                stable_entries.push(entry);
+            }
+        }
 
         if prerelease_entries.is_empty() {
             // All entries target stable packages — move entire file
@@ -823,11 +823,7 @@ fn restore_stable_preserved_changesets(
         } else if stable_entries.is_empty() {
             // All entries target prerelease packages — leave untouched
         } else {
-            // Mixed: write stable entries to changesets dir, rewrite prerelease file.
-            // Write order ensures a crash never duplicates stable entries in both dirs:
-            //   1. Write stable content to a .md.tmp file (invisible to load_changesets)
-            //   2. Shrink the prerelease file (remove stable entries)
-            //   3. Atomically rename .md.tmp → .md to make stable file visible
+            // Mixed: write stable entries to changesets dir, rewrite prerelease file
             fs::create_dir_all(changesets_dir)?;
             let file_name = path
                 .file_name()
@@ -837,55 +833,18 @@ fn restore_stable_preserved_changesets(
                 stable_path = unique_destination_path(changesets_dir, file_name);
             }
 
-            let tmp_path = stable_path.with_extension("md.tmp");
             let stable_content =
                 render_changeset_markdown_with_tags(&stable_entries, &parsed.message);
-            fs::write(&tmp_path, &stable_content)
-                .map_err(|e| SampoError::Io(io_error_with_path(e, &tmp_path)))?;
+            fs::write(&stable_path, &stable_content)
+                .map_err(|e| SampoError::Io(io_error_with_path(e, &stable_path)))?;
 
             let prerelease_content =
                 render_changeset_markdown_with_tags(&prerelease_entries, &parsed.message);
             fs::write(&path, prerelease_content)
                 .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
-
-            fs::rename(&tmp_path, &stable_path)
-                .map_err(|e| SampoError::Io(io_error_with_path(e, &stable_path)))?;
         }
     }
 
-    Ok(())
-}
-
-/// Promote any `.md.tmp` files left behind by a previous interrupted mixed-changeset
-/// split. These files contain stable entries that were written but never renamed
-/// into place before the process crashed.
-fn promote_leftover_tmp_files(changesets_dir: &Path) -> Result<()> {
-    if !changesets_dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(changesets_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) if n.ends_with(".md.tmp") => n,
-            _ => continue,
-        };
-        // Strip the ".tmp" suffix to get the intended .md path
-        let target_name = &name[..name.len() - ".tmp".len()];
-        let target = changesets_dir.join(target_name);
-        if target.exists() {
-            // The intended target already exists, so this tmp file is stale.
-            // Remove it instead of creating a duplicate visible changeset.
-            fs::remove_file(&path)
-                .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
-            continue;
-        }
-        fs::rename(&path, &target)
-            .map_err(|e| SampoError::Io(io_error_with_path(e, &target)))?;
-    }
     Ok(())
 }
 
@@ -894,19 +853,21 @@ fn promote_leftover_tmp_files(changesets_dir: &Path) -> Result<()> {
 fn filter_prerelease_entries(
     changesets: Vec<ChangesetInfo>,
     workspace: &Workspace,
-) -> Vec<ChangesetInfo> {
-    changesets
-        .into_iter()
-        .filter_map(|mut cs| {
-            cs.entries
-                .retain(|(spec, _, _)| !is_spec_in_prerelease(workspace, spec));
-            if cs.entries.is_empty() {
-                None
-            } else {
-                Some(cs)
+) -> Result<Vec<ChangesetInfo>> {
+    let mut result = Vec::new();
+    for mut cs in changesets {
+        let mut kept = Vec::new();
+        for entry in cs.entries {
+            if !is_spec_in_prerelease(workspace, &entry.0)? {
+                kept.push(entry);
             }
-        })
-        .collect()
+        }
+        cs.entries = kept;
+        if !cs.entries.is_empty() {
+            result.push(cs);
+        }
+    }
+    Ok(result)
 }
 
 fn finalize_consumed_changesets(
