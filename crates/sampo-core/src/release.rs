@@ -713,12 +713,21 @@ fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
 }
 
 fn is_spec_in_prerelease(workspace: &Workspace, spec: &PackageSpecifier) -> bool {
-    match resolve_package_spec(workspace, spec) {
-        Ok(info) => Version::parse(&info.version)
-            .map(|v| !v.pre.is_empty())
-            .unwrap_or(false),
-        Err(_) => false,
-    }
+    let info = resolve_package_spec(workspace, spec).unwrap_or_else(|e| {
+        panic!(
+            "failed to resolve package spec {:?} while checking prerelease status: {}",
+            spec, e
+        )
+    });
+
+    let version = Version::parse(&info.version).unwrap_or_else(|e| {
+        panic!(
+            "failed to parse version '{}' for package spec {:?}: {}",
+            info.version, spec, e
+        )
+    });
+
+    !version.pre.is_empty()
 }
 
 fn all_preserved_targets_in_prerelease(
@@ -866,9 +875,13 @@ fn promote_leftover_tmp_files(changesets_dir: &Path) -> Result<()> {
         };
         // Strip the ".tmp" suffix to get the intended .md path
         let target_name = &name[..name.len() - ".tmp".len()];
-        let mut target = changesets_dir.join(target_name);
+        let target = changesets_dir.join(target_name);
         if target.exists() {
-            target = unique_destination_path(changesets_dir, target_name.as_ref());
+            // The intended target already exists, so this tmp file is stale.
+            // Remove it instead of creating a duplicate visible changeset.
+            fs::remove_file(&path)
+                .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
+            continue;
         }
         fs::rename(&path, &target)
             .map_err(|e| SampoError::Io(io_error_with_path(e, &target)))?;
