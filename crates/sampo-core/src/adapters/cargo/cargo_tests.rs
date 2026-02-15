@@ -469,3 +469,216 @@ mod constraint_validation {
         assert_not_satisfied("1.2", "2.0.0");
     }
 }
+
+mod range_constraint_preservation {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    #[test]
+    fn caret_range_preserved_when_satisfied_inline() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"^1.0\", path = \"../bar\" }\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.3.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(
+            applied.is_empty(),
+            "range constraint should not trigger an update"
+        );
+        assert!(out.contains("\"^1.0\""), "caret range should be preserved");
+    }
+
+    #[test]
+    fn caret_range_preserved_when_not_satisfied_inline() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"^1.0\", path = \"../bar\" }\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "2.0.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(
+            applied.is_empty(),
+            "unsatisfied range should still be preserved"
+        );
+        assert!(
+            out.contains("\"^1.0\""),
+            "caret range should be preserved even when not satisfied"
+        );
+    }
+
+    #[test]
+    fn pinned_version_updated_inline() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"1.0.0\", path = \"../bar\" }\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.3.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
+        assert!(
+            out.contains("\"1.3.0\""),
+            "pinned version should be updated"
+        );
+    }
+
+    #[test]
+    fn simple_string_range_preserved() {
+        let input =
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nbar = \"^1.0\"\n";
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.3.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(
+            applied.is_empty(),
+            "simple string range should not trigger update"
+        );
+        assert!(
+            out.contains("\"^1.0\""),
+            "simple string caret range should be preserved"
+        );
+    }
+
+    #[test]
+    fn simple_string_pinned_updated() {
+        let input =
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nbar = \"1.0.0\"\n";
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.3.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
+        assert!(
+            out.contains("\"1.3.0\""),
+            "simple string pinned version should be updated"
+        );
+    }
+
+    #[test]
+    fn tilde_range_preserved() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"~1.2.0\", path = \"../bar\" }\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.2.5".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(applied.is_empty(), "tilde range should not trigger update");
+        assert!(
+            out.contains("\"~1.2.0\""),
+            "tilde range should be preserved"
+        );
+    }
+
+    #[test]
+    fn wildcard_range_preserved() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"1.*\", path = \"../bar\" }\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.5.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(
+            applied.is_empty(),
+            "wildcard range should not trigger update"
+        );
+        assert!(
+            out.contains("\"1.*\""),
+            "wildcard range should be preserved"
+        );
+    }
+
+    #[test]
+    fn table_dependency_range_preserved() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies.bar]\nversion = \"^1.0\"\npath = \"../bar\"\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.3.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(
+            applied.is_empty(),
+            "table dep range should not trigger update"
+        );
+        assert!(
+            out.contains("\"^1.0\""),
+            "table dep range should be preserved"
+        );
+    }
+
+    #[test]
+    fn table_dependency_pinned_updated() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies.bar]\nversion = \"1.0.0\"\npath = \"../bar\"\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.3.0".to_string());
+
+        let (out, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
+        assert!(
+            out.contains("\"1.3.0\""),
+            "table dep pinned version should be updated"
+        );
+    }
+
+    #[test]
+    fn pinned_version_same_version_no_change() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"1.0.0\", path = \"../bar\" }\n",
+        );
+        let mut updates = BTreeMap::new();
+        updates.insert("bar".to_string(), "1.0.0".to_string());
+
+        let (_, applied) =
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
+                .unwrap();
+
+        assert!(
+            applied.is_empty(),
+            "same pinned version should not trigger update"
+        );
+    }
+}

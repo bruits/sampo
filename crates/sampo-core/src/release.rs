@@ -711,7 +711,6 @@ fn compute_plan_state(
 
 /// Validates dependency constraints before applying releases.
 /// Returns error for fixed/linked packages with violations, warnings otherwise.
-#[allow(dead_code)] // Infrastructure for future use
 fn validate_dependency_constraints(
     releases: &ReleasePlan,
     workspace: &Workspace,
@@ -733,6 +732,16 @@ fn validate_dependency_constraints(
     let linked_groups =
         resolve_config_groups(workspace, &config.linked_dependencies, "packages.linked")?;
 
+    // Load cargo metadata once for constraint extraction on Cargo packages.
+    let has_cargo = releases
+        .iter()
+        .any(|(id, _, _)| by_id.get(id).is_some_and(|p| p.kind == PackageKind::Cargo));
+    let cargo_metadata = if has_cargo {
+        ManifestMetadata::load(workspace).ok()
+    } else {
+        None
+    };
+
     let mut violations: Vec<ConstraintViolation> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -753,15 +762,29 @@ fn validate_dependency_constraints(
                 continue;
             };
 
-            // Placeholder until per-adapter constraint extraction is implemented.
-            // Note: adapters receive the package name and must handle alias resolution
-            // themselves when parsing the manifest (e.g., `alias = { package = "name" }`).
-            let constraint_placeholder = "*";
+            // Pinned versions (bare semver) will be updated during manifest updates,
+            // so only range constraints need validation here.
+            // Other ecosystems skip validation (their adapters return Skipped).
+            let constraint = match pkg_info.kind {
+                PackageKind::Cargo => {
+                    if let Some(ref meta) = cargo_metadata {
+                        // Skip pinned deps — they will be rewritten to the exact new version
+                        if meta.is_dependency_pinned(&manifest_path, &dep_info.name) {
+                            continue;
+                        }
+                        meta.get_dependency_constraint(&manifest_path, &dep_info.name)
+                            .unwrap_or_else(|| "*".to_string())
+                    } else {
+                        "*".to_string()
+                    }
+                }
+                _ => "*".to_string(),
+            };
 
             let check_result = adapter.check_dependency_constraint(
                 &manifest_path,
                 &dep_info.name,
-                constraint_placeholder,
+                &constraint,
                 new_dep_version,
             )?;
 
