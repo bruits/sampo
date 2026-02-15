@@ -40,17 +40,18 @@ We’re also committed to fostering a welcoming and respectful community. Any is
 Sampo helps users write better changelogs, let's lead by example with our own.
 
 **Structure:**
-1. **Verb first:** `Added`, `Removed`, `Fixed`, `Changed`, `Deprecated`, or `Improved`.
+3. **Breaking prefix (if applicable):** `**⚠️ breaking change:**`
 2. **Ecosystem prefix (if applicable):** `In Python (PyPI) projects, ...` or `In Elixir (Hex) projects, ...`
-3. **Breaking changes:** Prefix with `**⚠️ breaking change:**`
-4. **Usage example (optional):** A minimal snippet if it clarifies the change.
+3. **Verb:** `Added`, `Removed`, `Fixed`, `Changed`, `Deprecated`, or `Improved`.
+4. **Description**.
+5. **Usage example (optional):** A minimal snippet if it clarifies the change.
+
+**Description guidelines:** concise (1-2 sentences), specific (mention the command/option/API), actionable (what changed, not why), user-facing (written for changelog readers), and in English. Don't detail internal implementation changes.
 
 **Examples:**
 - `Added \`--dry-run\` flag to preview publish without uploading.`
 - `In Elixir (Hex) projects, fixed version parsing for umbrella apps.`
 - `**⚠️ breaking change:** Removed deprecated \`legacy_mode\` option.`
-
-**Keep changesets:** concise (1-2 sentences), specific (mention the command/option/API), actionable (what changed, not why), user-facing (written for changelog readers), and in English.
 
 ## Getting started
 

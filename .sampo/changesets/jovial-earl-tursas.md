@@ -2,4 +2,4 @@
 cargo/sampo-core: patch
 ---
 
-Fixed prerelease guard in release to only skip preserved changesets when all referenced packages are in prerelease, not when any workspace member is.
+Fixed an endless loop where the release PR would be continuously reopened for projects using prerelease versions.
