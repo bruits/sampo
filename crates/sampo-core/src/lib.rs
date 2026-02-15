@@ -7,6 +7,7 @@ pub mod filters;
 pub mod git;
 pub mod markdown;
 pub mod prerelease;
+pub mod process;
 pub mod publish;
 pub mod release;
 pub mod types;
