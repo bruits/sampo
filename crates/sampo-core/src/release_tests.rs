@@ -123,6 +123,31 @@ mod tests {
             self
         }
 
+        /// Like `add_dependency`, but uses the raw constraint string as-is.
+        /// Useful for testing range constraints like `"^0.1"` or `"~1.0"`.
+        fn add_dependency_with_constraint(
+            &mut self,
+            from: &str,
+            to: &str,
+            constraint: &str,
+        ) -> &mut Self {
+            let from_dir = self.crates.get(from).expect("from crate must exist");
+            let current_manifest = fs::read_to_string(from_dir.join("Cargo.toml")).unwrap();
+
+            let dependency_section = format!(
+                "\n[dependencies]\n{} = {{ path=\"../{}\", version=\"{}\" }}\n",
+                to, to, constraint
+            );
+
+            fs::write(
+                from_dir.join("Cargo.toml"),
+                current_manifest + &dependency_section,
+            )
+            .unwrap();
+
+            self
+        }
+
         fn write_changeset_to_dir(
             dir: &std::path::Path,
             packages: &[&str],
@@ -400,9 +425,7 @@ mod tests {
         workspace.add_crate("foo", "0.1.0-alpha.1");
         workspace.add_preserved_changeset(&["foo"], Bump::Minor, "Added some feature");
 
-        let output = workspace
-            .run_release(true)
-            .expect("release should succeed");
+        let output = workspace.run_release(true).expect("release should succeed");
 
         assert!(
             output.released_packages.is_empty(),
@@ -437,9 +460,7 @@ mod tests {
             .add_crate("b", "2.0.0");
         workspace.add_preserved_changeset(&["a"], Bump::Minor, "Added feature for a");
 
-        let output = workspace
-            .run_release(true)
-            .expect("release should succeed");
+        let output = workspace.run_release(true).expect("release should succeed");
 
         assert!(
             output.released_packages.is_empty(),
@@ -481,12 +502,7 @@ mod tests {
         let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert_eq!(
             preserved_files.len(),
@@ -495,8 +511,7 @@ mod tests {
         );
 
         // Verify the preserved file only contains the prerelease entry for 'a'
-        let preserved_content =
-            fs::read_to_string(preserved_files[0].path()).unwrap();
+        let preserved_content = fs::read_to_string(preserved_files[0].path()).unwrap();
         assert!(
             preserved_content.contains("a:"),
             "preserved file should contain entry for 'a'"
@@ -515,9 +530,7 @@ mod tests {
             .add_crate("b", "2.0.0-beta.1");
         workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added cross feature");
 
-        let output = workspace
-            .run_release(true)
-            .expect("release should succeed");
+        let output = workspace.run_release(true).expect("release should succeed");
 
         assert!(
             output.released_packages.is_empty(),
@@ -561,12 +574,7 @@ mod tests {
         let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert_eq!(
             preserved_files.len(),
@@ -574,8 +582,7 @@ mod tests {
             "one file should remain in prerelease dir (the rewritten mixed changeset)"
         );
 
-        let preserved_content =
-            fs::read_to_string(preserved_files[0].path()).unwrap();
+        let preserved_content = fs::read_to_string(preserved_files[0].path()).unwrap();
         assert!(
             preserved_content.contains("a:"),
             "preserved file should still have entry for prerelease package a"
@@ -590,12 +597,7 @@ mod tests {
         let remaining: Vec<_> = fs::read_dir(&changesets_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert!(
             remaining.is_empty(),
@@ -640,7 +642,9 @@ mod tests {
         workspace.add_crate("pkg3", "1.0.0");
         workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: first prerelease change");
 
-        let output = workspace.run_release(false).expect("first release should succeed");
+        let output = workspace
+            .run_release(false)
+            .expect("first release should succeed");
         assert_eq!(output.released_packages.len(), 1);
         assert_eq!(output.released_packages[0].name, "pkg1");
         workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
@@ -650,7 +654,9 @@ mod tests {
 
         workspace.add_changeset(&["pkg1"], Bump::Patch, "fix: second prerelease fix");
 
-        let output = workspace.run_release(false).expect("second release should succeed");
+        let output = workspace
+            .run_release(false)
+            .expect("second release should succeed");
         assert_eq!(output.released_packages.len(), 1);
         assert_eq!(output.released_packages[0].name, "pkg1");
         workspace.assert_crate_version("pkg1", "1.0.0-alpha.2");
@@ -666,7 +672,9 @@ mod tests {
         workspace.add_crate("pkg3", "1.0.0");
         workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: prerelease feature");
 
-        workspace.run_release(false).expect("prerelease should succeed");
+        workspace
+            .run_release(false)
+            .expect("prerelease should succeed");
         workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
 
         let prerelease_dir = workspace.root.join(".sampo/prerelease");
@@ -674,7 +682,9 @@ mod tests {
 
         workspace.add_changeset(&["pkg2"], Bump::Patch, "fix: stable bug fix");
 
-        let output = workspace.run_release(false).expect("release should succeed");
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
         let released_names: Vec<&str> = output
             .released_packages
             .iter()
@@ -1702,12 +1712,7 @@ tempfile = "3.0"
         let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert_eq!(
             preserved_files.len(),
@@ -1716,4 +1721,80 @@ tempfile = "3.0"
         );
     }
 
+    #[test]
+    fn range_constraint_preserved_through_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency_with_constraint("a", "b", "^0.1")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        workspace.run_release(false).unwrap();
+
+        // b gets a patch bump -> 0.1.1
+        workspace.assert_crate_version("b", "0.1.1");
+
+        // a's dependency constraint "^0.1" should be preserved (0.1.1 satisfies ^0.1)
+        workspace.assert_dependency_version("a", "b", "^0.1");
+    }
+
+    #[test]
+    fn pinned_version_updated_through_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency("a", "b", "0.1.0")
+            .add_changeset(&["b"], Bump::Minor, "feat: b minor");
+
+        workspace.run_release(false).unwrap();
+
+        // b gets a minor bump -> 0.2.0
+        workspace.assert_crate_version("b", "0.2.0");
+
+        // a's pinned version "0.1.0" should be updated to "0.2.0"
+        workspace.assert_dependency_version("a", "b", "0.2.0");
+    }
+
+    #[test]
+    fn constraint_violation_in_fixed_group_blocks_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0") // tilde: allows 1.0.x only
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor"); // b -> 1.1.0, violates ~1.0.0
+
+        let result = workspace.run_release(true);
+        assert!(
+            result.is_err(),
+            "Expected release to fail due to constraint violation in fixed group"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("constraint") || err_msg.contains("Constraint"),
+            "Error should mention constraint violation, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn constraint_violation_without_group_allows_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0") // tilde: allows 1.0.x only
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor"); // b -> 1.1.0, violates ~1.0.0
+        // No fixed/linked config — violation is only a warning, release proceeds
+
+        let result = workspace.run_release(true);
+        assert!(
+            result.is_ok(),
+            "Expected release to succeed with warning, got: {:?}",
+            result.err()
+        );
+    }
 }

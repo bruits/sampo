@@ -7,9 +7,10 @@ use crate::types::{
     Workspace, format_ambiguity_options,
 };
 use crate::{
-    changeset::{parse_changeset, render_changeset_markdown_with_tags, ChangesetInfo},
-    config::Config, current_branch, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
+    config::Config,
+    current_branch, detect_github_repo_slug_with_config, discover_workspace,
+    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
@@ -557,8 +558,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let mut final_changesets;
     let plan_state = if using_preserved {
         if dry_run {
-            let filtered_preserved =
-                filter_prerelease_entries(preserved_changesets, &workspace)?;
+            let filtered_preserved = filter_prerelease_entries(preserved_changesets, &workspace)?;
             final_changesets = current_changesets;
             final_changesets.extend(filtered_preserved);
         } else {
@@ -711,7 +711,6 @@ fn compute_plan_state(
 
 /// Validates dependency constraints before applying releases.
 /// Returns error for fixed/linked packages with violations, warnings otherwise.
-#[allow(dead_code)] // Infrastructure for future use
 fn validate_dependency_constraints(
     releases: &ReleasePlan,
     workspace: &Workspace,
@@ -733,6 +732,16 @@ fn validate_dependency_constraints(
     let linked_groups =
         resolve_config_groups(workspace, &config.linked_dependencies, "packages.linked")?;
 
+    // Load cargo metadata once for constraint extraction on Cargo packages.
+    let has_cargo = releases
+        .iter()
+        .any(|(id, _, _)| by_id.get(id).is_some_and(|p| p.kind == PackageKind::Cargo));
+    let cargo_metadata = if has_cargo {
+        ManifestMetadata::load(workspace).ok()
+    } else {
+        None
+    };
+
     let mut violations: Vec<ConstraintViolation> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -753,15 +762,29 @@ fn validate_dependency_constraints(
                 continue;
             };
 
-            // Placeholder until per-adapter constraint extraction is implemented.
-            // Note: adapters receive the package name and must handle alias resolution
-            // themselves when parsing the manifest (e.g., `alias = { package = "name" }`).
-            let constraint_placeholder = "*";
+            // Pinned versions (bare semver) will be updated during manifest updates,
+            // so only range constraints need validation here.
+            // Other ecosystems skip validation (their adapters return Skipped).
+            let constraint = match pkg_info.kind {
+                PackageKind::Cargo => {
+                    if let Some(ref meta) = cargo_metadata {
+                        // Skip pinned deps — they will be rewritten to the exact new version
+                        if meta.is_dependency_pinned(&manifest_path, &dep_info.name) {
+                            continue;
+                        }
+                        meta.get_dependency_constraint(&manifest_path, &dep_info.name)
+                            .unwrap_or_else(|| "*".to_string())
+                    } else {
+                        "*".to_string()
+                    }
+                }
+                _ => "*".to_string(),
+            };
 
             let check_result = adapter.check_dependency_constraint(
                 &manifest_path,
                 &dep_info.name,
-                constraint_placeholder,
+                &constraint,
                 new_dep_version,
             )?;
 
@@ -911,8 +934,8 @@ fn restore_stable_preserved_changesets(
             continue;
         }
 
-        let text = fs::read_to_string(&path)
-            .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
+        let text =
+            fs::read_to_string(&path).map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
         let parsed = match parse_changeset(&text, &path, allowed_tags)? {
             Some(cs) => cs,
             None => continue,
