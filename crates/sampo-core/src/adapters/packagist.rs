@@ -1,4 +1,5 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
+use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
@@ -222,7 +223,7 @@ impl PackagistAdapter {
 
         // Packagist is VCS-based: it auto-updates when you push git tags.
         // The "publish" step validates the package structure.
-        let mut cmd = Command::new("composer");
+        let mut cmd = command("composer");
         cmd.current_dir(manifest_dir);
         cmd.arg("validate");
 
@@ -278,7 +279,7 @@ impl PackagistAdapter {
 
         println!("Regenerating composer.lock…");
 
-        let mut cmd = Command::new("composer");
+        let mut cmd = command("composer");
         cmd.arg("update").arg("--lock").current_dir(workspace_root);
 
         println!("Running: {}", format_command_display(&cmd));

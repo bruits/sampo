@@ -1,4 +1,5 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
+use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -189,7 +190,7 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
         )));
     }
 
-    let mut cmd = Command::new("mix");
+    let mut cmd = command("mix");
     cmd.current_dir(manifest_dir);
     cmd.arg("hex.publish");
 
@@ -207,7 +208,15 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
 
     println!("Running: {}", format_command_display(&cmd));
 
-    let status = cmd.status()?;
+    let status = cmd.status().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            SampoError::Publish(
+                "mix not found in PATH; ensure mix is installed to publish packages".to_string(),
+            )
+        } else {
+            SampoError::Io(err)
+        }
+    })?;
     if !status.success() {
         return Err(SampoError::Publish(format!(
             "mix hex.publish failed for {} (package '{}') with status {}",
@@ -232,7 +241,7 @@ pub(super) fn regenerate_lockfile(workspace_root: &Path) -> Result<()> {
 
     println!("Regenerating mix.lock using mix…");
 
-    let mut cmd = Command::new("mix");
+    let mut cmd = command("mix");
     cmd.arg("deps.get");
     cmd.current_dir(workspace_root);
 

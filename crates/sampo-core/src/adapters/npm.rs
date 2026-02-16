@@ -1,4 +1,5 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
+use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -109,28 +110,14 @@ impl NpmAdapter {
         }
 
         let manager = detect_package_manager(manifest_dir, &info);
-        let mut cmd = match manager {
-            PackageManager::Npm => {
-                let mut cmd = Command::new("npm");
-                cmd.arg("publish");
-                cmd
-            }
-            PackageManager::Pnpm => {
-                let mut cmd = Command::new("pnpm");
-                cmd.arg("publish");
-                cmd
-            }
-            PackageManager::Yarn => {
-                let mut cmd = Command::new("yarn");
-                cmd.arg("publish");
-                cmd
-            }
-            PackageManager::Bun => {
-                let mut cmd = Command::new("bun");
-                cmd.arg("publish");
-                cmd
-            }
+        let manager_name = match manager {
+            PackageManager::Npm => "npm",
+            PackageManager::Pnpm => "pnpm",
+            PackageManager::Yarn => "yarn",
+            PackageManager::Bun => "bun",
         };
+        let mut cmd = command(manager_name);
+        cmd.arg("publish");
         cmd.current_dir(manifest_dir);
 
         if dry_run && !has_flag(extra_args, "--dry-run") {
@@ -163,17 +150,20 @@ impl NpmAdapter {
 
         println!("Running: {}", format_command_display(&cmd));
 
-        let status = cmd.status()?;
+        let status = cmd.status().map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                SampoError::Publish(format!(
+                    "{} not found in PATH; ensure {} is installed to publish packages",
+                    manager_name, manager_name
+                ))
+            } else {
+                SampoError::Io(err)
+            }
+        })?;
         if !status.success() {
-            let tool = match manager {
-                PackageManager::Npm => "npm",
-                PackageManager::Pnpm => "pnpm",
-                PackageManager::Yarn => "yarn",
-                PackageManager::Bun => "bun",
-            };
             return Err(SampoError::Publish(format!(
                 "{} publish failed for {} (package '{}') with status {}",
-                tool,
+                manager_name,
                 manifest_path.display(),
                 info.name,
                 status
@@ -542,7 +532,7 @@ fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
 
     println!("Regenerating {} using {}…", lockfile_name, program);
 
-    let mut cmd = Command::new(program);
+    let mut cmd = command(program);
     cmd.args(&args).current_dir(workspace_root);
 
     let status = cmd.status().map_err(|err| {
