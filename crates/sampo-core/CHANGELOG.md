@@ -1,5 +1,12 @@
 # sampo-core
 
+## 0.12.1 — 2026-02-16
+
+### Patch changes
+
+- [c8b2389](https://github.com/bruits/sampo/commit/c8b2389e7d55da858d11218cbed942a96806ba92) Fixed an endless loop where the release PR would be continuously reopened for projects using prerelease versions. — Thanks @rickmartensnl!
+- [edabdac](https://github.com/bruits/sampo/commit/edabdac14bc4ee464f51a2d83f3140e21d525365) Fixed publish command failing on Windows when package managers (npm, pnpm, yarn, composer, mix) are installed as .cmd/.bat scripts. — Thanks @goulvenclech!
+
 ## 0.12.0 — 2026-01-31
 
 ### Minor changes

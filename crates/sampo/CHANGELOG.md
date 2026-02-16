@@ -1,5 +1,11 @@
 # sampo
 
+## 0.16.1 — 2026-02-16
+
+### Patch changes
+
+- Updated dependencies: sampo-core@0.12.1
+
 ## 0.16.0 — 2026-01-31
 
 ### Minor changes
