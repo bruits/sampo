@@ -400,9 +400,7 @@ mod tests {
         workspace.add_crate("foo", "0.1.0-alpha.1");
         workspace.add_preserved_changeset(&["foo"], Bump::Minor, "Added some feature");
 
-        let output = workspace
-            .run_release(true)
-            .expect("release should succeed");
+        let output = workspace.run_release(true).expect("release should succeed");
 
         assert!(
             output.released_packages.is_empty(),
@@ -437,9 +435,7 @@ mod tests {
             .add_crate("b", "2.0.0");
         workspace.add_preserved_changeset(&["a"], Bump::Minor, "Added feature for a");
 
-        let output = workspace
-            .run_release(true)
-            .expect("release should succeed");
+        let output = workspace.run_release(true).expect("release should succeed");
 
         assert!(
             output.released_packages.is_empty(),
@@ -481,12 +477,7 @@ mod tests {
         let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert_eq!(
             preserved_files.len(),
@@ -495,8 +486,7 @@ mod tests {
         );
 
         // Verify the preserved file only contains the prerelease entry for 'a'
-        let preserved_content =
-            fs::read_to_string(preserved_files[0].path()).unwrap();
+        let preserved_content = fs::read_to_string(preserved_files[0].path()).unwrap();
         assert!(
             preserved_content.contains("a:"),
             "preserved file should contain entry for 'a'"
@@ -515,9 +505,7 @@ mod tests {
             .add_crate("b", "2.0.0-beta.1");
         workspace.add_preserved_changeset(&["a", "b"], Bump::Minor, "Added cross feature");
 
-        let output = workspace
-            .run_release(true)
-            .expect("release should succeed");
+        let output = workspace.run_release(true).expect("release should succeed");
 
         assert!(
             output.released_packages.is_empty(),
@@ -561,12 +549,7 @@ mod tests {
         let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert_eq!(
             preserved_files.len(),
@@ -574,8 +557,7 @@ mod tests {
             "one file should remain in prerelease dir (the rewritten mixed changeset)"
         );
 
-        let preserved_content =
-            fs::read_to_string(preserved_files[0].path()).unwrap();
+        let preserved_content = fs::read_to_string(preserved_files[0].path()).unwrap();
         assert!(
             preserved_content.contains("a:"),
             "preserved file should still have entry for prerelease package a"
@@ -590,12 +572,7 @@ mod tests {
         let remaining: Vec<_> = fs::read_dir(&changesets_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert!(
             remaining.is_empty(),
@@ -640,7 +617,9 @@ mod tests {
         workspace.add_crate("pkg3", "1.0.0");
         workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: first prerelease change");
 
-        let output = workspace.run_release(false).expect("first release should succeed");
+        let output = workspace
+            .run_release(false)
+            .expect("first release should succeed");
         assert_eq!(output.released_packages.len(), 1);
         assert_eq!(output.released_packages[0].name, "pkg1");
         workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
@@ -650,7 +629,9 @@ mod tests {
 
         workspace.add_changeset(&["pkg1"], Bump::Patch, "fix: second prerelease fix");
 
-        let output = workspace.run_release(false).expect("second release should succeed");
+        let output = workspace
+            .run_release(false)
+            .expect("second release should succeed");
         assert_eq!(output.released_packages.len(), 1);
         assert_eq!(output.released_packages[0].name, "pkg1");
         workspace.assert_crate_version("pkg1", "1.0.0-alpha.2");
@@ -666,7 +647,9 @@ mod tests {
         workspace.add_crate("pkg3", "1.0.0");
         workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: prerelease feature");
 
-        workspace.run_release(false).expect("prerelease should succeed");
+        workspace
+            .run_release(false)
+            .expect("prerelease should succeed");
         workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
 
         let prerelease_dir = workspace.root.join(".sampo/prerelease");
@@ -674,7 +657,9 @@ mod tests {
 
         workspace.add_changeset(&["pkg2"], Bump::Patch, "fix: stable bug fix");
 
-        let output = workspace.run_release(false).expect("release should succeed");
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
         let released_names: Vec<&str> = output
             .released_packages
             .iter()
@@ -1702,12 +1687,7 @@ tempfile = "3.0"
         let preserved_files: Vec<_> = fs::read_dir(&prerelease_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "md")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
         assert_eq!(
             preserved_files.len(),
@@ -1715,5 +1695,4 @@ tempfile = "3.0"
             "prerelease dir should keep the rewritten mixed changeset"
         );
     }
-
 }
