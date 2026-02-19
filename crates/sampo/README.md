@@ -107,6 +107,9 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > [!WARNING]
 > Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `pip`/`twine`, `composer`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
 
+> [!TIP]
+> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, or `--packagist-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+
 #### Pre-release versions
 
 Run `sampo pre` to manage pre-release versions for one or more packages.

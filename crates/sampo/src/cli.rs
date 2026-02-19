@@ -43,13 +43,33 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n\nAll arguments after `--` are forwarded to the underlying publish command (separator required).")]
+Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, or --packagist-args to forward arguments\nto a specific ecosystem only.")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Extra flags passed through to the underlying publish command (must follow `--`)
+    /// Extra arguments forwarded only to Cargo (e.g. --cargo-args --allow-dirty)
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub cargo_args: Option<Vec<String>>,
+
+    /// Extra arguments forwarded only to npm/pnpm/yarn/bun (e.g. --npm-args --access restricted)
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub npm_args: Option<Vec<String>>,
+
+    /// Extra arguments forwarded only to Hex/Mix
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub hex_args: Option<Vec<String>>,
+
+    /// Extra arguments forwarded only to PyPI
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub pypi_args: Option<Vec<String>>,
+
+    /// Extra arguments forwarded only to Packagist/Composer
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub packagist_args: Option<Vec<String>>,
+
+    /// Extra flags passed through to ALL underlying publish commands (must follow `--`)
     #[arg(last = true, value_name = "PUBLISH_ARG")]
     pub publish_args: Vec<String>,
 }
@@ -261,6 +281,76 @@ mod tests {
             Commands::Update(args) => {
                 assert!(args.yes);
                 assert!(args.pre);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_publish_cargo_args_with_hyphen_values() {
+        let cli = Cli::try_parse_from([
+            "sampo",
+            "publish",
+            "--cargo-args",
+            "--allow-dirty",
+            "--no-verify",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Publish(args) => {
+                assert_eq!(
+                    args.cargo_args,
+                    Some(vec!["--allow-dirty".to_string(), "--no-verify".to_string()])
+                );
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_publish_ecosystem_args_with_universal() {
+        let cli = Cli::try_parse_from([
+            "sampo",
+            "publish",
+            "--cargo-args=--allow-dirty",
+            "--npm-args=--access",
+            "--",
+            "--tag",
+            "beta",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Publish(args) => {
+                assert_eq!(args.cargo_args, Some(vec!["--allow-dirty".to_string()]));
+                assert_eq!(args.npm_args, Some(vec!["--access".to_string()]));
+                assert_eq!(args.publish_args, vec!["--tag", "beta"]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_publish_all_ecosystem_args() {
+        let cli = Cli::try_parse_from([
+            "sampo",
+            "publish",
+            "--cargo-args=--allow-dirty",
+            "--npm-args=--access",
+            "--hex-args=--replace",
+            "--pypi-args=--skip-existing",
+            "--packagist-args=--no-interaction",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Publish(args) => {
+                assert_eq!(args.cargo_args, Some(vec!["--allow-dirty".to_string()]));
+                assert_eq!(args.npm_args, Some(vec!["--access".to_string()]));
+                assert_eq!(args.hex_args, Some(vec!["--replace".to_string()]));
+                assert_eq!(args.pypi_args, Some(vec!["--skip-existing".to_string()]));
+                assert_eq!(
+                    args.packagist_args,
+                    Some(vec!["--no-interaction".to_string()])
+                );
             }
             _ => panic!("wrong variant"),
         }

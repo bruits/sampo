@@ -1,5 +1,5 @@
 use crate::adapters::PackageAdapter;
-use crate::types::{PackageInfo, PublishOutput};
+use crate::types::{PackageInfo, PackageKind, PublishOutput};
 use crate::{
     Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
@@ -8,6 +8,36 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
+
+/// Holds universal and per-ecosystem extra arguments for publish commands.
+///
+/// Universal args (from `-- <args>`) are forwarded to every adapter.
+/// Per-ecosystem args are forwarded only to the matching adapter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PublishExtraArgs {
+    pub universal: Vec<String>,
+    pub cargo: Vec<String>,
+    pub npm: Vec<String>,
+    pub hex: Vec<String>,
+    pub pypi: Vec<String>,
+    pub packagist: Vec<String>,
+}
+
+impl PublishExtraArgs {
+    /// Returns the merged universal + ecosystem-specific args for a given package kind.
+    pub fn args_for_kind(&self, kind: PackageKind) -> Vec<String> {
+        let ecosystem_args = match kind {
+            PackageKind::Cargo => &self.cargo,
+            PackageKind::Npm => &self.npm,
+            PackageKind::Hex => &self.hex,
+            PackageKind::PyPI => &self.pypi,
+            PackageKind::Packagist => &self.packagist,
+        };
+        let mut merged = self.universal.clone();
+        merged.extend(ecosystem_args.iter().cloned());
+        merged
+    }
+}
 
 /// Publishes all publishable packages in a workspace to their registries in dependency order.
 ///
@@ -24,25 +54,30 @@ use std::process::Command;
 /// # Arguments
 /// * `root` - Path to the workspace root directory
 /// * `dry_run` - If true, performs validation and shows what would be published without actually publishing
-/// * `publish_args` - Additional arguments forwarded to the underlying publish command
+/// * `extra_args` - Universal and per-ecosystem extra arguments for the publish commands
 ///
 /// # Examples
 /// ```no_run
 /// use std::path::Path;
 /// use sampo_core::run_publish;
+/// use sampo_core::publish::PublishExtraArgs;
 ///
 /// // Dry run to see what would be published
-/// let output = run_publish(Path::new("."), true, &[]).unwrap();
+/// let output = run_publish(Path::new("."), true, &PublishExtraArgs::default()).unwrap();
 /// println!("Would create {} tags", output.tags.len());
 ///
-/// // Actual publish with custom cargo args
-/// let output = run_publish(Path::new("."), false, &["--allow-dirty".to_string()]).unwrap();
+/// // Actual publish with cargo-specific args
+/// let args = PublishExtraArgs {
+///     cargo: vec!["--allow-dirty".to_string()],
+///     ..Default::default()
+/// };
+/// let output = run_publish(Path::new("."), false, &args).unwrap();
 /// println!("Created {} tags", output.tags.len());
 /// ```
 pub fn run_publish(
     root: &std::path::Path,
     dry_run: bool,
-    publish_args: &[String],
+    extra_args: &PublishExtraArgs,
 ) -> Result<PublishOutput> {
     let ws = discover_workspace(root)?;
     let config = Config::load(&ws.root)?;
@@ -192,7 +227,8 @@ pub fn run_publish(
 
         for (kind, packages) in &packages_by_kind {
             let adapter = PackageAdapter::from_kind(*kind);
-            adapter.publish_dry_run(&ws.root, packages, publish_args)?;
+            let args = extra_args.args_for_kind(*kind);
+            adapter.publish_dry_run(&ws.root, packages, &args)?;
         }
 
         println!("Dry-run validation passed.");
@@ -202,7 +238,8 @@ pub fn run_publish(
     let mut any_published = false;
 
     for (package, adapter, manifest) in &publish_targets {
-        adapter.publish(manifest.as_path(), dry_run, publish_args)?;
+        let args = extra_args.args_for_kind(package.kind);
+        adapter.publish(manifest.as_path(), dry_run, &args)?;
         any_published = true;
 
         let tag = config.build_tag_name(&package.name, &package.version);
@@ -429,6 +466,70 @@ mod tests {
         process::Command,
         sync::{Mutex, MutexGuard, OnceLock},
     };
+
+    #[test]
+    fn args_for_kind_returns_universal_only_when_no_ecosystem_args() {
+        let extra = PublishExtraArgs {
+            universal: vec!["--tag".into(), "beta".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            extra.args_for_kind(PackageKind::Cargo),
+            vec!["--tag", "beta"]
+        );
+        assert_eq!(extra.args_for_kind(PackageKind::Npm), vec!["--tag", "beta"]);
+        assert_eq!(extra.args_for_kind(PackageKind::Hex), vec!["--tag", "beta"]);
+        assert_eq!(
+            extra.args_for_kind(PackageKind::PyPI),
+            vec!["--tag", "beta"]
+        );
+        assert_eq!(
+            extra.args_for_kind(PackageKind::Packagist),
+            vec!["--tag", "beta"]
+        );
+    }
+
+    #[test]
+    fn args_for_kind_merges_universal_and_ecosystem_args() {
+        let extra = PublishExtraArgs {
+            universal: vec!["--tag".into(), "beta".into()],
+            cargo: vec!["--allow-dirty".into()],
+            npm: vec!["--access".into(), "restricted".into()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            extra.args_for_kind(PackageKind::Cargo),
+            vec!["--tag", "beta", "--allow-dirty"]
+        );
+        assert_eq!(
+            extra.args_for_kind(PackageKind::Npm),
+            vec!["--tag", "beta", "--access", "restricted"]
+        );
+    }
+
+    #[test]
+    fn args_for_kind_returns_only_ecosystem_args_when_no_universal() {
+        let extra = PublishExtraArgs {
+            cargo: vec!["--allow-dirty".into()],
+            hex: vec!["--replace".into()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            extra.args_for_kind(PackageKind::Cargo),
+            vec!["--allow-dirty"]
+        );
+        assert_eq!(extra.args_for_kind(PackageKind::Npm), Vec::<String>::new());
+        assert_eq!(extra.args_for_kind(PackageKind::Hex), vec!["--replace"]);
+    }
+
+    #[test]
+    fn args_for_kind_returns_empty_when_no_args() {
+        let extra = PublishExtraArgs::default();
+        assert!(extra.args_for_kind(PackageKind::Cargo).is_empty());
+        assert!(extra.args_for_kind(PackageKind::Npm).is_empty());
+    }
 
     /// Test workspace builder for publish testing
     struct TestWorkspace {
@@ -681,7 +782,16 @@ fn main() {
 
         fn run_publish(&self, dry_run: bool) -> Result<PublishOutput> {
             let _branch_guard = override_current_branch_for_tests(&self.branch);
-            super::run_publish(&self.root, dry_run, &[])
+            super::run_publish(&self.root, dry_run, &super::PublishExtraArgs::default())
+        }
+
+        fn run_publish_with_args(
+            &self,
+            dry_run: bool,
+            extra_args: &super::PublishExtraArgs,
+        ) -> Result<PublishOutput> {
+            let _branch_guard = override_current_branch_for_tests(&self.branch);
+            super::run_publish(&self.root, dry_run, extra_args)
         }
 
         fn assert_publishable_crates(&self, expected: &[&str]) {
@@ -916,6 +1026,82 @@ fn main() {
             !publish_lines[1].contains("--dry-run"),
             "second invocation should omit --dry-run: {:?}",
             publish_lines[1]
+        );
+    }
+
+    #[test]
+    fn per_ecosystem_args_reach_cargo_publish_command() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("sampo-extra-args", "0.0.1");
+
+        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let extra = super::PublishExtraArgs {
+            cargo: vec!["--allow-dirty".into(), "--no-verify".into()],
+            ..Default::default()
+        };
+
+        workspace
+            .run_publish_with_args(false, &extra)
+            .expect("publish with per-ecosystem args should succeed");
+
+        let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
+        let publish_lines: Vec<&str> = log
+            .lines()
+            .filter(|line| line.starts_with("publish "))
+            .collect();
+
+        assert!(
+            publish_lines.len() >= 2,
+            "expected at least dry-run + real publish, got: {:?}",
+            publish_lines
+        );
+        for line in &publish_lines {
+            assert!(
+                line.contains("--allow-dirty"),
+                "publish invocation should include --allow-dirty: {:?}",
+                line
+            );
+            assert!(
+                line.contains("--no-verify"),
+                "publish invocation should include --no-verify: {:?}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn universal_and_ecosystem_args_both_forwarded() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("sampo-merged-args", "0.0.1");
+
+        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let extra = super::PublishExtraArgs {
+            universal: vec!["--tag".into(), "beta".into()],
+            cargo: vec!["--allow-dirty".into()],
+            ..Default::default()
+        };
+
+        workspace
+            .run_publish_with_args(false, &extra)
+            .expect("publish with merged args should succeed");
+
+        let log = fs::read_to_string(fake_cargo.log_path()).expect("fake cargo log should exist");
+        let actual_publish: Vec<&str> = log
+            .lines()
+            .filter(|line| line.starts_with("publish ") && !line.contains("--dry-run"))
+            .collect();
+        assert_eq!(actual_publish.len(), 1, "expected one real publish");
+        assert!(
+            actual_publish[0].contains("--tag"),
+            "should forward universal --tag arg: {:?}",
+            actual_publish[0]
+        );
+        assert!(
+            actual_publish[0].contains("--allow-dirty"),
+            "should forward cargo-specific --allow-dirty arg: {:?}",
+            actual_publish[0]
         );
     }
 
@@ -1887,7 +2073,7 @@ edition = "2021"
 
         // Run publish (not dry-run)
         let _branch_guard = override_current_branch_for_tests("main");
-        let result = super::run_publish(&root, false, &[]);
+        let result = super::run_publish(&root, false, &super::PublishExtraArgs::default());
 
         // The publish should succeed (no error)
         assert!(

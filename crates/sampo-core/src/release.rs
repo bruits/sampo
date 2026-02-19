@@ -6,9 +6,10 @@ use crate::types::{
     ReleaseOutput, ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
 };
 use crate::{
-    changeset::{parse_changeset, render_changeset_markdown_with_tags, ChangesetInfo},
-    config::Config, current_branch, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
+    config::Config,
+    current_branch, detect_github_repo_slug_with_config, discover_workspace,
+    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
@@ -556,8 +557,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     let mut final_changesets;
     let plan_state = if using_preserved {
         if dry_run {
-            let filtered_preserved =
-                filter_prerelease_entries(preserved_changesets, &workspace)?;
+            let filtered_preserved = filter_prerelease_entries(preserved_changesets, &workspace)?;
             final_changesets = current_changesets;
             final_changesets.extend(filtered_preserved);
         } else {
@@ -800,8 +800,8 @@ fn restore_stable_preserved_changesets(
             continue;
         }
 
-        let text = fs::read_to_string(&path)
-            .map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
+        let text =
+            fs::read_to_string(&path).map_err(|e| SampoError::Io(io_error_with_path(e, &path)))?;
         let parsed = match parse_changeset(&text, &path, allowed_tags)? {
             Some(cs) => cs,
             None => continue,
