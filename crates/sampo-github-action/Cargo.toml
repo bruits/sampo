@@ -1,6 +1,6 @@
 [package]
 name = "sampo-github-action"
-version = "0.14.1"
+version = "0.15.0"
 license = "MIT"
 authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
 edition = "2024"
@@ -12,7 +12,7 @@ keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
 
 [dependencies]
-sampo-core = { version = "0.12.0", path = "../sampo-core" }
+sampo-core = { version = "0.13.0", path = "../sampo-core" }
 thiserror = "1.0"
 glob = "0.3"
 rustc-hash = "2.0"
