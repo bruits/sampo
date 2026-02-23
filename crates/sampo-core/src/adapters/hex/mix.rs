@@ -878,5 +878,21 @@ fn path_from_keywords(keywords: Node<'_>, source: &str, manifest_dir: &Path) -> 
     None
 }
 
+/// Find the version constraint for a named dependency in a Mix manifest.
+pub(crate) fn find_dependency_constraint_value(
+    manifest_path: &Path,
+    dep_name: &str,
+) -> Result<Option<String>> {
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+    let deps = collect_dependencies(&text, manifest_path.parent().unwrap_or(Path::new(".")));
+    for dep in deps {
+        if dep.name == dep_name {
+            return Ok(dep.requirement.map(|r| r.value));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod mix_tests;
