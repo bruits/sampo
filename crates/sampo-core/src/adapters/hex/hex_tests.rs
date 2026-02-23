@@ -238,6 +238,31 @@ end
     // Bare pinned version → skipped
 
     #[test]
+    fn satisfies_hex_comparator_not_equal_satisfied() {
+        assert_satisfied("!= 1.2.3", "2.0.0");
+    }
+
+    #[test]
+    fn satisfies_hex_comparator_not_equal_not_satisfied() {
+        assert_not_satisfied("!= 1.2.3", "1.2.3");
+    }
+
+    #[test]
+    fn hex_version_satisfies_mixed_and_or() {
+        assert_satisfied(">= 1.0.0 and < 2.0.0 or >= 3.0.0", "1.5.0");
+        assert_satisfied(">= 1.0.0 and < 2.0.0 or >= 3.0.0", "3.0.0");
+        assert_not_satisfied(">= 1.0.0 and < 2.0.0 or >= 3.0.0", "2.5.0");
+    }
+
+    #[test]
+    fn satisfies_hex_comparator_not_equal_in_conjunction() {
+        assert_satisfied("!= 1.0.0 and >= 0.5.0", "0.8.0");
+        assert_not_satisfied("!= 1.0.0 and >= 0.5.0", "1.0.0");
+    }
+
+    // Skip cases
+
+    #[test]
     fn bare_pinned_version_skipped() {
         assert_skipped("1.2.3", "1.2.3");
     }
@@ -286,5 +311,24 @@ end
             "path dep without version requirement should be skipped, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn compute_requirement_not_equal() {
+        let temp = tempfile::tempdir().unwrap();
+        write_mix_with_dep(temp.path(), r#""!= 1.0.0""#);
+        let manifest = temp.path().join("mix.exs");
+        let input = fs::read_to_string(&manifest).unwrap();
+        let mut new_versions = std::collections::BTreeMap::new();
+        new_versions.insert("test_dep".to_string(), "2.0.0".to_string());
+        let (output, updated) =
+            update_manifest_versions(&manifest, &input, None, &new_versions).unwrap();
+        assert!(
+            output.contains("!= 2.0.0"),
+            "expected constraint updated to '!= 2.0.0', got:\n{}",
+            output
+        );
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0], ("test_dep".to_string(), "2.0.0".to_string()));
     }
 }
