@@ -1537,3 +1537,349 @@ version = "0.1.0"
     assert_eq!(paths.len(), 1);
     assert!(paths.iter().next().unwrap().ends_with("valid-pkg"));
 }
+
+mod constraint_validation {
+    use super::*;
+    use crate::types::ConstraintCheckResult;
+
+    fn assert_constraint(constraint: &str, new_version: &str) -> ConstraintCheckResult {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = format!(
+            r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep{}"]
+"#,
+            constraint
+        );
+        fs::write(&manifest_path, &content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = match find_dependency_constraint(&text, "test-dep").unwrap() {
+            Some(c) => c,
+            None => {
+                return ConstraintCheckResult::Skipped {
+                    reason: "dependency 'test-dep' not found in manifest".to_string(),
+                };
+            }
+        };
+        check_pep440_constraint(&constraint, new_version).unwrap()
+    }
+
+    fn assert_satisfied(constraint: &str, new_version: &str) {
+        assert_eq!(
+            assert_constraint(constraint, new_version),
+            ConstraintCheckResult::Satisfied,
+            "expected '{}' to be satisfied by '{}'",
+            constraint,
+            new_version
+        );
+    }
+
+    fn assert_not_satisfied(constraint: &str, new_version: &str) {
+        let result = assert_constraint(constraint, new_version);
+        assert!(
+            matches!(result, ConstraintCheckResult::NotSatisfied { .. }),
+            "expected '{}' to be not satisfied by '{}', got {:?}",
+            constraint,
+            new_version,
+            result
+        );
+    }
+
+    fn assert_skipped(constraint: &str, new_version: &str) {
+        let result = assert_constraint(constraint, new_version);
+        assert!(
+            matches!(result, ConstraintCheckResult::Skipped { .. }),
+            "expected '{}' to be skipped for '{}', got {:?}",
+            constraint,
+            new_version,
+            result
+        );
+    }
+
+    #[test]
+    fn compatible_release_3_part_satisfied() {
+        assert_satisfied("~=1.4.2", "1.4.5");
+    }
+
+    #[test]
+    fn compatible_release_2_part_satisfied() {
+        assert_satisfied("~=1.4", "1.5.0");
+    }
+
+    #[test]
+    fn compatible_release_3_part_not_satisfied() {
+        assert_not_satisfied("~=1.4.2", "1.5.0");
+    }
+
+    #[test]
+    fn compatible_release_2_part_not_satisfied() {
+        assert_not_satisfied("~=1.4", "2.0.0");
+    }
+
+    #[test]
+    fn exact_satisfied() {
+        assert_satisfied("==1.2.3", "1.2.3");
+    }
+
+    #[test]
+    fn exact_not_satisfied() {
+        assert_not_satisfied("==1.2.3", "1.2.4");
+    }
+
+    #[test]
+    fn exact_wildcard_satisfied() {
+        assert_satisfied("==1.2.*", "1.2.5");
+    }
+
+    #[test]
+    fn exact_wildcard_not_satisfied() {
+        assert_not_satisfied("==1.2.*", "1.3.0");
+    }
+
+    #[test]
+    fn not_equal_satisfied() {
+        assert_satisfied("!=1.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn not_equal_not_satisfied() {
+        assert_not_satisfied("!=1.0.0", "1.0.0");
+    }
+
+    #[test]
+    fn not_equal_wildcard_satisfied() {
+        assert_satisfied("!=1.0.*", "2.0.0");
+    }
+
+    #[test]
+    fn not_equal_wildcard_not_satisfied() {
+        assert_not_satisfied("!=1.0.*", "1.0.5");
+    }
+
+    #[test]
+    fn gte_satisfied() {
+        assert_satisfied(">=1.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn gte_not_satisfied() {
+        assert_not_satisfied(">=2.0.0", "1.9.9");
+    }
+
+    #[test]
+    fn gt_satisfied() {
+        assert_satisfied(">1.0.0", "1.0.1");
+    }
+
+    #[test]
+    fn gt_not_satisfied_equal() {
+        assert_not_satisfied(">1.0.0", "1.0.0");
+    }
+
+    #[test]
+    fn lte_satisfied() {
+        assert_satisfied("<=2.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn lte_not_satisfied() {
+        assert_not_satisfied("<=2.0.0", "2.0.1");
+    }
+
+    #[test]
+    fn lt_satisfied() {
+        assert_satisfied("<2.0.0", "1.9.9");
+    }
+
+    #[test]
+    fn lt_not_satisfied() {
+        assert_not_satisfied("<2.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn compound_and_satisfied() {
+        assert_satisfied(">=1.0.0,<2.0.0", "1.5.0");
+    }
+
+    #[test]
+    fn compound_and_not_satisfied() {
+        assert_not_satisfied(">=1.0.0,<2.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn compound_and_whitespace_satisfied() {
+        assert_satisfied(">=1.0, <2.0", "1.5.0");
+    }
+
+    #[test]
+    fn skip_pinned_version() {
+        assert_skipped("1.2.3", "2.0.0");
+    }
+
+    #[test]
+    fn skip_prerelease_version() {
+        assert_skipped("~=1.0.0", "2.0.0-beta.1");
+    }
+
+    #[test]
+    fn skip_url_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep @ https://example.com/archive.tar.gz"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "2.0.0").unwrap();
+        assert!(
+            matches!(result, ConstraintCheckResult::Skipped { .. }),
+            "expected URL dependency to be skipped, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn skip_dep_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = []
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let result = find_dependency_constraint(&text, "missing-dep").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn skip_empty_constraint() {
+        assert_skipped("", "1.0.0");
+    }
+
+    #[test]
+    fn skip_prerelease_in_constraint() {
+        assert_skipped(">=1.0.0a1", "2.0.0");
+    }
+
+    #[test]
+    fn extras_parsed_correctly() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep[extra]>=1.0.0"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn marker_stripped_constraint_evaluated() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep>=1.0.0; python_version>=\"3.8\""]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn extras_and_marker_stripped() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep[extra]>=1.0.0; python_version>=\"3.8\""]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn pep503_normalization() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["Test_Dep>=1.0.0"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn optional_dependency_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["test-dep>=1.0.0"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn post_release_version_not_skipped() {
+        // .post is stable, must not be skipped as pre-release
+        assert_satisfied(">=1.0.0", "1.0.0.post1");
+    }
+
+    #[test]
+    fn post_release_constraint_not_skipped() {
+        // .post in constraint is stable, must not be skipped
+        assert_satisfied(">=1.0.0.post1", "2.0.0");
+    }
+}
