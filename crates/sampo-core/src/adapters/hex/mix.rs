@@ -566,7 +566,7 @@ fn compute_requirement(old: &str, new_version: &str) -> Option<String> {
         return None;
     }
 
-    const OPERATORS: [&str; 7] = ["~>", "==", ">=", "<=", ">", "<", "="];
+    const OPERATORS: [&str; 8] = ["~>", "==", "!=", ">=", "<=", ">", "<", "="];
     for op in OPERATORS {
         if let Some(rest) = trimmed.strip_prefix(op) {
             let current = rest.trim_start();

@@ -152,6 +152,7 @@ pub(super) fn check_dependency_constraint(
 
     // Skip pinned (bare) versions without any operator or conjunction
     if !trimmed.starts_with("~>")
+        && !trimmed.starts_with("!=")
         && !trimmed.starts_with("==")
         && !trimmed.starts_with(">=")
         && !trimmed.starts_with("<=")
@@ -267,6 +268,11 @@ fn satisfies_hex_comparator(comp: &str, version: (u64, u64, u64)) -> Option<bool
 
     if let Some(rest) = comp.strip_prefix("~>") {
         return satisfies_pessimistic(rest.trim(), version);
+    }
+
+    if let Some(rest) = comp.strip_prefix("!=") {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version != target);
     }
 
     if let Some(rest) = comp.strip_prefix("==") {
