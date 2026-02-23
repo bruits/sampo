@@ -7,15 +7,15 @@ First, a huge **thank you** for dedicating your time to helping us improve Sampo
 
 ## Philosophy
 
-Sampo is designed to be an helpful, reliable, and flexible tool that users can trust to manage changelogs, versioning, and publishing.
+Sampo is designed to be a helpful, reliable, and flexible tool that users can trust to manage changelogs, versioning, and publishing.
 
 We want to make it easy to get started, with minimal configuration, sensible defaults, and automated workflows. At the same time, we want to provide rich configuration options, and flexible workflows to cover more advanced use cases. Finally, Sampo should be easy to opt in and opt out, with little to none assumptions, conventions to follow, or lock-ins.
 
-We’re also committed to fostering a welcoming and respectful community. Any issue, PR, or discussion that violates our [code of conduct](https://github.com/bruits/sampo/blob/main/CODE_OF_CONDUCT.md) will be deleted, and the authors will be **banned**.
+We're also committed to fostering a welcoming and respectful community. Any issue, PR, or discussion that violates our [code of conduct](./CODE_OF_CONDUCT.md) will be deleted, and the authors will be **banned**.
 
 ## Before Opening Issues
 
-- **Do not report security vulnerabilities publicly** (e.g., in issues or discussions), please refer to our [security policy](https://github.com/bruits/sampo/blob/main/SECURITY.md).
+- **Do not report security vulnerabilities publicly** (e.g., in issues or discussions), please refer to our [security policy](./SECURITY.md).
 - **Do not create issues for questions about using Sampo.** Instead, ask your question in our [GitHub Discussions](https://github.com/bruits/sampo/discussions/categories/q-a).
 - **Do not create issues for ideas or suggestions.** Instead, share your thoughts in our [GitHub Discussions](https://github.com/bruits/sampo/discussions/categories/ideas).
 - **Check for duplicates.** Look through existing issues and discussions to see if your topic has already been addressed.
@@ -29,18 +29,24 @@ We’re also committed to fostering a welcoming and respectful community. Any is
 - **Write and run tests.** If you're adding new functionality or fixing a bug, please include tests to cover it. Run `cargo test --all` to ensure all existing tests pass.
 - **Write a changeset.** That's the whole point of Sampo! Run `sampo add` to create a new changeset file describing your changes.
 - Prefer small, focused PRs that address a single issue or feature. Larger PRs can be harder to review, and can often be broken down into smaller, more manageable pieces.
-- Prefer self-documenting code first, with expressive names and straightforward logic. Comments should explain *why* (intent, invariants, trade-offs), not *how*. Variable and function names should be clear and descriptive, not cryptic abbreviations.
+- PRs don't need to be perfect. Submit your best effort, and we will gladly assist in polishing the work.
+
+## Quality Guidelines
+
+- Prefer self-documenting code first, with expressive names and straightforward logic. Comments should explain *why* (intent, invariants, trade-offs), not *how*. Variable and function names should be clear and descriptive, not cryptic abbreviations. Avoid hidden state and side effects.
+- Tests should assert observable behavior (inputs/outputs, effects), not internal implementation details. Keep tests deterministic and independent of global state.
+- For errors, use typed error enums in library crates (derived with `thiserror`). Per-crate `pub type Result<T>` aliases for ergonomic signatures. Add context at the boundary (CLI/action) rather than deep in core, keep library error messages concise.
+- Prefer `?` propagation when possible, and reserve `.expect()`/`.unwrap()` for cases where failure is a programmer bug (e.g. hardcoded regex literals, test helpers).
 - Document any new public APIs, configuration options, or user-facing changes in the relevant README files. If you're unsure where or how to document something, just ask and we'll help you out.
-- We deeply value idiomatic, easy-to-maintain Rust code. Avoid code duplication when possible. And prefer clarity over cleverness, and small focused functions over dark magic 🧙‍♂️
-- As PRs will be squashed when merged, ensure your commit message follows the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. If you're unsure, just write a brief summary of your changes in the PR description, and we can help craft a good commit message when merging.
-- **PRs don't need to be perfect.** Submit your best effort, and we will gladly assist in polishing the work.
+- We deeply value idiomatic, easy-to-maintain Rust code. Avoid code duplication when possible. And prefer clarity over cleverness, and small focused functions over dark magic.
+- Explicit `use` imports for standard library types (e.g. `use std::collections::HashMap;`).
 
 ## Writing Changesets
 
 Sampo helps users write better changelogs, let's lead by example with our own.
 
 **Structure:**
-3. **Breaking prefix (if applicable):** `**⚠️ breaking change:**`
+1. **Breaking prefix (if applicable):** `**⚠️ breaking change:**`
 2. **Ecosystem prefix (if applicable):** `In Python (PyPI) projects, ...` or `In Elixir (Hex) projects, ...`
 3. **Verb:** `Added`, `Removed`, `Fixed`, `Changed`, `Deprecated`, or `Improved`.
 4. **Description**.
@@ -48,12 +54,7 @@ Sampo helps users write better changelogs, let's lead by example with our own.
 
 **Description guidelines:** concise (1-2 sentences), specific (mention the command/option/API), actionable (what changed, not why), user-facing (written for changelog readers), and in English. Don't detail internal implementation changes.
 
-**Examples:**
-- `Added \`--dry-run\` flag to preview publish without uploading.`
-- `In Elixir (Hex) projects, fixed version parsing for umbrella apps.`
-- `**⚠️ breaking change:** Removed deprecated \`legacy_mode\` option.`
-
-## Getting started
+## Getting Started
 
 Sampo is a fairly standard Rust project with a typical directory structure. It does not rely on any third-party build systems, complex configurations or dependencies in other languages. The only prerequisite is to have the latest stable version of [Rust](https://www.rust-lang.org/) installed.
 
