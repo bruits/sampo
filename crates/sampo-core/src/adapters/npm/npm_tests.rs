@@ -1,8 +1,290 @@
 use super::*;
+use crate::types::ConstraintCheckResult;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
+
+// Write a minimal package.json with one dependency and check the constraint.
+fn assert_constraint(constraint: &str, new_version: &str) -> ConstraintCheckResult {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("package.json");
+    let content = format!(
+        r#"{{"name":"test-pkg","version":"1.0.0","dependencies":{{"test-dep":"{}"}}}}"#,
+        constraint
+    );
+    fs::write(&manifest_path, &content).unwrap();
+    check_dependency_constraint(&manifest_path, "test-dep", "*", new_version).unwrap()
+}
+
+fn assert_satisfied(constraint: &str, new_version: &str) {
+    assert_eq!(
+        assert_constraint(constraint, new_version),
+        ConstraintCheckResult::Satisfied,
+        "expected '{}' to be satisfied by '{}'",
+        constraint,
+        new_version
+    );
+}
+
+fn assert_not_satisfied(constraint: &str, new_version: &str) {
+    let result = assert_constraint(constraint, new_version);
+    assert!(
+        matches!(result, ConstraintCheckResult::NotSatisfied { .. }),
+        "expected '{}' to be not satisfied by '{}', got {:?}",
+        constraint,
+        new_version,
+        result
+    );
+}
+
+fn assert_skipped(constraint: &str, new_version: &str) {
+    let result = assert_constraint(constraint, new_version);
+    assert!(
+        matches!(result, ConstraintCheckResult::Skipped { .. }),
+        "expected '{}' to be skipped for '{}', got {:?}",
+        constraint,
+        new_version,
+        result
+    );
+}
+
+#[test]
+fn check_dependency_constraint_caret_satisfied() {
+    assert_satisfied("^1.2.3", "1.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_caret_exact_match() {
+    assert_satisfied("^1.2.3", "1.2.3");
+}
+
+#[test]
+fn check_dependency_constraint_caret_zero_minor_satisfied() {
+    assert_satisfied("^0.2.3", "0.2.5");
+}
+
+#[test]
+fn check_dependency_constraint_tilde_satisfied() {
+    assert_satisfied("~1.2.3", "1.2.9");
+}
+
+#[test]
+fn check_dependency_constraint_gte_satisfied() {
+    assert_satisfied(">=1.0.0", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_range_and_satisfied() {
+    assert_satisfied(">=1.0.0 <3.0.0", "2.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_or_satisfied() {
+    assert_satisfied("^1.0.0 || ^2.0.0", "2.1.0");
+}
+
+#[test]
+fn check_dependency_constraint_star_satisfied() {
+    assert_satisfied("*", "5.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_x_range_major_satisfied() {
+    assert_satisfied("1.x", "1.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_x_range_minor_satisfied() {
+    assert_satisfied("1.2.x", "1.2.9");
+}
+
+#[test]
+fn check_dependency_constraint_hyphen_range_satisfied() {
+    assert_satisfied("1.2.3 - 2.3.4", "1.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_gt_satisfied() {
+    assert_satisfied(">1.0.0", "1.0.1");
+}
+
+#[test]
+fn check_dependency_constraint_lte_satisfied() {
+    assert_satisfied("<=2.0.0", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_lt_satisfied() {
+    assert_satisfied("<2.0.0", "1.9.9");
+}
+
+#[test]
+fn check_dependency_constraint_caret_not_satisfied() {
+    assert_not_satisfied("^1.2.3", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_caret_zero_minor_not_satisfied() {
+    assert_not_satisfied("^0.2.3", "0.3.0");
+}
+
+#[test]
+fn check_dependency_constraint_caret_zero_zero_not_satisfied() {
+    assert_not_satisfied("^0.0.3", "0.0.4");
+}
+
+#[test]
+fn check_dependency_constraint_tilde_not_satisfied() {
+    assert_not_satisfied("~1.2.3", "1.3.0");
+}
+
+#[test]
+fn check_dependency_constraint_gte_not_satisfied() {
+    assert_not_satisfied(">=2.0.0", "1.9.9");
+}
+
+#[test]
+fn check_dependency_constraint_lt_not_satisfied() {
+    assert_not_satisfied("<2.0.0", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_range_and_not_satisfied() {
+    assert_not_satisfied(">=1.0.0 <2.0.0", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_or_not_satisfied() {
+    assert_not_satisfied("^1.0.0 || ^2.0.0", "3.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_x_range_major_not_satisfied() {
+    assert_not_satisfied("1.x", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_x_range_minor_not_satisfied() {
+    assert_not_satisfied("1.2.x", "1.3.0");
+}
+
+#[test]
+fn check_dependency_constraint_hyphen_range_not_satisfied() {
+    assert_not_satisfied("1.2.3 - 2.3.4", "3.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_gte_with_space_satisfied() {
+    assert_satisfied(">= 1.0.0", "1.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_gte_with_space_not_satisfied() {
+    assert_not_satisfied(">= 1.0.0", "0.9.0");
+}
+
+#[test]
+fn check_dependency_constraint_caret_with_space_satisfied() {
+    assert_satisfied("^ 1.2.3", "1.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_tilde_with_space_satisfied() {
+    assert_satisfied("~ 1.2.3", "1.2.9");
+}
+
+#[test]
+fn check_dependency_constraint_range_with_spaces_satisfied() {
+    assert_satisfied(">= 1.0.0 < 2.0.0", "1.5.0");
+}
+
+#[test]
+fn check_dependency_constraint_range_with_spaces_not_satisfied() {
+    assert_not_satisfied(">= 1.0.0 < 2.0.0", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_workspace_star_skipped() {
+    assert_skipped("workspace:*", "1.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_workspace_caret_skipped() {
+    assert_skipped("workspace:^1.0.0", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_file_protocol_skipped() {
+    assert_skipped("file:../foo", "1.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_link_protocol_skipped() {
+    assert_skipped("link:../foo", "1.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_pinned_version_skipped() {
+    assert_skipped("1.2.3", "2.0.0");
+}
+
+#[test]
+fn check_dependency_constraint_prerelease_version_skipped() {
+    assert_skipped("^1.0.0", "2.0.0-beta.1");
+}
+
+#[test]
+fn check_dependency_constraint_dep_not_found_skipped() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{"name":"test-pkg","version":"1.0.0","dependencies":{}}"#,
+    )
+    .unwrap();
+    let result = check_dependency_constraint(&manifest_path, "missing-dep", "*", "1.0.0").unwrap();
+    assert!(matches!(result, ConstraintCheckResult::Skipped { .. }));
+}
+
+#[test]
+fn check_dependency_constraint_finds_in_dev_dependencies() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{"name":"test-pkg","version":"1.0.0","devDependencies":{"test-dep":"^1.0.0"}}"#,
+    )
+    .unwrap();
+    let result = check_dependency_constraint(&manifest_path, "test-dep", "*", "1.5.0").unwrap();
+    assert_eq!(result, ConstraintCheckResult::Satisfied);
+}
+
+#[test]
+fn check_dependency_constraint_finds_in_peer_dependencies() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{"name":"test-pkg","version":"1.0.0","peerDependencies":{"test-dep":"^2.0.0"}}"#,
+    )
+    .unwrap();
+    let result = check_dependency_constraint(&manifest_path, "test-dep", "*", "2.1.0").unwrap();
+    assert_eq!(result, ConstraintCheckResult::Satisfied);
+}
+
+#[test]
+fn check_dependency_constraint_finds_in_optional_dependencies() {
+    let temp = tempdir().unwrap();
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{"name":"test-pkg","version":"1.0.0","optionalDependencies":{"test-dep":"~1.2.0"}}"#,
+    )
+    .unwrap();
+    let result = check_dependency_constraint(&manifest_path, "test-dep", "*", "1.2.5").unwrap();
+    assert_eq!(result, ConstraintCheckResult::Satisfied);
+}
 
 #[test]
 fn npm_adapter_discovers_single_package() {
