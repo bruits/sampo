@@ -328,14 +328,84 @@ pub(super) fn publish_dry_run(
 }
 
 pub(super) fn check_dependency_constraint(
-    _manifest_path: &Path,
-    _dep_name: &str,
+    manifest_path: &Path,
+    dep_name: &str,
     _current_constraint: &str,
-    _new_version: &str,
+    new_version: &str,
 ) -> Result<crate::types::ConstraintCheckResult> {
-    Ok(crate::types::ConstraintCheckResult::Skipped {
-        reason: "packagist constraint validation not yet implemented".to_string(),
-    })
+    use crate::types::ConstraintCheckResult;
+
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+    let manifest: JsonValue = serde_json::from_str(&text).map_err(|e| {
+        SampoError::Release(format!("Failed to parse {}: {}", manifest_path.display(), e))
+    })?;
+
+    let constraint = match find_dependency_constraint(&manifest, dep_name) {
+        Some(c) => c,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("dependency '{}' not found in manifest", dep_name),
+            });
+        }
+    };
+
+    let trimmed = constraint.trim();
+
+    if trimmed.is_empty() {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "empty constraint".to_string(),
+        });
+    }
+
+    if trimmed == "*" {
+        return Ok(ConstraintCheckResult::Satisfied);
+    }
+
+    // Stability flags (@dev, @beta, etc.) change resolution strategy, not semver range
+    if trimmed.contains('@') {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "stability flag in constraint".to_string(),
+        });
+    }
+
+    if new_version.contains('-') {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release version".to_string(),
+        });
+    }
+
+    if constraint_contains_prerelease(trimmed) {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release constraint".to_string(),
+        });
+    }
+
+    if is_pinned_version(trimmed) {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pinned version".to_string(),
+        });
+    }
+
+    let version = match parse_composer_version(new_version) {
+        Some(v) => v,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable version '{}'", new_version),
+            });
+        }
+    };
+
+    match composer_version_satisfies(trimmed, version) {
+        Some(true) => Ok(ConstraintCheckResult::Satisfied),
+        Some(false) => Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: trimmed.to_string(),
+            new_version: new_version.to_string(),
+        }),
+        None => Ok(ConstraintCheckResult::Skipped {
+            reason: format!("unparseable constraint '{}'", trimmed),
+        }),
+    }
 }
 
 fn enforce_packagist_rate_limit() {
@@ -478,6 +548,229 @@ fn raw_span(raw: &RawValue, source: &str) -> Result<(usize, usize)> {
     }
     let end = start + slice.len();
     Ok((start, end))
+}
+
+fn find_dependency_constraint(manifest: &JsonValue, dep_name: &str) -> Option<String> {
+    for key in ["require", "require-dev"] {
+        if let Some(deps) = manifest.get(key).and_then(JsonValue::as_object)
+            && let Some(value) = deps.get(dep_name).and_then(JsonValue::as_str)
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn parse_composer_version(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim().strip_prefix('v').unwrap_or(s.trim());
+    if s.is_empty() {
+        return None;
+    }
+    let base = s.split('-').next()?;
+    let parts: Vec<&str> = base.split('.').collect();
+    match parts.len() {
+        3 => Some((
+            parts[0].parse().ok()?,
+            parts[1].parse().ok()?,
+            parts[2].parse().ok()?,
+        )),
+        2 => Some((parts[0].parse().ok()?, parts[1].parse().ok()?, 0)),
+        _ => None,
+    }
+}
+
+fn constraint_contains_prerelease(constraint: &str) -> bool {
+    let bytes = constraint.as_bytes();
+    for i in 1..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'-'
+            && bytes[i - 1].is_ascii_digit()
+            && bytes[i + 1].is_ascii_alphanumeric()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A pinned version is a bare `M.m.p` string with no operator, wildcard, or conjunction.
+fn is_pinned_version(s: &str) -> bool {
+    let s = s.trim();
+    !s.starts_with('^')
+        && !s.starts_with('~')
+        && !s.starts_with(">=")
+        && !s.starts_with("<=")
+        && !s.starts_with('>')
+        && !s.starts_with('<')
+        && !s.starts_with('!')
+        && !s.contains("||")
+        && !s.contains(',')
+        && !s.contains('*')
+        && parse_composer_version(s).is_some()
+}
+
+fn normalize_comparator_whitespace(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        result.push(ch);
+        if matches!(ch, '>' | '<' | '~' | '^' | '=' | '!') {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                i += 1;
+                result.push('=');
+            }
+            while i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Returns `None` if the constraint is unparseable.
+fn composer_version_satisfies(constraint: &str, version: (u64, u64, u64)) -> Option<bool> {
+    for or_part in constraint.split("||") {
+        let trimmed = or_part.trim();
+        if trimmed.is_empty() || trimmed == "*" {
+            return Some(true);
+        }
+        match satisfies_and_group(trimmed, version) {
+            Some(true) => return Some(true),
+            Some(false) => continue,
+            None => return None,
+        }
+    }
+    Some(false)
+}
+
+fn satisfies_and_group(group: &str, version: (u64, u64, u64)) -> Option<bool> {
+    // Split on comma for explicit AND, then each part may contain space-separated comparators
+    for comma_part in group.split(',') {
+        let normalized = normalize_comparator_whitespace(comma_part.trim());
+        for comp in normalized.split_whitespace() {
+            if !satisfies_single_comparator(comp, version)? {
+                return Some(false);
+            }
+        }
+    }
+    Some(true)
+}
+
+fn satisfies_single_comparator(comp: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let comp = comp.trim();
+    if comp.is_empty() || comp == "*" {
+        return Some(true);
+    }
+
+    // Caret
+    if let Some(rest) = comp.strip_prefix('^') {
+        let rest = rest.trim();
+        let parsed = parse_composer_version(rest)?;
+        let (lower, upper) = expand_caret(parsed);
+        return Some(version >= lower && version < upper);
+    }
+
+    // Tilde — Composer: ~1.2 allows up to <2.0.0, unlike npm
+    if let Some(rest) = comp.strip_prefix('~') {
+        let rest = rest.trim();
+        let parsed = parse_composer_version(rest)?;
+        let parts_count = rest.split('-').next()?.split('.').count();
+        let (lower, upper) = expand_tilde_composer(parsed, parts_count);
+        return Some(version >= lower && version < upper);
+    }
+
+    // !=
+    if let Some(rest) = comp.strip_prefix("!=") {
+        let parsed = parse_composer_version(rest.trim())?;
+        return Some(version != parsed);
+    }
+
+    // >=
+    if let Some(rest) = comp.strip_prefix(">=") {
+        let parsed = parse_composer_version(rest.trim())?;
+        return Some(version >= parsed);
+    }
+
+    // >
+    if let Some(rest) = comp.strip_prefix('>') {
+        let parsed = parse_composer_version(rest.trim())?;
+        return Some(version > parsed);
+    }
+
+    // <=
+    if let Some(rest) = comp.strip_prefix("<=") {
+        let parsed = parse_composer_version(rest.trim())?;
+        return Some(version <= parsed);
+    }
+
+    // <
+    if let Some(rest) = comp.strip_prefix('<') {
+        let parsed = parse_composer_version(rest.trim())?;
+        return Some(version < parsed);
+    }
+
+    // Wildcard
+    if comp.contains('*') {
+        return Some(matches_wildcard(comp, version));
+    }
+
+    // Bare version — exact match
+    let parsed = parse_composer_version(comp)?;
+    Some(version == parsed)
+}
+
+/// Expand a caret range to inclusive lower and exclusive upper bounds.
+///
+/// Allows changes that do not modify the left-most non-zero digit:
+/// - `^1.2.3` → `[1.2.3, 2.0.0)`
+/// - `^0.2.3` → `[0.2.3, 0.3.0)`
+/// - `^0.0.3` → `[0.0.3, 0.0.4)`
+fn expand_caret(v: (u64, u64, u64)) -> ((u64, u64, u64), (u64, u64, u64)) {
+    let lower = v;
+    let upper = if v.0 > 0 {
+        (v.0 + 1, 0, 0)
+    } else if v.1 > 0 {
+        (0, v.1 + 1, 0)
+    } else {
+        (0, 0, v.2 + 1)
+    };
+    (lower, upper)
+}
+
+/// Expand a tilde range using Composer semantics.
+///
+/// - `~1.2.3` (3 parts) → `[1.2.3, 1.3.0)` — pins minor
+/// - `~1.2`   (2 parts) → `[1.2.0, 2.0.0)` — pins major (differs from npm!)
+fn expand_tilde_composer(
+    v: (u64, u64, u64),
+    parts_count: usize,
+) -> ((u64, u64, u64), (u64, u64, u64)) {
+    let lower = v;
+    let upper = if parts_count >= 3 {
+        (v.0, v.1 + 1, 0)
+    } else {
+        (v.0 + 1, 0, 0)
+    };
+    (lower, upper)
+}
+
+fn matches_wildcard(pattern: &str, version: (u64, u64, u64)) -> bool {
+    let parts: Vec<&str> = pattern.split('.').collect();
+    match parts.len() {
+        1 => parts[0] == "*",
+        2 => parts[0].parse::<u64>().is_ok_and(|maj| version.0 == maj),
+        3 => {
+            parts[0]
+                .parse::<u64>()
+                .is_ok_and(|maj| version.0 == maj)
+                && parts[1]
+                    .parse::<u64>()
+                    .is_ok_and(|min| version.1 == min)
+        }
+        _ => false,
+    }
 }
 
 /// Compute a new Composer version constraint based on the old constraint and new version.
@@ -915,5 +1208,270 @@ mod tests {
 
         let result = PackagistAdapter.is_publishable(&path).unwrap();
         assert!(!result);
+    }
+
+    mod constraint_validation {
+        use super::*;
+        use crate::types::ConstraintCheckResult;
+
+        fn assert_constraint(constraint: &str, new_version: &str) -> ConstraintCheckResult {
+            let temp = tempfile::tempdir().unwrap();
+            let manifest_path = temp.path().join("composer.json");
+            let content = format!(
+                r#"{{"name":"vendor/test","version":"1.0.0","require":{{"test/dep":"{}"}}}}"#,
+                constraint
+            );
+            fs::write(&manifest_path, &content).unwrap();
+            check_dependency_constraint(&manifest_path, "test/dep", "*", new_version).unwrap()
+        }
+
+        fn assert_satisfied(constraint: &str, new_version: &str) {
+            assert_eq!(
+                assert_constraint(constraint, new_version),
+                ConstraintCheckResult::Satisfied,
+                "expected '{}' to be satisfied by '{}'",
+                constraint,
+                new_version
+            );
+        }
+
+        fn assert_not_satisfied(constraint: &str, new_version: &str) {
+            let result = assert_constraint(constraint, new_version);
+            assert!(
+                matches!(result, ConstraintCheckResult::NotSatisfied { .. }),
+                "expected '{}' to be not satisfied by '{}', got {:?}",
+                constraint,
+                new_version,
+                result
+            );
+        }
+
+        fn assert_skipped(constraint: &str, new_version: &str) {
+            let result = assert_constraint(constraint, new_version);
+            assert!(
+                matches!(result, ConstraintCheckResult::Skipped { .. }),
+                "expected '{}' to be skipped for '{}', got {:?}",
+                constraint,
+                new_version,
+                result
+            );
+        }
+
+        #[test]
+        fn caret_satisfied() {
+            assert_satisfied("^1.2.3", "1.5.0");
+        }
+
+        #[test]
+        fn caret_exact_match() {
+            assert_satisfied("^1.2.3", "1.2.3");
+        }
+
+        #[test]
+        fn caret_zero_minor_satisfied() {
+            assert_satisfied("^0.2.3", "0.2.5");
+        }
+
+        #[test]
+        fn caret_not_satisfied_major_bump() {
+            assert_not_satisfied("^1.2.3", "2.0.0");
+        }
+
+        #[test]
+        fn caret_zero_minor_not_satisfied() {
+            assert_not_satisfied("^0.2.3", "0.3.0");
+        }
+
+        #[test]
+        fn caret_zero_zero_patch_not_satisfied() {
+            assert_not_satisfied("^0.0.3", "0.0.4");
+        }
+
+        #[test]
+        fn tilde_two_parts_satisfied() {
+            assert_satisfied("~1.2", "1.5.0");
+        }
+
+        #[test]
+        fn tilde_two_parts_not_satisfied() {
+            assert_not_satisfied("~1.2", "2.0.0");
+        }
+
+        #[test]
+        fn tilde_three_parts_satisfied() {
+            assert_satisfied("~1.2.3", "1.2.9");
+        }
+
+        #[test]
+        fn tilde_three_parts_not_satisfied() {
+            assert_not_satisfied("~1.2.3", "1.3.0");
+        }
+
+        #[test]
+        fn gte_satisfied() {
+            assert_satisfied(">=1.0.0", "2.0.0");
+        }
+
+        #[test]
+        fn gte_not_satisfied() {
+            assert_not_satisfied(">=2.0.0", "1.9.9");
+        }
+
+        #[test]
+        fn gt_satisfied() {
+            assert_satisfied(">1.0.0", "1.0.1");
+        }
+
+        #[test]
+        fn gt_not_satisfied_equal() {
+            assert_not_satisfied(">1.0.0", "1.0.0");
+        }
+
+        #[test]
+        fn lte_satisfied() {
+            assert_satisfied("<=2.0.0", "2.0.0");
+        }
+
+        #[test]
+        fn lte_not_satisfied() {
+            assert_not_satisfied("<=2.0.0", "2.0.1");
+        }
+
+        #[test]
+        fn lt_satisfied() {
+            assert_satisfied("<2.0.0", "1.9.9");
+        }
+
+        #[test]
+        fn lt_not_satisfied() {
+            assert_not_satisfied("<2.0.0", "2.0.0");
+        }
+
+        #[test]
+        fn ne_satisfied() {
+            assert_satisfied("!=1.0.0", "2.0.0");
+        }
+
+        #[test]
+        fn ne_not_satisfied() {
+            assert_not_satisfied("!=1.0.0", "1.0.0");
+        }
+
+        #[test]
+        fn and_comma_satisfied() {
+            assert_satisfied(">=1.0.0,<2.0.0", "1.5.0");
+        }
+
+        #[test]
+        fn and_comma_not_satisfied() {
+            assert_not_satisfied(">=1.0.0,<2.0.0", "2.0.0");
+        }
+
+        #[test]
+        fn and_space_satisfied() {
+            assert_satisfied(">=1.0.0 <2.0.0", "1.5.0");
+        }
+
+        #[test]
+        fn and_space_not_satisfied() {
+            assert_not_satisfied(">=1.0.0 <2.0.0", "2.0.0");
+        }
+
+        #[test]
+        fn or_satisfied() {
+            assert_satisfied("^1.0.0 || ^2.0.0", "2.1.0");
+        }
+
+        #[test]
+        fn or_not_satisfied() {
+            assert_not_satisfied("^1.0.0 || ^2.0.0", "3.0.0");
+        }
+
+        #[test]
+        fn wildcard_star_satisfied() {
+            assert_satisfied("*", "5.0.0");
+        }
+
+        #[test]
+        fn wildcard_patch_satisfied() {
+            assert_satisfied("1.0.*", "1.0.5");
+        }
+
+        #[test]
+        fn wildcard_patch_not_satisfied() {
+            assert_not_satisfied("1.0.*", "1.1.0");
+        }
+
+        #[test]
+        fn wildcard_minor_satisfied() {
+            assert_satisfied("1.*", "1.5.0");
+        }
+
+        #[test]
+        fn wildcard_minor_not_satisfied() {
+            assert_not_satisfied("1.*", "2.0.0");
+        }
+
+        #[test]
+        fn whitespace_gte() {
+            assert_satisfied(">= 1.0.0", "1.5.0");
+        }
+
+        #[test]
+        fn whitespace_caret() {
+            assert_satisfied("^ 1.2.3", "1.5.0");
+        }
+
+        #[test]
+        fn whitespace_tilde() {
+            assert_satisfied("~ 1.2.3", "1.2.9");
+        }
+
+        #[test]
+        fn skip_pinned_version() {
+            assert_skipped("1.2.3", "2.0.0");
+        }
+
+        #[test]
+        fn skip_prerelease_version() {
+            assert_skipped("^1.0.0", "2.0.0-beta.1");
+        }
+
+        #[test]
+        fn skip_prerelease_constraint() {
+            assert_skipped("^1.0.0-beta", "2.0.0");
+        }
+
+        #[test]
+        fn skip_stability_flag() {
+            assert_skipped("^1.0@dev", "2.0.0");
+        }
+
+        #[test]
+        fn skip_dep_not_found() {
+            let temp = tempfile::tempdir().unwrap();
+            let manifest_path = temp.path().join("composer.json");
+            let content = r#"{"name":"vendor/test","version":"1.0.0","require":{}}"#;
+            fs::write(&manifest_path, content).unwrap();
+            let result =
+                check_dependency_constraint(&manifest_path, "missing/dep", "*", "1.0.0").unwrap();
+            assert!(matches!(result, ConstraintCheckResult::Skipped { .. }));
+        }
+
+        #[test]
+        fn dev_deps_found() {
+            let temp = tempfile::tempdir().unwrap();
+            let manifest_path = temp.path().join("composer.json");
+            let content = r#"{"name":"vendor/test","version":"1.0.0","require-dev":{"test/dep":"^1.0.0"}}"#;
+            fs::write(&manifest_path, content).unwrap();
+            let result =
+                check_dependency_constraint(&manifest_path, "test/dep", "*", "1.5.0").unwrap();
+            assert_eq!(result, ConstraintCheckResult::Satisfied);
+        }
+
+        #[test]
+        fn skip_empty_constraint() {
+            assert_skipped("", "1.0.0");
+        }
     }
 }
