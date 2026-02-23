@@ -18,7 +18,22 @@ inputs:
     description: "crates.io token (exported as CARGO_REGISTRY_TOKEN)"
     required: false
   args:
-    description: "Extra flags forwarded to cargo publish via `sampo publish -- …`"
+    description: "Extra flags forwarded to all ecosystem publish commands via `sampo publish -- …`"
+    required: false
+  cargo-args:
+    description: "Extra arguments forwarded only to `cargo publish`"
+    required: false
+  npm-args:
+    description: "Extra arguments forwarded only to npm/pnpm/yarn/bun publish"
+    required: false
+  hex-args:
+    description: "Extra arguments forwarded only to `mix hex.publish`"
+    required: false
+  pypi-args:
+    description: "Extra arguments forwarded only to PyPI/twine upload"
+    required: false
+  packagist-args:
+    description: "Extra arguments forwarded only to Packagist/Composer"
     required: false
   base-branch:
     description: "Base branch for the Release PR when auto prepares it"
@@ -77,6 +92,11 @@ runs:
         INPUT_WORKING_DIRECTORY: ${{ inputs['working-directory'] }}
         INPUT_CARGO_TOKEN: ${{ inputs['cargo-token'] }}
         INPUT_ARGS: ${{ inputs.args }}
+        INPUT_CARGO_ARGS: ${{ inputs['cargo-args'] }}
+        INPUT_NPM_ARGS: ${{ inputs['npm-args'] }}
+        INPUT_HEX_ARGS: ${{ inputs['hex-args'] }}
+        INPUT_PYPI_ARGS: ${{ inputs['pypi-args'] }}
+        INPUT_PACKAGIST_ARGS: ${{ inputs['packagist-args'] }}
         INPUT_BASE_BRANCH: ${{ inputs['base-branch'] }}
         INPUT_PR_BRANCH: ${{ inputs['pr-branch'] }}
         INPUT_PR_TITLE: ${{ inputs['pr-title'] }}

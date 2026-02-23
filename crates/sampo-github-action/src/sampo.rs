@@ -4,7 +4,7 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    Config, PublishOutput, VersionChange, detect_all_dependency_explanations,
+    Config, PublishExtraArgs, PublishOutput, VersionChange, detect_all_dependency_explanations,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
     exit_prerelease as core_exit_prerelease, get_commit_hash_for_path, load_changesets,
     run_publish as core_publish, run_release as core_release,
@@ -66,7 +66,7 @@ pub fn run_release(workspace: &Path, dry_run: bool, cargo_token: Option<&str>) -
 pub fn run_publish(
     workspace: &Path,
     dry_run: bool,
-    extra_args: Option<&str>,
+    extra_args: &PublishExtraArgs,
     cargo_token: Option<&str>,
 ) -> Result<PublishOutput> {
     // Set cargo token if provided
@@ -74,14 +74,7 @@ pub fn run_publish(
         set_cargo_env_var(token);
     }
 
-    // Parse extra args into a vector
-    let publish_args: Vec<String> = if let Some(args) = extra_args {
-        args.split_whitespace().map(|s| s.to_string()).collect()
-    } else {
-        Vec::new()
-    };
-
-    core_publish(workspace, dry_run, &publish_args).map_err(|e| ActionError::SampoCommandFailed {
+    core_publish(workspace, dry_run, extra_args).map_err(|e| ActionError::SampoCommandFailed {
         operation: "publish".to_string(),
         message: format!("sampo publish failed: {}", e),
     })

@@ -34,7 +34,7 @@ pub use markdown::format_markdown_list_item;
 pub use prerelease::{
     VersionChange, enter_prerelease, exit_prerelease, restore_preserved_changesets,
 };
-pub use publish::{run_publish, tag_published_crate, topo_order};
+pub use publish::{PublishExtraArgs, run_publish, tag_published_crate, topo_order};
 pub use release::{
     build_dependency_updates, bump_version, create_dependency_update_entry,
     create_fixed_dependency_policy_entry, detect_all_dependency_explanations,
