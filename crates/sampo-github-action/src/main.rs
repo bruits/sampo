@@ -8,7 +8,7 @@ use crate::sampo::ReleasePlan;
 use glob::glob;
 use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
-use sampo_core::{Config as SampoConfig, current_branch};
+use sampo_core::{Config as SampoConfig, PublishExtraArgs, current_branch};
 use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
@@ -146,6 +146,21 @@ struct Config {
     /// Accepts a single string that will be split on whitespace.
     args: Option<String>,
 
+    /// Extra arguments forwarded only to `cargo publish`
+    cargo_args: Option<String>,
+
+    /// Extra arguments forwarded only to npm/pnpm/yarn/bun publish
+    npm_args: Option<String>,
+
+    /// Extra arguments forwarded only to `mix hex.publish`
+    hex_args: Option<String>,
+
+    /// Extra arguments forwarded only to PyPI/twine upload
+    pypi_args: Option<String>,
+
+    /// Extra arguments forwarded only to Packagist/Composer
+    packagist_args: Option<String>,
+
     /// Base branch for the Release PR (default: current ref name or 'main')
     base_branch: Option<String>,
 
@@ -198,6 +213,26 @@ impl Config {
 
         let args = std::env::var("INPUT_ARGS").ok().filter(|v| !v.is_empty());
 
+        let cargo_args = std::env::var("INPUT_CARGO_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let npm_args = std::env::var("INPUT_NPM_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let hex_args = std::env::var("INPUT_HEX_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let pypi_args = std::env::var("INPUT_PYPI_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        let packagist_args = std::env::var("INPUT_PACKAGIST_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         let base_branch = std::env::var("INPUT_BASE_BRANCH")
             .ok()
             .filter(|v| !v.is_empty());
@@ -240,6 +275,11 @@ impl Config {
             working_directory,
             cargo_token,
             args,
+            cargo_args,
+            npm_args,
+            hex_args,
+            pypi_args,
+            packagist_args,
             base_branch,
             pr_branch,
             pr_title,
@@ -364,10 +404,11 @@ fn execute_operations(
                 } else {
                     None
                 };
+                let extra_args = build_publish_extra_args(config);
                 published = post_merge_publish(
                     workspace,
                     config.dry_run,
-                    config.args.as_deref(),
+                    &extra_args,
                     config.cargo_token.as_deref(),
                     &github_options,
                     github_client.as_ref(),
@@ -385,10 +426,11 @@ fn execute_operations(
             } else {
                 None
             };
+            let extra_args = build_publish_extra_args(config);
             published = post_merge_publish(
                 workspace,
                 config.dry_run,
-                config.args.as_deref(),
+                &extra_args,
                 config.cargo_token.as_deref(),
                 &github_options,
                 github_client.as_ref(),
@@ -698,6 +740,22 @@ fn default_stabilize_pr_title(branch: &str) -> String {
     format!("Release stable ({})", branch)
 }
 
+fn parse_args_string(s: Option<&str>) -> Vec<String> {
+    s.map(|a| a.split_whitespace().map(String::from).collect())
+        .unwrap_or_default()
+}
+
+fn build_publish_extra_args(config: &Config) -> PublishExtraArgs {
+    PublishExtraArgs {
+        universal: parse_args_string(config.args.as_deref()),
+        cargo: parse_args_string(config.cargo_args.as_deref()),
+        npm: parse_args_string(config.npm_args.as_deref()),
+        hex: parse_args_string(config.hex_args.as_deref()),
+        pypi: parse_args_string(config.pypi_args.as_deref()),
+        packagist: parse_args_string(config.packagist_args.as_deref()),
+    }
+}
+
 /// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
 /// Returns true only when new tags were created/pushed, so the workflow can tell if a
 /// real publish happened. Combined with `sampo_core::run_publish` (which skips crates
@@ -706,7 +764,7 @@ fn default_stabilize_pr_title(branch: &str) -> String {
 fn post_merge_publish(
     workspace: &Path,
     dry_run: bool,
-    args: Option<&str>,
+    extra_args: &PublishExtraArgs,
     cargo_token: Option<&str>,
     github_options: &GitHubReleaseOptions,
     github_client: Option<&github::GitHubClient>,
@@ -715,7 +773,7 @@ fn post_merge_publish(
     git::setup_bot_user(workspace)?;
 
     // Publish and get information about tags created/would-be-created
-    let publish_output = sampo::run_publish(workspace, dry_run, args, cargo_token)?;
+    let publish_output = sampo::run_publish(workspace, dry_run, extra_args, cargo_token)?;
     let new_tags = publish_output.tags;
 
     if !dry_run && !new_tags.is_empty() {
@@ -1224,6 +1282,11 @@ mod tests {
             dry_run: false,
             cargo_token: None,
             args: None,
+            cargo_args: None,
+            npm_args: None,
+            hex_args: None,
+            pypi_args: None,
+            packagist_args: None,
             base_branch: None,
             pr_branch: None,
             pr_title: None,

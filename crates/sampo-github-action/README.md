@@ -106,7 +106,12 @@ The action supports the following inputs:
 - `working-directory`: path to workspace root (defaults to `GITHUB_WORKSPACE`).
 - `cargo-token`: crates.io API token for Cargo packages; when set, exported as `CARGO_REGISTRY_TOKEN`.
 - `npm-token`: npm API token for npm packages, or uses `.npmrc` if not set. When provided, it is exported as `NPM_TOKEN` for use by npm/pnpm/yarn/bun during publish.
-- `args`: extra flags forwarded to the publish command via `sampo publish -- …` (e.g., `--allow-dirty` for Cargo, `--access restricted` for npm).
+- `args`: extra flags forwarded to **all** ecosystem publish commands via `sampo publish -- …`.
+- `cargo-args`: extra arguments forwarded only to `cargo publish`.
+- `npm-args`: extra arguments forwarded only to npm/pnpm/yarn/bun publish.
+- `hex-args`: extra arguments forwarded only to `mix hex.publish`.
+- `pypi-args`: extra arguments forwarded only to PyPI/twine upload.
+- `packagist-args`: extra arguments forwarded only to Packagist/Composer.
 - `base-branch`: base branch used by the release PR that `auto` prepares (defaults to the detected git branch).
 - `pr-branch`: working branch used for the release PR that `auto` prepares (defaults to `release/<current-branch>` with `/` replaced by `-`).
 - `pr-title`: title of the release PR that `auto` prepares (defaults to `Release (<current-branch>)`).

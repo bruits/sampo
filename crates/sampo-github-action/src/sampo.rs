@@ -66,7 +66,7 @@ pub fn run_release(workspace: &Path, dry_run: bool, cargo_token: Option<&str>) -
 pub fn run_publish(
     workspace: &Path,
     dry_run: bool,
-    extra_args: Option<&str>,
+    extra_args: &PublishExtraArgs,
     cargo_token: Option<&str>,
 ) -> Result<PublishOutput> {
     // Set cargo token if provided
@@ -74,17 +74,7 @@ pub fn run_publish(
         set_cargo_env_var(token);
     }
 
-    // Parse extra args into universal passthrough
-    let extra_args = PublishExtraArgs {
-        universal: if let Some(args) = extra_args {
-            args.split_whitespace().map(|s| s.to_string()).collect()
-        } else {
-            Vec::new()
-        },
-        ..PublishExtraArgs::default()
-    };
-
-    core_publish(workspace, dry_run, &extra_args).map_err(|e| ActionError::SampoCommandFailed {
+    core_publish(workspace, dry_run, extra_args).map_err(|e| ActionError::SampoCommandFailed {
         operation: "publish".to_string(),
         message: format!("sampo publish failed: {}", e),
     })
