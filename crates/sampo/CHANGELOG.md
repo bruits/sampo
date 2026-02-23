@@ -1,5 +1,17 @@
 # sampo
 
+## 0.17.0 — 2026-02-23
+
+### Minor changes
+
+- [6678ecd](https://github.com/bruits/sampo/commit/6678ecd70695bc4e16417719c3628ad457b758a3) Added ecosystem-specific `--*-args` inputs to the CLI and `*-args` inputs to the GitHub Action (e.g. `--cargo-args` or `npm-args`), allowing users to forward extra arguments to specific package managers. The existing `-- <args>` syntax continues to forward arguments to all ecosystems. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [c8b2389](https://github.com/bruits/sampo/commit/c8b2389e7d55da858d11218cbed942a96806ba92) Fixed an endless loop where the release PR would be continuously reopened for projects using prerelease versions. — Thanks @rickmartensnl!
+- [edabdac](https://github.com/bruits/sampo/commit/edabdac14bc4ee464f51a2d83f3140e21d525365) Fixed publish command failing on Windows when package managers (npm, pnpm, yarn, composer, mix) are installed as .cmd/.bat scripts. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.13.0
+
 ## 0.16.0 — 2026-01-31
 
 ### Minor changes
