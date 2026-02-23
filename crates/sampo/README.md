@@ -211,6 +211,9 @@ Sampo detects packages within the same repository that depend on each other and 
 > [!WARNING]
 > Packages cannot appear in both `fixed` and `linked` configurations.
 
+> [!NOTE]
+> Sampo supports range constraints (e.g., `^1.0`, `~1.2`) for internal dependencies. In this case, when a package is released, Sampo validates that the updated version still satisfies the specified range constraints. If not, you'll get an error for packages in `fixed` or `linked` groups, or a warning otherwise.
+
 ## Commands
 
 All commands should be run from the root of the repository:

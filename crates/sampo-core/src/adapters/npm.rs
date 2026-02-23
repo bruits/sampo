@@ -178,6 +178,432 @@ impl NpmAdapter {
     }
 }
 
+/// Check if a new version satisfies the npm dependency constraint found in `package.json`.
+///
+/// Reads the real constraint from the manifest rather than relying on the passed-in
+/// `_current_constraint` (which may be a placeholder like `"*"`).
+pub(super) fn check_dependency_constraint(
+    manifest_path: &Path,
+    dep_name: &str,
+    _current_constraint: &str,
+    new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    use crate::types::ConstraintCheckResult;
+
+    let manifest = load_package_json(manifest_path)?;
+
+    let constraint = match find_dependency_constraint(&manifest, dep_name) {
+        Some(c) => c,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("dependency '{}' not found in manifest", dep_name),
+            });
+        }
+    };
+
+    let trimmed = constraint.trim();
+
+    if trimmed.is_empty() {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "empty constraint".to_string(),
+        });
+    }
+
+    if trimmed == "*" {
+        return Ok(ConstraintCheckResult::Satisfied);
+    }
+
+    if trimmed.starts_with("workspace:") {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "workspace protocol".to_string(),
+        });
+    }
+
+    for prefix in ["file:", "link:", "npm:", "git:", "http:", "https:"] {
+        if trimmed.starts_with(prefix) {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("'{}' protocol", prefix.trim_end_matches(':')),
+            });
+        }
+    }
+
+    if new_version.contains('-') {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release version".to_string(),
+        });
+    }
+
+    if constraint_contains_prerelease(trimmed) {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release constraint".to_string(),
+        });
+    }
+
+    if is_pinned_version(trimmed) {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pinned version".to_string(),
+        });
+    }
+
+    match npm_version_satisfies(trimmed, new_version) {
+        Some(true) => Ok(ConstraintCheckResult::Satisfied),
+        Some(false) => Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: trimmed.to_string(),
+            new_version: new_version.to_string(),
+        }),
+        None => Ok(ConstraintCheckResult::Skipped {
+            reason: format!("unparseable constraint '{}'", trimmed),
+        }),
+    }
+}
+
+/// Look up the constraint string for `dep_name` across all npm dependency sections.
+fn find_dependency_constraint(manifest: &JsonValue, dep_name: &str) -> Option<String> {
+    for key in [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
+        if let Some(deps) = manifest.get(key).and_then(JsonValue::as_object)
+            && let Some(value) = deps.get(dep_name).and_then(JsonValue::as_str)
+        {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+/// Heuristic: a constraint contains a pre-release tag when a digit is followed by `-`
+/// then an alphanumeric character (e.g. `1.0.0-beta`), excluding hyphen-range separators
+/// which always have surrounding spaces.
+fn constraint_contains_prerelease(constraint: &str) -> bool {
+    let bytes = constraint.as_bytes();
+    for i in 1..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'-' && bytes[i - 1].is_ascii_digit() && bytes[i + 1].is_ascii_alphanumeric()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A pinned version is a bare `M.m.p` string with no operator or wildcard.
+fn is_pinned_version(s: &str) -> bool {
+    parse_version(s).is_some()
+}
+
+/// Check if an npm semver version satisfies a constraint range string.
+///
+/// Returns `None` when the constraint or version cannot be parsed.
+fn npm_version_satisfies(constraint: &str, version_str: &str) -> Option<bool> {
+    let version = parse_version(version_str)?;
+
+    for or_part in constraint.split("||") {
+        let trimmed = or_part.trim();
+        if trimmed.is_empty() || trimmed == "*" {
+            return Some(true);
+        }
+        match satisfies_comparator_set(trimmed, version) {
+            Some(true) => return Some(true),
+            Some(false) => continue,
+            None => return None,
+        }
+    }
+
+    Some(false)
+}
+
+/// Collapse whitespace between an operator (`>=`, `<=`, `>`, `<`, `^`, `~`, `=`)
+/// and the version number so that `>= 1.2.3` becomes `>=1.2.3`.
+fn normalize_comparator_whitespace(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        result.push(ch);
+        if matches!(ch, '>' | '<' | '~' | '^' | '=') {
+            // Handle two-character operators (>=, <=)
+            if i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+                i += 1;
+                result.push('=');
+            }
+            // Skip whitespace between operator and version
+            while i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Check if `version` satisfies every comparator in a space-separated set (AND semantics).
+fn satisfies_comparator_set(set: &str, version: (u64, u64, u64)) -> Option<bool> {
+    if let Some(result) = try_hyphen_range(set, version) {
+        return Some(result);
+    }
+
+    let normalized = normalize_comparator_whitespace(set);
+    for comp in normalized.split_whitespace() {
+        if !satisfies_comparator(comp, version)? {
+            return Some(false);
+        }
+    }
+
+    Some(true)
+}
+
+/// Try to parse `set` as a hyphen range (`A - B`). Returns `None` if the pattern
+/// does not match so the caller can fall back to normal comparator parsing.
+fn try_hyphen_range(set: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let tokens: Vec<&str> = set.split_whitespace().collect();
+    if tokens.len() != 3 || tokens[1] != "-" {
+        return None;
+    }
+    let lower = parse_partial_version(tokens[0])?;
+    let upper = parse_partial_version(tokens[2])?;
+
+    let lower_full = (lower.0, lower.1.unwrap_or(0), lower.2.unwrap_or(0));
+    if version < lower_full {
+        return Some(false);
+    }
+
+    let upper_ok = match (upper.1, upper.2) {
+        (Some(m), Some(p)) => version <= (upper.0, m, p),
+        (Some(m), None) => version < (upper.0, m + 1, 0),
+        (None, _) => version < (upper.0 + 1, 0, 0),
+    };
+
+    Some(upper_ok)
+}
+
+/// Evaluate a single comparator (`^`, `~`, `>=`, `>`, `<=`, `<`, `=`, or bare/x-range).
+fn satisfies_comparator(comp: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let comp = comp.trim();
+    if comp.is_empty() || matches!(comp, "*" | "x" | "X") {
+        return Some(true);
+    }
+
+    if let Some(rest) = comp.strip_prefix('^') {
+        let rest = rest.trim();
+        if rest.is_empty() || matches!(rest, "*" | "x" | "X") {
+            return Some(true);
+        }
+        let partial = parse_partial_version(rest)?;
+        let (lower, upper) = expand_caret(partial.0, partial.1, partial.2);
+        return Some(version >= lower && version < upper);
+    }
+
+    if let Some(rest) = comp.strip_prefix('~') {
+        let rest = rest.trim();
+        if rest.is_empty() || matches!(rest, "*" | "x" | "X") {
+            return Some(true);
+        }
+        let partial = parse_partial_version(rest)?;
+        let (lower, upper) = expand_tilde(partial.0, partial.1, partial.2);
+        return Some(version >= lower && version < upper);
+    }
+
+    // >=  (checked before >)
+    if let Some(rest) = comp.strip_prefix(">=") {
+        let partial = parse_partial_version(rest.trim())?;
+        let target = (partial.0, partial.1.unwrap_or(0), partial.2.unwrap_or(0));
+        return Some(version >= target);
+    }
+
+    // >
+    if let Some(rest) = comp.strip_prefix('>') {
+        let partial = parse_partial_version(rest.trim())?;
+        return Some(match (partial.1, partial.2) {
+            (Some(m), Some(p)) => version > (partial.0, m, p),
+            (Some(m), None) => version >= (partial.0, m + 1, 0),
+            (None, _) => version >= (partial.0 + 1, 0, 0),
+        });
+    }
+
+    // <=  (checked before <)
+    if let Some(rest) = comp.strip_prefix("<=") {
+        let partial = parse_partial_version(rest.trim())?;
+        return Some(match (partial.1, partial.2) {
+            (Some(m), Some(p)) => version <= (partial.0, m, p),
+            (Some(m), None) => version < (partial.0, m + 1, 0),
+            (None, _) => version < (partial.0 + 1, 0, 0),
+        });
+    }
+
+    // <
+    if let Some(rest) = comp.strip_prefix('<') {
+        let partial = parse_partial_version(rest.trim())?;
+        let target = (partial.0, partial.1.unwrap_or(0), partial.2.unwrap_or(0));
+        return Some(version < target);
+    }
+
+    // Explicit =
+    if let Some(rest) = comp.strip_prefix('=') {
+        let partial = parse_partial_version(rest.trim())?;
+        return Some(matches_partial(version, partial.0, partial.1, partial.2));
+    }
+
+    // Bare version or x-range
+    let partial = parse_partial_version(comp)?;
+    Some(matches_partial(version, partial.0, partial.1, partial.2))
+}
+
+/// Check if `version` falls within the range described by a partial version.
+///
+/// A complete `(M, Some(m), Some(p))` requires exact equality.
+/// A partial version acts as an x-range (e.g. `1.2` → `>=1.2.0 <1.3.0`).
+fn matches_partial(
+    version: (u64, u64, u64),
+    major: u64,
+    minor: Option<u64>,
+    patch: Option<u64>,
+) -> bool {
+    match (minor, patch) {
+        (Some(m), Some(p)) => version == (major, m, p),
+        (Some(m), None) => version >= (major, m, 0) && version < (major, m + 1, 0),
+        (None, _) => version >= (major, 0, 0) && version < (major + 1, 0, 0),
+    }
+}
+
+/// Expand a caret range (`^M.m.p`) to inclusive lower and exclusive upper bounds.
+///
+/// The caret allows changes that do not modify the left-most non-zero digit:
+/// - `^1.2.3` → `[1.2.3, 2.0.0)`
+/// - `^0.2.3` → `[0.2.3, 0.3.0)`
+/// - `^0.0.3` → `[0.0.3, 0.0.4)`
+fn expand_caret(
+    major: u64,
+    minor: Option<u64>,
+    patch: Option<u64>,
+) -> ((u64, u64, u64), (u64, u64, u64)) {
+    let m = minor.unwrap_or(0);
+    let p = patch.unwrap_or(0);
+    let lower = (major, m, p);
+
+    let upper = if major > 0 {
+        (major + 1, 0, 0)
+    } else if minor.is_none() {
+        // ^0 → [0.0.0, 1.0.0)
+        (1, 0, 0)
+    } else if m > 0 {
+        (0, m + 1, 0)
+    } else if patch.is_none() {
+        // ^0.0 or ^0.0.x → [0.0.0, 0.1.0)
+        (0, 1, 0)
+    } else {
+        // ^0.0.3 → [0.0.3, 0.0.4)
+        (0, 0, p + 1)
+    };
+
+    (lower, upper)
+}
+
+/// Expand a tilde range (`~M.m.p`) to inclusive lower and exclusive upper bounds.
+///
+/// The tilde pins to the minor version when one is specified, otherwise pins to major:
+/// - `~1.2.3` → `[1.2.3, 1.3.0)`
+/// - `~1.2`   → `[1.2.0, 1.3.0)`
+/// - `~1`     → `[1.0.0, 2.0.0)`
+fn expand_tilde(
+    major: u64,
+    minor: Option<u64>,
+    patch: Option<u64>,
+) -> ((u64, u64, u64), (u64, u64, u64)) {
+    let m = minor.unwrap_or(0);
+    let p = patch.unwrap_or(0);
+    let lower = (major, m, p);
+
+    let upper = if minor.is_some() {
+        (major, m + 1, 0)
+    } else {
+        (major + 1, 0, 0)
+    };
+
+    (lower, upper)
+}
+
+/// Parse a complete semver version string (`M.m.p`) into its three numeric components.
+///
+/// Rejects pre-release tags (contains `-`) and strips build metadata (`+…`).
+/// Returns `None` for anything that is not exactly three numeric dot-separated parts.
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
+
+    if s.contains('-') {
+        return None;
+    }
+
+    let s = s.split('+').next()?;
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    let major = parts[0].parse::<u64>().ok()?;
+    let minor = parts[1].parse::<u64>().ok()?;
+    let patch = parts[2].parse::<u64>().ok()?;
+
+    Some((major, minor, patch))
+}
+
+/// Parse a version that may have missing or wildcard parts.
+///
+/// Returns `(major, Option<minor>, Option<patch>)` where `None` indicates a
+/// wildcard (`*`, `x`, `X`) or an absent component.
+fn parse_partial_version(s: &str) -> Option<(u64, Option<u64>, Option<u64>)> {
+    let s = s.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
+
+    if s.contains('-') {
+        return None;
+    }
+
+    let s = s.split('+').next()?;
+    if s.is_empty() {
+        return None;
+    }
+
+    let parts: Vec<&str> = s.split('.').collect();
+    match parts.len() {
+        1 => {
+            if is_wildcard(parts[0]) {
+                return Some((0, None, None));
+            }
+            let major = parts[0].parse::<u64>().ok()?;
+            Some((major, None, None))
+        }
+        2 => {
+            let major = parts[0].parse::<u64>().ok()?;
+            if is_wildcard(parts[1]) {
+                return Some((major, None, None));
+            }
+            let minor = parts[1].parse::<u64>().ok()?;
+            Some((major, Some(minor), None))
+        }
+        3 => {
+            let major = parts[0].parse::<u64>().ok()?;
+            if is_wildcard(parts[1]) {
+                return Some((major, None, None));
+            }
+            let minor = parts[1].parse::<u64>().ok()?;
+            if is_wildcard(parts[2]) {
+                return Some((major, Some(minor), None));
+            }
+            let patch = parts[2].parse::<u64>().ok()?;
+            Some((major, Some(minor), Some(patch)))
+        }
+        _ => None,
+    }
+}
+
+fn is_wildcard(s: &str) -> bool {
+    matches!(s, "*" | "x" | "X")
+}
+
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],

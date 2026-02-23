@@ -34,6 +34,9 @@ pub enum SampoError {
     #[error("Pre-release error: {0}")]
     Prerelease(String),
 
+    #[error("Constraint violation: {0}")]
+    ConstraintViolation(String),
+
     #[error("Invalid data: {0}")]
     InvalidData(String),
 
