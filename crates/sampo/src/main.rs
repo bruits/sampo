@@ -58,6 +58,9 @@ fn main() -> ExitCode {
                     if report.created_config {
                         println!("  created: {}", dir.join("config.toml").display());
                     }
+                    if report.created_example {
+                        println!("  created: {}", dir.join("changeset.md.example").display());
+                    }
                 }
                 Err(e) => {
                     eprintln!("init error: {e}");

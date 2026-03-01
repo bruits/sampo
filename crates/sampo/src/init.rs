@@ -8,6 +8,7 @@ pub struct InitReport {
     pub created_dir: bool,
     pub created_readme: bool,
     pub created_config: bool,
+    pub created_example: bool,
 }
 
 /// Initialize Sampo in the current working directory.
@@ -31,6 +32,7 @@ fn init_at_root(root: &Path) -> Result<InitReport> {
     let mut created_dir = false;
     let mut created_readme = false;
     let mut created_config = false;
+    let mut created_example = false;
 
     if !dir.exists() {
         fs::create_dir_all(&dir)?;
@@ -49,11 +51,18 @@ fn init_at_root(root: &Path) -> Result<InitReport> {
         created_config = true;
     }
 
+    let example_path = dir.join("changeset.md.example");
+    if !example_path.exists() {
+        fs::write(&example_path, EXAMPLE_CHANGESET)?;
+        created_example = true;
+    }
+
     Ok(InitReport {
         root: root.to_path_buf(),
         created_dir,
         created_readme,
         created_config,
+        created_example,
     })
 }
 
@@ -69,6 +78,14 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 - GitHub Action (CI): https://github.com/bruits/sampo/blob/main/crates/sampo-github-action/README.md
 - GitHub Bot: https://github.com/bruits/sampo/blob/main/crates/sampo-github-bot/README.md
 "#;
+
+const EXAMPLE_CHANGESET: &str = "---
+cargo/example: minor
+npm/web-app: patch
+---
+
+A helpful description of the change, to be read by your users.
+";
 
 const DEFAULT_CONFIG: &str = r#"# Sampo configuration
 version = 1
@@ -105,14 +122,17 @@ mod tests {
         assert!(r1.created_dir);
         assert!(r1.created_readme);
         assert!(r1.created_config);
+        assert!(r1.created_example);
 
         // Running again should not recreate existing files
         let r2 = super::init_at_root(root).unwrap();
         assert!(!r2.created_dir);
         assert!(!r2.created_readme);
         assert!(!r2.created_config);
+        assert!(!r2.created_example);
 
         assert!(root.join(".sampo/README.md").exists());
         assert!(root.join(".sampo/config.toml").exists());
+        assert!(root.join(".sampo/changeset.md.example").exists());
     }
 }

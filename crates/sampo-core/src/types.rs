@@ -333,14 +333,17 @@ pub enum Bump {
 }
 
 impl FromStr for Bump {
-    type Err = ();
+    type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "patch" => Ok(Self::Patch),
             "minor" => Ok(Self::Minor),
             "major" => Ok(Self::Major),
-            _ => Err(()),
+            _ => Err(format!(
+                "invalid bump level '{}': expected patch, minor, or major",
+                s
+            )),
         }
     }
 }
