@@ -1,5 +1,12 @@
 # sampo-github-bot
 
+## 0.4.3 — 2026-03-05
+
+### Patch changes
+
+- [cc2df53](https://github.com/bruits/sampo/commit/cc2df53d3486e099b256e6b1635b51cedab1e93c) Fixed multi-line changeset preview not properly indented in GitHub Bot's comment. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.13.0
+
 ## 0.4.2 — 2026-01-31
 
 ### Patch changes

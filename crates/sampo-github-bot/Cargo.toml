@@ -1,6 +1,6 @@
 [package]
 name = "sampo-github-bot"
-version = "0.4.2"
+version = "0.4.3"
 license = "MIT"
 authors = ["Goulven Clech <goulven.clech@protonmail.com>"]
 edition = "2024"
@@ -26,4 +26,4 @@ thiserror = "1"
 jsonwebtoken = "9"
 base64 = "0.22"
 reqwest = { version = "0.11", features = ["json"] }
-sampo-core = { version = "0.12.0", path = "../sampo-core" }
+sampo-core = { version = "0.13.0", path = "../sampo-core" }
