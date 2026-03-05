@@ -94,24 +94,35 @@ pub fn run(args: &AddArgs) -> Result<()> {
         ));
     }
 
-    let labels_for_bumps: Vec<String> = selected_specs
-        .iter()
-        .map(|spec| package_display_label(spec, include_kind))
-        .collect();
-    let package_bumps_display = prompt_package_bumps(&labels_for_bumps)?;
-    let mut package_bumps: Vec<(PackageSpecifier, Bump)> =
-        Vec::with_capacity(package_bumps_display.len());
-    for (idx, (_label, bump)) in package_bumps_display.into_iter().enumerate() {
-        let spec = selected_specs.get(idx).cloned().ok_or_else(|| {
-            SampoError::InvalidData(
-                "Bump selections did not match the selected packages.".to_string(),
-            )
-        })?;
-        package_bumps.push((spec, bump));
-    }
+    let package_bumps: Vec<(PackageSpecifier, Bump)> = if let Some(bump) = args.bump {
+        log_success_value("Bump", bump.as_str());
+        selected_specs
+            .into_iter()
+            .map(|spec| (spec, bump))
+            .collect()
+    } else {
+        let labels_for_bumps: Vec<String> = selected_specs
+            .iter()
+            .map(|spec| package_display_label(spec, include_kind))
+            .collect();
+        let package_bumps_display = prompt_package_bumps(&labels_for_bumps)?;
+        let mut result: Vec<(PackageSpecifier, Bump)> =
+            Vec::with_capacity(package_bumps_display.len());
+        for (idx, (_label, bump)) in package_bumps_display.into_iter().enumerate() {
+            let spec = selected_specs.get(idx).cloned().ok_or_else(|| {
+                SampoError::InvalidData(
+                    "Bump selections did not match the selected packages.".to_string(),
+                )
+            })?;
+            result.push((spec, bump));
+        }
+        result
+    };
 
-    // Prompt for tag selection when changesets.tags is configured
-    let selected_tag = if config.changesets_tags.is_empty() {
+    // Resolve tag from CLI arg or prompt when tags are configured
+    let selected_tag = if let Some(ref cli_tag) = args.tag {
+        Some(resolve_tag(cli_tag, &config.changesets_tags)?)
+    } else if config.changesets_tags.is_empty() {
         None
     } else {
         Some(prompt_tag_selection(&config.changesets_tags)?)
@@ -242,6 +253,34 @@ fn prompt_message() -> Result<String> {
     let value = prompt_nonempty_string("Changeset message")?;
     log_success_value("Changeset message", &value);
     Ok(value)
+}
+
+/// Resolve a CLI-provided tag against the configured tags list (case-insensitive).
+fn resolve_tag(input: &str, configured_tags: &[String]) -> Result<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(SampoError::InvalidData(
+            "Tag cannot be empty or whitespace-only.".to_string(),
+        ));
+    }
+    if configured_tags.is_empty() {
+        return Err(SampoError::InvalidData(
+            "Tag provided but no tags are configured. Configure changesets.tags in .sampo/config.toml.".to_string(),
+        ));
+    }
+    let canonical = configured_tags
+        .iter()
+        .find(|t| t.eq_ignore_ascii_case(input));
+    match canonical {
+        Some(tag) => {
+            log_success_value("Tag", tag);
+            Ok(tag.clone())
+        }
+        None => Err(SampoError::InvalidData(format!(
+            "Tag '{}' is not configured. Allowed tags: {:?}",
+            input, configured_tags
+        ))),
+    }
 }
 
 /// Prompt the user to select a changelog tag from the configured tags.
@@ -387,6 +426,40 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn resolve_tag_case_insensitive_match() {
+        let tags = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = resolve_tag("added", &tags).unwrap();
+        assert_eq!(result, "Added");
+    }
+
+    #[test]
+    fn resolve_tag_unknown_returns_error() {
+        let tags = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = resolve_tag("Unknown", &tags);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_tag_empty_tags_returns_error() {
+        let result = resolve_tag("Added", &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_tag_trims_whitespace() {
+        let tags = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = resolve_tag("  Added  ", &tags).unwrap();
+        assert_eq!(result, "Added");
+    }
+
+    #[test]
+    fn resolve_tag_whitespace_only_returns_error() {
+        let tags = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = resolve_tag("   ", &tags);
+        assert!(result.is_err());
     }
 
     #[test]

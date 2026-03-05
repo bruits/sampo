@@ -59,6 +59,10 @@ A helpful description of the change, to be read by your users.
 
 Packages are referenced by their canonical identifier (`<ecosystem>/<name>`). Pending changesets are stored in the `.sampo/changesets` directory.
 
+> [!TIP]
+> For best results, document your changeset conventions in your `CONTRIBUTING.md`. See Sampo's own [Writing Changesets](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#writing-changesets) section as an example.
+> For AI agents, Sampo ships a [`SKILL.md`](https://github.com/bruits/sampo/blob/main/.github/skills/sampo-changeset/SKILL.md) that teaches coding agents to create and update changesets non-interactively. Copy or adapt it for your own repo.
+
 #### Changelog
 
 At the root of each published package, a human-readable file listing all changes for each released version. Example:
@@ -249,4 +253,4 @@ To our knowledge, no other tool automates versioning, changelogs, and publishing
 
 ## Development
 
-Refer to [CONTRIBUTING.md](../../CONTRIBUTING.md#sampo) for development setup and workflow details.
+Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#sampo) for development setup and workflow details.

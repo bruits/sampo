@@ -12,4 +12,4 @@ Install the [GitHub App](https://github.com/apps/sampo-s-bot) on your repository
 
 ## Development
 
-Refer to [CONTRIBUTING.md](../../CONTRIBUTING.md#sampo-github-bot) for development setup and workflow details.
+Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#sampo-github-bot) for development setup and workflow details.

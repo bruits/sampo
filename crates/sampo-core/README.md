@@ -6,4 +6,4 @@ Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentat
 
 ## Development
 
-Refer to [CONTRIBUTING.md](../../CONTRIBUTING.md#sampo-core) for development setup and workflow details.
+Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#sampo-core) for development setup and workflow details.

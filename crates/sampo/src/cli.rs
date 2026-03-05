@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use sampo_core::Bump;
 
 /// Sampo CLI – automate changelogs, versioning, and publishing
 #[derive(Debug, Parser)]
@@ -35,6 +36,14 @@ pub struct AddArgs {
     /// Optional package names to scope the changeset
     #[arg(short, long, num_args = 1.., value_name = "PACKAGE")]
     pub package: Vec<String>,
+
+    /// Bump level to apply to all selected packages (patch, minor, major)
+    #[arg(short, long, value_name = "LEVEL")]
+    pub bump: Option<Bump>,
+
+    /// Tag to categorize the changeset (must match a configured changesets.tags value)
+    #[arg(short, long, value_name = "TAG")]
+    pub tag: Option<String>,
 
     /// Optional summary message for the changeset
     #[arg(short, long)]
@@ -154,6 +163,84 @@ mod tests {
             Commands::Add(args) => {
                 assert_eq!(args.package, vec!["pkg-a", "pkg-b"]);
                 assert_eq!(args.message.as_deref(), Some("feat: message"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_add_with_bump_short_flag() {
+        let cli =
+            Cli::try_parse_from(["sampo", "add", "-p", "pkg", "-b", "patch", "-m", "fix"]).unwrap();
+        match cli.command {
+            Commands::Add(args) => {
+                assert_eq!(args.package, vec!["pkg"]);
+                assert_eq!(args.bump, Some(sampo_core::Bump::Patch));
+                assert_eq!(args.message.as_deref(), Some("fix"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_add_with_bump_long_flag() {
+        let cli = Cli::try_parse_from(["sampo", "add", "--bump", "minor"]).unwrap();
+        match cli.command {
+            Commands::Add(args) => {
+                assert_eq!(args.bump, Some(sampo_core::Bump::Minor));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_add_without_bump() {
+        let cli = Cli::try_parse_from(["sampo", "add"]).unwrap();
+        match cli.command {
+            Commands::Add(args) => {
+                assert!(args.bump.is_none());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn rejects_add_with_invalid_bump() {
+        let res = Cli::try_parse_from(["sampo", "add", "--bump", "huge"]);
+        assert!(
+            res.is_err(),
+            "invalid bump value should be rejected by clap"
+        );
+    }
+
+    #[test]
+    fn parses_add_with_tag_short_flag() {
+        let cli = Cli::try_parse_from(["sampo", "add", "-t", "Added"]).unwrap();
+        match cli.command {
+            Commands::Add(args) => {
+                assert_eq!(args.tag.as_deref(), Some("Added"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_add_with_tag_long_flag() {
+        let cli = Cli::try_parse_from(["sampo", "add", "--tag", "Fixed"]).unwrap();
+        match cli.command {
+            Commands::Add(args) => {
+                assert_eq!(args.tag.as_deref(), Some("Fixed"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_add_without_tag() {
+        let cli = Cli::try_parse_from(["sampo", "add"]).unwrap();
+        match cli.command {
+            Commands::Add(args) => {
+                assert!(args.tag.is_none());
             }
             _ => panic!("wrong variant"),
         }
