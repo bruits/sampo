@@ -257,6 +257,12 @@ fn prompt_message() -> Result<String> {
 
 /// Resolve a CLI-provided tag against the configured tags list (case-insensitive).
 fn resolve_tag(input: &str, configured_tags: &[String]) -> Result<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(SampoError::InvalidData(
+            "Tag cannot be empty or whitespace-only.".to_string(),
+        ));
+    }
     if configured_tags.is_empty() {
         return Err(SampoError::InvalidData(
             "Tag provided but no tags are configured. Configure changesets.tags in .sampo/config.toml.".to_string(),
@@ -439,6 +445,20 @@ mod tests {
     #[test]
     fn resolve_tag_empty_tags_returns_error() {
         let result = resolve_tag("Added", &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_tag_trims_whitespace() {
+        let tags = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = resolve_tag("  Added  ", &tags).unwrap();
+        assert_eq!(result, "Added");
+    }
+
+    #[test]
+    fn resolve_tag_whitespace_only_returns_error() {
+        let tags = vec!["Added".to_string(), "Fixed".to_string()];
+        let result = resolve_tag("   ", &tags);
         assert!(result.is_err());
     }
 
