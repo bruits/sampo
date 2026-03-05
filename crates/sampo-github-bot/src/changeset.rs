@@ -1,6 +1,7 @@
 use crate::error::{BotError, Result};
 use octocrab::models::repos::{DiffEntry, DiffEntryStatus};
 use sampo_core::changeset::{ChangesetInfo, parse_changeset};
+use sampo_core::format_markdown_list_item;
 use sampo_core::types::{Bump, ChangelogCategory, PackageSpecifier};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -150,11 +151,9 @@ fn append_changes_section(out: &mut String, title: &str, changes: &[String]) {
     if changes.is_empty() {
         return;
     }
-    out.push_str(&format!("### {title}\n"));
+    out.push_str(&format!("### {title}\n\n"));
     for change in changes {
-        out.push_str("- ");
-        out.push_str(change);
-        out.push('\n');
+        out.push_str(&format_markdown_list_item(change));
     }
     out.push('\n');
 }
