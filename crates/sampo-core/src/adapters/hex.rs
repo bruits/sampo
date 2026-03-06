@@ -120,6 +120,223 @@ impl HexAdapter {
     }
 }
 
+pub(super) fn check_dependency_constraint(
+    manifest_path: &Path,
+    dep_name: &str,
+    _current_constraint: &str,
+    new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    use crate::types::ConstraintCheckResult;
+
+    let constraint = match mix::find_dependency_constraint_value(manifest_path, dep_name)? {
+        Some(c) => c,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("dependency '{}' not found in manifest", dep_name),
+            });
+        }
+    };
+
+    let trimmed = constraint.trim();
+    if trimmed.is_empty() {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "empty constraint".to_string(),
+        });
+    }
+
+    if new_version.trim().contains('-') {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release version".to_string(),
+        });
+    }
+
+    // Skip pinned (bare) versions without any operator or conjunction
+    if !trimmed.starts_with("~>")
+        && !trimmed.starts_with("!=")
+        && !trimmed.starts_with("==")
+        && !trimmed.starts_with(">=")
+        && !trimmed.starts_with("<=")
+        && !trimmed.starts_with('>')
+        && !trimmed.starts_with('<')
+        && !trimmed.starts_with('=')
+        && !trimmed.contains(" and ")
+        && !trimmed.contains(" or ")
+        && !trimmed.contains(" AND ")
+        && !trimmed.contains(" OR ")
+        && parse_hex_version(trimmed).is_some()
+    {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pinned version".to_string(),
+        });
+    }
+
+    let version = match parse_hex_version(new_version.trim()) {
+        Some(v) => v,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable version '{}'", new_version),
+            });
+        }
+    };
+
+    match hex_version_satisfies(trimmed, version) {
+        Some(true) => Ok(ConstraintCheckResult::Satisfied),
+        Some(false) => Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: trimmed.to_string(),
+            new_version: new_version.trim().to_string(),
+        }),
+        None => Ok(ConstraintCheckResult::Skipped {
+            reason: format!("unparseable constraint '{}'", trimmed),
+        }),
+    }
+}
+
+/// Ignores pre-release tags.
+fn parse_hex_version(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let base = s.split('-').next()?;
+    let parts: Vec<&str> = base.split('.').collect();
+    match parts.len() {
+        3 => {
+            let major = parts[0].parse().ok()?;
+            let minor = parts[1].parse().ok()?;
+            let patch = parts[2].parse().ok()?;
+            Some((major, minor, patch))
+        }
+        2 => {
+            let major = parts[0].parse().ok()?;
+            let minor = parts[1].parse().ok()?;
+            Some((major, minor, 0))
+        }
+        _ => None,
+    }
+}
+
+/// Returns `None` if the constraint is unparseable.
+fn hex_version_satisfies(constraint: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let lowered = constraint.to_ascii_lowercase();
+
+    if lowered.contains(" or ") {
+        let parts = split_on_keyword(constraint, " or ");
+        for part in &parts {
+            match hex_version_satisfies(part.trim(), version) {
+                Some(true) => return Some(true),
+                Some(false) => continue,
+                None => return None,
+            }
+        }
+        return Some(false);
+    }
+
+    if lowered.contains(" and ") {
+        let parts = split_on_keyword(constraint, " and ");
+        for part in &parts {
+            match hex_version_satisfies(part.trim(), version) {
+                Some(true) => continue,
+                Some(false) => return Some(false),
+                None => return None,
+            }
+        }
+        return Some(true);
+    }
+
+    satisfies_hex_comparator(constraint.trim(), version)
+}
+
+/// Split a string on a keyword, case-insensitively.
+fn split_on_keyword(s: &str, keyword: &str) -> Vec<String> {
+    let lowered = s.to_ascii_lowercase();
+    let keyword_lower = keyword.to_ascii_lowercase();
+    let mut result = Vec::new();
+    let mut last = 0;
+    for (idx, _) in lowered.match_indices(&keyword_lower) {
+        result.push(s[last..idx].to_string());
+        last = idx + keyword.len();
+    }
+    result.push(s[last..].to_string());
+    result
+}
+
+fn satisfies_hex_comparator(comp: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let comp = comp.trim();
+    if comp.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = comp.strip_prefix("~>") {
+        return satisfies_pessimistic(rest.trim(), version);
+    }
+
+    if let Some(rest) = comp.strip_prefix("!=") {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version != target);
+    }
+
+    if let Some(rest) = comp.strip_prefix("==") {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version == target);
+    }
+
+    if let Some(rest) = comp.strip_prefix(">=") {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version >= target);
+    }
+
+    if let Some(rest) = comp.strip_prefix("<=") {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version <= target);
+    }
+
+    if let Some(rest) = comp.strip_prefix('>') {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version > target);
+    }
+
+    if let Some(rest) = comp.strip_prefix('<') {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version < target);
+    }
+
+    if let Some(rest) = comp.strip_prefix('=') {
+        let target = parse_hex_version(rest.trim())?;
+        return Some(version == target);
+    }
+
+    // Bare version (exact match)
+    let target = parse_hex_version(comp)?;
+    Some(version == target)
+}
+
+/// Evaluate the `~>` (pessimistic/compatibility) operator.
+///
+/// - `~> X.Y` (2 parts): `>= X.Y.0 and < (X+1).0.0`
+/// - `~> X.Y.Z` (3 parts): `>= X.Y.Z and < X.(Y+1).0`
+fn satisfies_pessimistic(version_str: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let s = version_str.trim();
+    let parts: Vec<&str> = s.split('.').collect();
+    match parts.len() {
+        2 => {
+            let major: u64 = parts[0].parse().ok()?;
+            let minor: u64 = parts[1].parse().ok()?;
+            let lower = (major, minor, 0);
+            let upper = (major + 1, 0, 0);
+            Some(version >= lower && version < upper)
+        }
+        3 => {
+            let major: u64 = parts[0].parse().ok()?;
+            let minor: u64 = parts[1].parse().ok()?;
+            let patch: u64 = parts[2].parse().ok()?;
+            let lower = (major, minor, patch);
+            let upper = (major, minor + 1, 0);
+            Some(version >= lower && version < upper)
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],

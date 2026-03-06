@@ -2,8 +2,9 @@ use crate::adapters::{ManifestMetadata, PackageAdapter};
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::types::{
-    Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier,
-    ReleaseOutput, ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
+    Bump, ChangelogCategory, ConstraintCheckResult, ConstraintViolation, DependencyUpdate,
+    PackageInfo, PackageKind, PackageSpecifier, ReleaseOutput, ReleasedPackage, SpecResolution,
+    Workspace, format_ambiguity_options,
 };
 use crate::{
     changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
@@ -674,6 +675,14 @@ fn compute_plan_state(
         return Ok(PlanOutcome::NoMatchingCrates);
     }
 
+    // Validate dependency constraints before proceeding with the release.
+    // This checks that internal dependency version constraints will be satisfied
+    // after the planned bumps. Returns error for fixed/linked packages, warnings otherwise.
+    let constraint_warnings = validate_dependency_constraints(&releases, workspace, config)?;
+    for warning in &constraint_warnings {
+        eprintln!("{}", warning);
+    }
+
     let released_packages: Vec<ReleasedPackage> = releases
         .iter()
         .map(|(name, old_version, new_version)| {
@@ -698,6 +707,131 @@ fn compute_plan_state(
         releases,
         released_packages,
     }))
+}
+
+/// Validates dependency constraints before applying releases.
+/// Returns error for fixed/linked packages with violations, warnings otherwise.
+fn validate_dependency_constraints(
+    releases: &ReleasePlan,
+    workspace: &Workspace,
+    config: &Config,
+) -> Result<Vec<String>> {
+    let new_version_by_id: BTreeMap<String, String> = releases
+        .iter()
+        .map(|(id, _, new_ver)| (id.clone(), new_ver.clone()))
+        .collect();
+
+    let by_id: BTreeMap<String, &PackageInfo> = workspace
+        .members
+        .iter()
+        .map(|pkg| (pkg.canonical_identifier().to_string(), pkg))
+        .collect();
+
+    let fixed_groups =
+        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    let linked_groups =
+        resolve_config_groups(workspace, &config.linked_dependencies, "packages.linked")?;
+
+    // Load cargo metadata once for constraint extraction on Cargo packages.
+    let has_cargo = releases
+        .iter()
+        .any(|(id, _, _)| by_id.get(id).is_some_and(|p| p.kind == PackageKind::Cargo));
+    let cargo_metadata = if has_cargo {
+        ManifestMetadata::load(workspace).ok()
+    } else {
+        None
+    };
+
+    let mut violations: Vec<ConstraintViolation> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    for (pkg_id, _, _) in releases {
+        let Some(pkg_info) = by_id.get(pkg_id) else {
+            continue;
+        };
+
+        let adapter = PackageAdapter::from_kind(pkg_info.kind);
+        let manifest_path = adapter.manifest_path(&pkg_info.path);
+
+        for dep_id in &pkg_info.internal_deps {
+            let Some(new_dep_version) = new_version_by_id.get(dep_id) else {
+                continue;
+            };
+
+            let Some(dep_info) = by_id.get(dep_id) else {
+                continue;
+            };
+
+            // Pinned versions (bare semver) will be updated during manifest updates,
+            // so only range constraints need validation here.
+            // Other ecosystems skip validation (their adapters return Skipped).
+            let constraint = match pkg_info.kind {
+                PackageKind::Cargo => {
+                    if let Some(ref meta) = cargo_metadata {
+                        // Skip pinned deps — they will be rewritten to the exact new version
+                        if meta.is_dependency_pinned(&manifest_path, &dep_info.name) {
+                            continue;
+                        }
+                        meta.get_dependency_constraint(&manifest_path, &dep_info.name)
+                            .unwrap_or_else(|| "*".to_string())
+                    } else {
+                        "*".to_string()
+                    }
+                }
+                _ => "*".to_string(),
+            };
+
+            let check_result = adapter.check_dependency_constraint(
+                &manifest_path,
+                &dep_info.name,
+                &constraint,
+                new_dep_version,
+            )?;
+
+            match check_result {
+                ConstraintCheckResult::Satisfied => {}
+                ConstraintCheckResult::Skipped { .. } => {}
+                ConstraintCheckResult::NotSatisfied {
+                    constraint,
+                    new_version,
+                } => {
+                    let violation = ConstraintViolation {
+                        dependent_identifier: pkg_id.clone(),
+                        dependency_identifier: dep_id.clone(),
+                        dependency_name: dep_info.name.clone(),
+                        constraint: constraint.clone(),
+                        new_version: new_version.clone(),
+                    };
+
+                    let is_fixed_or_linked =
+                        is_in_group(pkg_id, &fixed_groups) || is_in_group(pkg_id, &linked_groups);
+
+                    if is_fixed_or_linked {
+                        violations.push(violation);
+                    } else {
+                        warnings.push(format!("Warning: {}", violation));
+                    }
+                }
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        let messages: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
+        return Err(SampoError::ConstraintViolation(format!(
+            "Version constraint violations in fixed/linked packages:\n  - {}",
+            messages.join("\n  - ")
+        )));
+    }
+
+    Ok(warnings)
+}
+
+/// Check if a package identifier is in any of the provided groups.
+fn is_in_group(pkg_id: &str, groups: &[Vec<String>]) -> bool {
+    groups
+        .iter()
+        .any(|group| group.contains(&pkg_id.to_string()))
 }
 
 fn releases_include_prerelease(releases: &ReleasePlan) -> bool {

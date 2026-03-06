@@ -42,8 +42,9 @@ pub use release::{
     infer_bump_from_versions, run_release,
 };
 pub use types::{
-    Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageKind, ParsedChangeType,
-    PublishOutput, ReleaseOutput, ReleasedPackage, Workspace,
+    Bump, ChangelogCategory, ConstraintCheckResult, ConstraintViolation, DependencyUpdate,
+    PackageInfo, PackageKind, ParsedChangeType, PublishOutput, ReleaseOutput, ReleasedPackage,
+    Workspace,
 };
 pub use workspace::{discover_packages_at, discover_workspace, find_sampo_root};
 

@@ -722,5 +722,319 @@ fn format_command_display(cmd: &Command) -> String {
     text
 }
 
+pub(super) fn find_dependency_constraint(source: &str, dep_name: &str) -> Result<Option<String>> {
+    let doc: DocumentMut = source
+        .parse()
+        .map_err(|e| SampoError::Release(format!("Failed to parse pyproject.toml: {}", e)))?;
+    let Some(project) = doc.get("project").and_then(Item::as_table) else {
+        return Ok(None);
+    };
+    let target = normalize_package_name(dep_name);
+
+    let find_in_array = |arr: &toml_edit::Array| -> Option<String> {
+        for item in arr.iter() {
+            let Some(spec) = item.as_str() else { continue };
+            let Some(name) = extract_package_name(spec) else {
+                continue;
+            };
+            if normalize_package_name(&name) != target {
+                continue;
+            }
+            return Some(extract_constraint_from_spec(spec));
+        }
+        None
+    };
+
+    if let Some(deps) = project.get("dependencies").and_then(Item::as_array)
+        && let Some(c) = find_in_array(deps)
+    {
+        return Ok(Some(c));
+    }
+
+    if let Some(optional) = project
+        .get("optional-dependencies")
+        .and_then(Item::as_table)
+    {
+        for (_, group) in optional.iter() {
+            if let Some(arr) = group.as_array()
+                && let Some(c) = find_in_array(arr)
+            {
+                return Ok(Some(c));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn extract_constraint_from_spec(spec: &str) -> String {
+    let trimmed = spec.trim();
+
+    let without_markers = match trimmed.find(';') {
+        Some(pos) => trimmed[..pos].trim(),
+        None => trimmed,
+    };
+
+    // URL dependencies have no parseable constraint
+    if without_markers.contains(" @ ") {
+        return String::new();
+    }
+
+    let after_extras = match (without_markers.find('['), without_markers.find(']')) {
+        (Some(start), Some(end)) if start < end => &without_markers[end + 1..],
+        _ => {
+            let name_end = without_markers
+                .find(|c: char| ['>', '<', '=', '!', '~'].contains(&c))
+                .unwrap_or(without_markers.len());
+            &without_markers[name_end..]
+        }
+    };
+
+    after_extras.trim().to_string()
+}
+
+pub(super) fn check_pep440_constraint(
+    constraint: &str,
+    new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    use crate::types::ConstraintCheckResult;
+
+    let trimmed = constraint.trim();
+
+    if trimmed.is_empty() {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "empty constraint".to_string(),
+        });
+    }
+
+    if trimmed == "*" {
+        return Ok(ConstraintCheckResult::Satisfied);
+    }
+
+    if new_version.contains('-') {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release version".to_string(),
+        });
+    }
+
+    if pep440_constraint_contains_prerelease(trimmed) {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pre-release constraint".to_string(),
+        });
+    }
+
+    if is_pep440_pinned_version(trimmed) {
+        return Ok(ConstraintCheckResult::Skipped {
+            reason: "pinned version".to_string(),
+        });
+    }
+
+    let version = match parse_pep440_version(new_version) {
+        Some(v) => v,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable version '{}'", new_version),
+            });
+        }
+    };
+
+    match pep440_version_satisfies(trimmed, version) {
+        Some(true) => Ok(ConstraintCheckResult::Satisfied),
+        Some(false) => Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: trimmed.to_string(),
+            new_version: new_version.to_string(),
+        }),
+        None => Ok(ConstraintCheckResult::Skipped {
+            reason: format!("unparseable constraint '{}'", trimmed),
+        }),
+    }
+}
+
+fn strip_post_release_suffix(s: &str) -> &str {
+    let lower = s.to_ascii_lowercase();
+    if let Some(pos) = lower.rfind(".post") {
+        let after = &s[pos + 5..];
+        if after.is_empty() || after.chars().all(|c| c.is_ascii_digit()) {
+            return &s[..pos];
+        }
+    }
+    s
+}
+
+fn parse_pep440_version(s: &str) -> Option<(u64, u64, u64)> {
+    let s = s.trim().strip_prefix('v').unwrap_or(s.trim());
+    if s.is_empty() {
+        return None;
+    }
+
+    let lower = s.to_ascii_lowercase();
+    for marker in &[".dev", "a", "b", "rc"] {
+        if let Some(pos) = lower.find(marker) {
+            // Only treat as pre-release if preceded by a digit (avoids matching
+            // inside regular version segments like "abc")
+            if pos > 0 && s.as_bytes()[pos - 1].is_ascii_digit() {
+                return None;
+            }
+        }
+    }
+
+    // .postN is stable, not pre-release
+    let s = strip_post_release_suffix(s);
+
+    let parts: Vec<&str> = s.split('.').collect();
+    match parts.len() {
+        2 => Some((parts[0].parse().ok()?, parts[1].parse().ok()?, 0)),
+        3 => Some((
+            parts[0].parse().ok()?,
+            parts[1].parse().ok()?,
+            parts[2].parse().ok()?,
+        )),
+        _ => None,
+    }
+}
+
+fn pep440_constraint_contains_prerelease(constraint: &str) -> bool {
+    let lower = constraint.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    for marker in &["dev", "rc"] {
+        if let Some(pos) = lower.find(marker)
+            && (pos > 0 && bytes[pos - 1].is_ascii_digit()
+                || (pos > 0 && bytes[pos - 1] == b'.')
+                    && pos > 1
+                    && bytes[pos - 2].is_ascii_digit())
+        {
+            return true;
+        }
+    }
+    // Single-letter 'a'/'b' pre-release tags (e.g. `1.0a1`, `2.0b3`)
+    for i in 1..bytes.len() {
+        if (bytes[i] == b'a' || bytes[i] == b'b')
+            && bytes[i - 1].is_ascii_digit()
+            && i + 1 < bytes.len()
+            && bytes[i + 1].is_ascii_digit()
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A pinned version is a bare version number with no operator, wildcard, or comma.
+fn is_pep440_pinned_version(s: &str) -> bool {
+    let s = s.trim();
+    for op in VersionOperator::ALL {
+        if s.starts_with(op.as_str()) {
+            return false;
+        }
+    }
+    !s.contains(',') && !s.contains('*') && parse_pep440_version(s).is_some()
+}
+
+/// Returns `None` if the constraint is unparseable.
+fn pep440_version_satisfies(constraint: &str, version: (u64, u64, u64)) -> Option<bool> {
+    for part in constraint.split(',') {
+        match satisfies_single_pep440_specifier(part.trim(), version) {
+            Some(true) => continue,
+            Some(false) => return Some(false),
+            None => return None,
+        }
+    }
+    Some(true)
+}
+
+fn satisfies_single_pep440_specifier(spec: &str, version: (u64, u64, u64)) -> Option<bool> {
+    let spec = spec.trim();
+    if spec.is_empty() || spec == "*" {
+        return Some(true);
+    }
+
+    // ~=
+    if let Some(rest) = spec.strip_prefix("~=") {
+        let rest = rest.trim();
+        let parts_count = rest.split('.').count();
+        let parsed = parse_pep440_version(rest)?;
+        let (lower, upper) = expand_compatible_release(parsed, parts_count);
+        return Some(version >= lower && version < upper);
+    }
+
+    // ==
+    if let Some(rest) = spec.strip_prefix("==") {
+        let rest = rest.trim();
+        if rest.ends_with(".*") {
+            return Some(matches_pep440_wildcard(rest, version));
+        }
+        let parsed = parse_pep440_version(rest)?;
+        return Some(version == parsed);
+    }
+
+    // !=
+    if let Some(rest) = spec.strip_prefix("!=") {
+        let rest = rest.trim();
+        if rest.ends_with(".*") {
+            return Some(!matches_pep440_wildcard(rest, version));
+        }
+        let parsed = parse_pep440_version(rest)?;
+        return Some(version != parsed);
+    }
+
+    // >=
+    if let Some(rest) = spec.strip_prefix(">=") {
+        let parsed = parse_pep440_version(rest.trim())?;
+        return Some(version >= parsed);
+    }
+
+    // <=
+    if let Some(rest) = spec.strip_prefix("<=") {
+        let parsed = parse_pep440_version(rest.trim())?;
+        return Some(version <= parsed);
+    }
+
+    // >
+    if let Some(rest) = spec.strip_prefix('>') {
+        let parsed = parse_pep440_version(rest.trim())?;
+        return Some(version > parsed);
+    }
+
+    // <
+    if let Some(rest) = spec.strip_prefix('<') {
+        let parsed = parse_pep440_version(rest.trim())?;
+        return Some(version < parsed);
+    }
+
+    // Bare version — exact match
+    let parsed = parse_pep440_version(spec)?;
+    Some(version == parsed)
+}
+
+/// Expand a PEP 440 compatible release (`~=`) to inclusive lower and exclusive upper bounds.
+///
+/// - `~=1.4.2` (3 parts) → `[1.4.2, 1.5.0)`
+/// - `~=1.4`   (2 parts) → `[1.4.0, 2.0.0)`
+fn expand_compatible_release(
+    v: (u64, u64, u64),
+    parts_count: usize,
+) -> ((u64, u64, u64), (u64, u64, u64)) {
+    let lower = v;
+    let upper = if parts_count >= 3 {
+        (v.0, v.1 + 1, 0)
+    } else {
+        (v.0 + 1, 0, 0)
+    };
+    (lower, upper)
+}
+
+fn matches_pep440_wildcard(pattern: &str, version: (u64, u64, u64)) -> bool {
+    let stripped = pattern.trim_end_matches(".*");
+    let parts: Vec<&str> = stripped.split('.').collect();
+    match parts.len() {
+        1 => parts[0].parse::<u64>().is_ok_and(|maj| version.0 == maj),
+        2 => {
+            parts[0].parse::<u64>().is_ok_and(|maj| version.0 == maj)
+                && parts[1].parse::<u64>().is_ok_and(|min| version.1 == min)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod pip_tests;

@@ -408,14 +408,15 @@ mod tests {
 
         let a_dir = root.join("crates/a");
         let b_dir = root.join("crates/b");
-        fs::create_dir_all(&a_dir).unwrap();
-        fs::create_dir_all(&b_dir).unwrap();
+        fs::create_dir_all(a_dir.join("src")).unwrap();
+        fs::create_dir_all(b_dir.join("src")).unwrap();
 
         fs::write(
             b_dir.join("Cargo.toml"),
             "[package]\nname=\"b\"\nversion=\"0.1.0\"\n",
         )
         .unwrap();
+        fs::write(b_dir.join("src/lib.rs"), "").unwrap();
 
         // a depends on b
         fs::write(
@@ -423,6 +424,7 @@ mod tests {
             "[package]\nname=\"a\"\nversion=\"0.1.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"0.1.0\" }\n",
         )
         .unwrap();
+        fs::write(a_dir.join("src/lib.rs"), "").unwrap();
 
         // Create a changeset that only affects b
         let csdir = root.join(".sampo/changesets");
@@ -462,14 +464,15 @@ mod tests {
 
         let a_dir = root.join("crates/a");
         let b_dir = root.join("crates/b");
-        fs::create_dir_all(&a_dir).unwrap();
-        fs::create_dir_all(&b_dir).unwrap();
+        fs::create_dir_all(a_dir.join("src")).unwrap();
+        fs::create_dir_all(b_dir.join("src")).unwrap();
 
         fs::write(
             b_dir.join("Cargo.toml"),
             "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
         )
         .unwrap();
+        fs::write(b_dir.join("src/lib.rs"), "").unwrap();
 
         // a depends on b
         fs::write(
@@ -477,6 +480,7 @@ mod tests {
             "[package]\nname=\"a\"\nversion=\"1.0.0\"\n\n[dependencies]\nb = { path=\"../b\", version=\"1.0.0\" }\n",
         )
         .unwrap();
+        fs::write(a_dir.join("src/lib.rs"), "").unwrap();
 
         // Create sampo config with fixed dependencies
         let sampo_dir = root.join(".sampo");
@@ -526,14 +530,15 @@ mod tests {
 
         let a_dir = root.join("crates/a");
         let b_dir = root.join("crates/b");
-        fs::create_dir_all(&a_dir).unwrap();
-        fs::create_dir_all(&b_dir).unwrap();
+        fs::create_dir_all(a_dir.join("src")).unwrap();
+        fs::create_dir_all(b_dir.join("src")).unwrap();
 
         fs::write(
             b_dir.join("Cargo.toml"),
             "[package]\nname=\"b\"\nversion=\"1.0.0\"\n",
         )
         .unwrap();
+        fs::write(b_dir.join("src/lib.rs"), "").unwrap();
 
         // a does NOT depend on b (important difference)
         fs::write(
@@ -541,6 +546,7 @@ mod tests {
             "[package]\nname=\"a\"\nversion=\"1.0.0\"\n",
         )
         .unwrap();
+        fs::write(a_dir.join("src/lib.rs"), "").unwrap();
 
         // Create sampo config with fixed dependencies
         let sampo_dir = root.join(".sampo");
@@ -594,12 +600,13 @@ mod tests {
 
         // Single crate 'example' v0.1.0
         let ex_dir = root.join("crates/example");
-        fs::create_dir_all(&ex_dir).unwrap();
+        fs::create_dir_all(ex_dir.join("src")).unwrap();
         fs::write(
             ex_dir.join("Cargo.toml"),
             "[package]\nname=\"example\"\nversion=\"0.1.0\"\n",
         )
         .unwrap();
+        fs::write(ex_dir.join("src/lib.rs"), "").unwrap();
 
         // Changeset: example minor change
         let cs_dir = root.join(".sampo/changesets");

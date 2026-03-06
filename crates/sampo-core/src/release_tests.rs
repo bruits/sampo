@@ -123,6 +123,31 @@ mod tests {
             self
         }
 
+        /// Like `add_dependency`, but uses the raw constraint string as-is.
+        /// Useful for testing range constraints like `"^0.1"` or `"~1.0"`.
+        fn add_dependency_with_constraint(
+            &mut self,
+            from: &str,
+            to: &str,
+            constraint: &str,
+        ) -> &mut Self {
+            let from_dir = self.crates.get(from).expect("from crate must exist");
+            let current_manifest = fs::read_to_string(from_dir.join("Cargo.toml")).unwrap();
+
+            let dependency_section = format!(
+                "\n[dependencies]\n{} = {{ path=\"../{}\", version=\"{}\" }}\n",
+                to, to, constraint
+            );
+
+            fs::write(
+                from_dir.join("Cargo.toml"),
+                current_manifest + &dependency_section,
+            )
+            .unwrap();
+
+            self
+        }
+
         fn write_changeset_to_dir(
             dir: &std::path::Path,
             packages: &[&str],
@@ -1693,6 +1718,83 @@ tempfile = "3.0"
             preserved_files.len(),
             1,
             "prerelease dir should keep the rewritten mixed changeset"
+        );
+    }
+
+    #[test]
+    fn range_constraint_preserved_through_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency_with_constraint("a", "b", "^0.1")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        workspace.run_release(false).unwrap();
+
+        // b gets a patch bump -> 0.1.1
+        workspace.assert_crate_version("b", "0.1.1");
+
+        // a's dependency constraint "^0.1" should be preserved (0.1.1 satisfies ^0.1)
+        workspace.assert_dependency_version("a", "b", "^0.1");
+    }
+
+    #[test]
+    fn pinned_version_updated_through_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency("a", "b", "0.1.0")
+            .add_changeset(&["b"], Bump::Minor, "feat: b minor");
+
+        workspace.run_release(false).unwrap();
+
+        // b gets a minor bump -> 0.2.0
+        workspace.assert_crate_version("b", "0.2.0");
+
+        // a's pinned version "0.1.0" should be updated to "0.2.0"
+        workspace.assert_dependency_version("a", "b", "0.2.0");
+    }
+
+    #[test]
+    fn constraint_violation_in_fixed_group_blocks_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0") // tilde: allows 1.0.x only
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor"); // b -> 1.1.0, violates ~1.0.0
+
+        let result = workspace.run_release(true);
+        assert!(
+            result.is_err(),
+            "Expected release to fail due to constraint violation in fixed group"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("constraint") || err_msg.contains("Constraint"),
+            "Error should mention constraint violation, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn constraint_violation_without_group_allows_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0") // tilde: allows 1.0.x only
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor"); // b -> 1.1.0, violates ~1.0.0
+        // No fixed/linked config — violation is only a warning, release proceeds
+
+        let result = workspace.run_release(true);
+        assert!(
+            result.is_ok(),
+            "Expected release to succeed with warning, got: {:?}",
+            result.err()
         );
     }
 }
