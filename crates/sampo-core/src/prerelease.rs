@@ -246,17 +246,18 @@ fn apply_version_updates(
         None
     };
 
+    let mut workspace_inherited_version: Option<(String, PackageAdapter)> = None;
+
     for info in &workspace.members {
-        let adapter = match info.kind {
-            PackageKind::Cargo => PackageAdapter::Cargo,
-            PackageKind::Npm => PackageAdapter::Npm,
-            PackageKind::Hex => PackageAdapter::Hex,
-            PackageKind::PyPI => PackageAdapter::PyPI,
-            PackageKind::Packagist => PackageAdapter::Packagist,
-        };
+        let adapter = PackageAdapter::from_kind(info.kind);
         let manifest_path = adapter.manifest_path(&info.path);
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
+
+        if new_pkg_version.is_some() && adapter.uses_version_inheritance(&original) {
+            workspace_inherited_version = new_pkg_version.map(|v| (v.to_string(), adapter));
+        }
+
         let metadata_ref = if info.kind == PackageKind::Cargo {
             manifest_metadata.as_ref()
         } else {
@@ -273,6 +274,33 @@ fn apply_version_updates(
         if updated != original {
             fs::write(&manifest_path, updated)?;
         }
+    }
+
+    if let Some((ref version, adapter)) = workspace_inherited_version {
+        adapter
+            .update_workspace_root(
+                &workspace.root,
+                Some(version.as_str()),
+                new_versions,
+                manifest_metadata.as_ref(),
+            )
+            .map_err(|err| match err {
+                SampoError::Release(msg) => SampoError::Prerelease(msg),
+                other => other,
+            })?;
+    } else if has_cargo {
+        // No workspace version inheritance, but still update workspace-level deps
+        PackageAdapter::Cargo
+            .update_workspace_root(
+                &workspace.root,
+                None,
+                new_versions,
+                manifest_metadata.as_ref(),
+            )
+            .map_err(|err| match err {
+                SampoError::Release(msg) => SampoError::Prerelease(msg),
+                other => other,
+            })?;
     }
 
     regenerate_lockfile(workspace).map_err(|err| match err {
@@ -462,5 +490,75 @@ mod tests {
 
         let remaining = fs::read_dir(&prerelease_dir).unwrap().collect::<Vec<_>>();
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn enter_preserves_workspace_version_inheritance_and_updates_root() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::create_dir_all(root.join("crates/foo/src")).unwrap();
+        fs::create_dir_all(root.join("crates/bar/src")).unwrap();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+foo = { version = "1.0.0", path = "crates/foo" }
+bar = { version = "1.0.0", path = "crates/bar" }
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            root.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/foo/src/lib.rs"), "").unwrap();
+
+        fs::write(
+            root.join("crates/bar/Cargo.toml"),
+            "[package]\nname = \"bar\"\nversion.workspace = true\n\n[dependencies]\nfoo = { workspace = true }\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/bar/src/lib.rs"), "").unwrap();
+
+        let updates = enter_prerelease(root, &[String::from("foo")], "alpha").unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].new_version, "1.0.0-alpha");
+
+        // Member manifests must preserve version.workspace = true
+        let foo_manifest = fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap();
+        assert!(
+            foo_manifest.contains("version.workspace = true")
+                || foo_manifest.contains("workspace = true"),
+            "foo's workspace inheritance was clobbered: {foo_manifest}"
+        );
+
+        // Root [workspace.package].version must be updated
+        let root_manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(
+            root_manifest.contains("version = \"1.0.0-alpha\""),
+            "root workspace version was not updated: {root_manifest}"
+        );
+
+        // Root [workspace.dependencies].foo.version must be updated
+        let doc = root_manifest
+            .parse::<toml_edit::DocumentMut>()
+            .expect("root Cargo.toml should be valid TOML");
+        let ws_dep_foo_version = doc["workspace"]["dependencies"]["foo"]["version"]
+            .as_str()
+            .expect("workspace.dependencies.foo.version should exist");
+        assert_eq!(
+            ws_dep_foo_version, "1.0.0-alpha",
+            "root workspace deps not updated: {root_manifest}"
+        );
     }
 }

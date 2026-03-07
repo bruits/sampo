@@ -485,6 +485,11 @@ fn update_package_version(
             ))
         })?;
 
+    // Workspace-inherited version is updated at the root manifest instead.
+    if has_workspace_flag(package_table.get("version")) {
+        return Ok(());
+    }
+
     let current = package_table
         .get("version")
         .and_then(Item::as_value)
@@ -496,6 +501,94 @@ fn update_package_version(
 
     package_table.insert("version", Item::Value(Value::from(new_version)));
     Ok(())
+}
+
+/// Returns `true` when `version.workspace = true` appears in the `[package]` section.
+pub fn has_workspace_version_inheritance(manifest_content: &str) -> bool {
+    let Ok(doc) = manifest_content.parse::<DocumentMut>() else {
+        return false;
+    };
+
+    let version_item = doc
+        .as_table()
+        .get("package")
+        .and_then(Item::as_table)
+        .and_then(|pkg| pkg.get("version"));
+
+    has_workspace_flag(version_item)
+}
+
+/// Update the workspace root manifest: set `[workspace.package].version` and retarget
+/// `[workspace.dependencies]` entries for internal packages.
+pub fn update_workspace_root_manifest(
+    manifest_path: &Path,
+    input: &str,
+    new_workspace_version: Option<&str>,
+    new_version_by_name: &BTreeMap<String, String>,
+    metadata: Option<&ManifestMetadata>,
+) -> Result<(String, bool)> {
+    let mut doc: DocumentMut = input.parse().map_err(|err| {
+        SampoError::Release(format!(
+            "Failed to parse root manifest {}: {err}",
+            manifest_path.display()
+        ))
+    })?;
+
+    let mut changed = false;
+
+    if let Some(new_version) = new_workspace_version
+        && let Some(workspace_pkg) = doc
+            .as_table_mut()
+            .get_mut("workspace")
+            .and_then(Item::as_table_mut)
+            .and_then(|ws| ws.get_mut("package"))
+            .and_then(Item::as_table_mut)
+    {
+        let current = workspace_pkg
+            .get("version")
+            .and_then(Item::as_value)
+            .and_then(Value::as_str);
+
+        if current.is_some() && current != Some(new_version) {
+            workspace_pkg.insert("version", Item::Value(Value::from(new_version)));
+            changed = true;
+        }
+    }
+
+    for (dep_name, new_version) in new_version_by_name {
+        if let Some(meta) = metadata
+            && !meta.is_workspace_package(dep_name)
+        {
+            continue;
+        }
+
+        changed |= update_workspace_dependency(&mut doc, dep_name, new_version);
+    }
+
+    Ok((doc.to_string(), changed))
+}
+
+fn has_workspace_flag(item: Option<&Item>) -> bool {
+    let Some(item) = item else { return false };
+
+    if let Some(table) = item.as_table() {
+        return table
+            .get("workspace")
+            .and_then(Item::as_value)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    }
+
+    if let Some(value) = item.as_value()
+        && let Some(inline) = value.as_inline_table()
+    {
+        return inline
+            .get("workspace")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    }
+
+    false
 }
 
 fn update_dependencies_from_metadata(

@@ -1486,20 +1486,19 @@ fn apply_releases(
 
     let release_date_display = compute_release_date_display(cfg)?;
 
-    // Apply updates for each release
+    let mut workspace_inherited_version: Option<(String, PackageAdapter)> = None;
+
     for (name, old, newv) in releases {
         let info = by_id
             .get(name.as_str())
             .ok_or_else(|| SampoError::Release(format!("package '{}' not found", name)))?;
-        let adapter = match info.kind {
-            PackageKind::Cargo => crate::adapters::PackageAdapter::Cargo,
-            PackageKind::Npm => crate::adapters::PackageAdapter::Npm,
-            PackageKind::Hex => crate::adapters::PackageAdapter::Hex,
-            PackageKind::PyPI => crate::adapters::PackageAdapter::PyPI,
-            PackageKind::Packagist => crate::adapters::PackageAdapter::Packagist,
-        };
+        let adapter = PackageAdapter::from_kind(info.kind);
         let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
+
+        if adapter.uses_version_inheritance(&text) {
+            workspace_inherited_version = Some((newv.clone(), adapter));
+        }
 
         // Update manifest versions
         let cargo_metadata = match adapter {
@@ -1526,6 +1525,23 @@ fn apply_releases(
             newv,
             &messages,
             release_date_display.as_deref(),
+        )?;
+    }
+
+    if let Some((ref version, adapter)) = workspace_inherited_version {
+        adapter.update_workspace_root(
+            &ws.root,
+            Some(version.as_str()),
+            &new_version_by_name,
+            manifest_metadata.as_ref(),
+        )?;
+    } else if has_cargo {
+        // No workspace version inheritance, but still update workspace-level deps
+        PackageAdapter::Cargo.update_workspace_root(
+            &ws.root,
+            None,
+            &new_version_by_name,
+            manifest_metadata.as_ref(),
         )?;
     }
 

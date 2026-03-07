@@ -211,6 +211,42 @@ impl PackageAdapter {
         }
     }
 
+    /// Check if a package manifest inherits its version from a workspace root.
+    pub fn uses_version_inheritance(&self, manifest_content: &str) -> bool {
+        match self {
+            Self::Cargo => cargo::has_workspace_version_inheritance(manifest_content),
+            Self::Npm | Self::Hex | Self::PyPI | Self::Packagist => false,
+        }
+    }
+
+    /// Update the workspace root manifest (version + internal dependency specs).
+    pub fn update_workspace_root(
+        &self,
+        workspace_root: &Path,
+        new_workspace_version: Option<&str>,
+        new_version_by_name: &BTreeMap<String, String>,
+        metadata: Option<&ManifestMetadata>,
+    ) -> Result<bool> {
+        match self {
+            Self::Cargo => {
+                let manifest_path = self.manifest_path(workspace_root);
+                let input = std::fs::read_to_string(&manifest_path)?;
+                let (updated, changed) = cargo::update_workspace_root_manifest(
+                    &manifest_path,
+                    &input,
+                    new_workspace_version,
+                    new_version_by_name,
+                    metadata,
+                )?;
+                if changed {
+                    std::fs::write(&manifest_path, updated)?;
+                }
+                Ok(changed)
+            }
+            Self::Npm | Self::Hex | Self::PyPI | Self::Packagist => Ok(false),
+        }
+    }
+
     /// Adapter helper for matching from a PackageKind.
     pub fn from_kind(kind: PackageKind) -> Self {
         match kind {
