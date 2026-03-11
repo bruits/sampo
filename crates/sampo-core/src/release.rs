@@ -1,9 +1,9 @@
-use crate::adapters::{ManifestMetadata, PackageAdapter};
+use crate::adapters::PackageAdapter;
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::types::{
-    Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageKind, PackageSpecifier,
-    ReleaseOutput, ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
+    Bump, ChangelogCategory, DependencyUpdate, PackageInfo, PackageSpecifier, ReleaseOutput,
+    ReleasedPackage, SpecResolution, Workspace, format_ambiguity_options,
 };
 use crate::{
     changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
@@ -1452,13 +1452,6 @@ fn apply_releases(
         by_id.insert(c.canonical_identifier().to_string(), c);
     }
 
-    let has_cargo = ws.members.iter().any(|pkg| pkg.kind == PackageKind::Cargo);
-    let manifest_metadata = if has_cargo {
-        Some(ManifestMetadata::load(ws)?)
-    } else {
-        None
-    };
-
     // Build releases map for dependency explanations
     let releases_map: BTreeMap<String, (String, String)> = releases
         .iter()
@@ -1471,6 +1464,13 @@ fn apply_releases(
             new_version_by_name.insert(info.name.clone(), newv.clone());
         }
     }
+
+    // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
+    let names_by_kind: BTreeMap<_, BTreeSet<&str>> =
+        ws.members.iter().fold(BTreeMap::new(), |mut acc, m| {
+            acc.entry(m.kind).or_default().insert(m.name.as_str());
+            acc
+        });
 
     // Use unified function to detect all dependency explanations
     let dependency_explanations =
@@ -1486,8 +1486,6 @@ fn apply_releases(
 
     let release_date_display = compute_release_date_display(cfg)?;
 
-    let mut workspace_inherited_version: Option<(String, PackageAdapter)> = None;
-
     for (name, old, newv) in releases {
         let info = by_id
             .get(name.as_str())
@@ -1496,24 +1494,18 @@ fn apply_releases(
         let manifest_path = adapter.manifest_path(&info.path);
         let text = fs::read_to_string(&manifest_path)?;
 
-        if adapter.uses_version_inheritance(&text) {
-            workspace_inherited_version = Some((newv.clone(), adapter));
-        }
+        let ecosystem_names = names_by_kind.get(&info.kind);
+        let filtered_versions: BTreeMap<String, String> = new_version_by_name
+            .iter()
+            .filter(|(name, _)| ecosystem_names.is_some_and(|names| names.contains(name.as_str())))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
-        // Update manifest versions
-        let cargo_metadata = match adapter {
-            PackageAdapter::Cargo => manifest_metadata.as_ref(),
-            PackageAdapter::Npm
-            | PackageAdapter::Hex
-            | PackageAdapter::PyPI
-            | PackageAdapter::Packagist => None,
-        };
         let (updated, _dep_updates) = adapter.update_manifest_versions(
             &manifest_path,
             &text,
             Some(newv.as_str()),
-            &new_version_by_name,
-            cargo_metadata,
+            &filtered_versions,
         )?;
         fs::write(&manifest_path, updated)?;
 
@@ -1528,22 +1520,7 @@ fn apply_releases(
         )?;
     }
 
-    if let Some((ref version, adapter)) = workspace_inherited_version {
-        adapter.update_workspace_root(
-            &ws.root,
-            Some(version.as_str()),
-            &new_version_by_name,
-            manifest_metadata.as_ref(),
-        )?;
-    } else if has_cargo {
-        // No workspace version inheritance, but still update workspace-level deps
-        PackageAdapter::Cargo.update_workspace_root(
-            &ws.root,
-            None,
-            &new_version_by_name,
-            manifest_metadata.as_ref(),
-        )?;
-    }
+    PackageAdapter::finalize_workspace_roots(ws, &new_version_by_name)?;
 
     Ok(())
 }

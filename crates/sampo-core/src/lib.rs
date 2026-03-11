@@ -17,7 +17,6 @@ pub mod workspace;
 pub const USER_AGENT: &str = concat!("sampo-core/", env!("CARGO_PKG_VERSION"));
 
 // Re-export commonly used items
-pub use adapters::ManifestMetadata;
 pub use changeset::{
     ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown,
     render_changeset_markdown_with_tags,

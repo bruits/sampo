@@ -1,9 +1,9 @@
-use crate::adapters::{ManifestMetadata, PackageAdapter};
+use crate::adapters::PackageAdapter;
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
 use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
 use crate::types::{
-    PackageInfo, PackageKind, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
+    PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
 };
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
@@ -233,20 +233,15 @@ fn apply_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let has_cargo = workspace
-        .members
-        .iter()
-        .any(|pkg| pkg.kind == PackageKind::Cargo);
-    let manifest_metadata = if has_cargo {
-        Some(ManifestMetadata::load(workspace).map_err(|err| match err {
-            SampoError::Release(msg) => SampoError::Prerelease(msg),
-            other => other,
-        })?)
-    } else {
-        None
-    };
-
-    let mut workspace_inherited_version: Option<(String, PackageAdapter)> = None;
+    // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
+    let names_by_kind: BTreeMap<_, BTreeSet<&str>> =
+        workspace
+            .members
+            .iter()
+            .fold(BTreeMap::new(), |mut acc, m| {
+                acc.entry(m.kind).or_default().insert(m.name.as_str());
+                acc
+            });
 
     for info in &workspace.members {
         let adapter = PackageAdapter::from_kind(info.kind);
@@ -254,21 +249,18 @@ fn apply_version_updates(
         let original = fs::read_to_string(&manifest_path)?;
         let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
 
-        if new_pkg_version.is_some() && adapter.uses_version_inheritance(&original) {
-            workspace_inherited_version = new_pkg_version.map(|v| (v.to_string(), adapter));
-        }
+        let ecosystem_names = names_by_kind.get(&info.kind);
+        let filtered_versions: BTreeMap<String, String> = new_versions
+            .iter()
+            .filter(|(name, _)| ecosystem_names.is_some_and(|names| names.contains(name.as_str())))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
-        let metadata_ref = if info.kind == PackageKind::Cargo {
-            manifest_metadata.as_ref()
-        } else {
-            None
-        };
         let (updated, _deps) = adapter.update_manifest_versions(
             &manifest_path,
             &original,
             new_pkg_version,
-            new_versions,
-            metadata_ref,
+            &filtered_versions,
         )?;
 
         if updated != original {
@@ -276,32 +268,10 @@ fn apply_version_updates(
         }
     }
 
-    if let Some((ref version, adapter)) = workspace_inherited_version {
-        adapter
-            .update_workspace_root(
-                &workspace.root,
-                Some(version.as_str()),
-                new_versions,
-                manifest_metadata.as_ref(),
-            )
-            .map_err(|err| match err {
-                SampoError::Release(msg) => SampoError::Prerelease(msg),
-                other => other,
-            })?;
-    } else if has_cargo {
-        // No workspace version inheritance, but still update workspace-level deps
-        PackageAdapter::Cargo
-            .update_workspace_root(
-                &workspace.root,
-                None,
-                new_versions,
-                manifest_metadata.as_ref(),
-            )
-            .map_err(|err| match err {
-                SampoError::Release(msg) => SampoError::Prerelease(msg),
-                other => other,
-            })?;
-    }
+    PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(|err| match err {
+        SampoError::Release(msg) => SampoError::Prerelease(msg),
+        other => other,
+    })?;
 
     regenerate_lockfile(workspace).map_err(|err| match err {
         SampoError::Release(msg) => SampoError::Prerelease(msg),
@@ -534,7 +504,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].new_version, "1.0.0-alpha");
 
-        // Member manifests must preserve version.workspace = true
         let foo_manifest = fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap();
         assert!(
             foo_manifest.contains("version.workspace = true")
@@ -542,14 +511,12 @@ bar = { version = "1.0.0", path = "crates/bar" }
             "foo's workspace inheritance was clobbered: {foo_manifest}"
         );
 
-        // Root [workspace.package].version must be updated
         let root_manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
         assert!(
             root_manifest.contains("version = \"1.0.0-alpha\""),
             "root workspace version was not updated: {root_manifest}"
         );
 
-        // Root [workspace.dependencies].foo.version must be updated
         let doc = root_manifest
             .parse::<toml_edit::DocumentMut>()
             .expect("root Cargo.toml should be valid TOML");
