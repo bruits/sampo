@@ -154,8 +154,7 @@ fn skips_workspace_dependencies_when_updating() {
     updates.insert("foo".to_string(), "1.2.3".to_string());
 
     let (out, applied) =
-        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-            .unwrap();
+        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
     assert_eq!(out.trim_end(), input.trim_end());
     assert!(applied.is_empty());
@@ -167,14 +166,9 @@ fn updates_workspace_dependency_with_explicit_version() {
     let mut updates = BTreeMap::new();
     updates.insert("foo".to_string(), "0.2.0".to_string());
 
-    let (out, applied) = update_manifest_versions(
-        Path::new("/workspace/Cargo.toml"),
-        input,
-        None,
-        &updates,
-        None,
-    )
-    .unwrap();
+    let (out, applied) =
+        update_manifest_versions(Path::new("/workspace/Cargo.toml"), input, None, &updates)
+            .unwrap();
 
     assert!(applied.contains(&("foo".to_string(), "0.2.0".to_string())));
     assert!(out.contains("version = \"0.2.0\""));
@@ -210,14 +204,9 @@ fn skips_workspace_dependency_without_version() {
     let mut updates = BTreeMap::new();
     updates.insert("foo".to_string(), "0.2.0".to_string());
 
-    let (out, applied) = update_manifest_versions(
-        Path::new("/workspace/Cargo.toml"),
-        input,
-        None,
-        &updates,
-        None,
-    )
-    .unwrap();
+    let (out, applied) =
+        update_manifest_versions(Path::new("/workspace/Cargo.toml"), input, None, &updates)
+            .unwrap();
 
     assert_eq!(out.trim_end(), input.trim_end());
     assert!(applied.is_empty());
@@ -230,8 +219,7 @@ fn converts_simple_dep_without_quotes() {
     updates.insert("bar".to_string(), "0.2.0".to_string());
 
     let (out, applied) =
-        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-            .unwrap();
+        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
     assert!(applied.contains(&("bar".to_string(), "0.2.0".to_string())));
     assert!(out.contains("bar = \"0.2.0\""));
@@ -313,4 +301,177 @@ fn cargo_discoverer_rejects_workspace_inheritance_without_workspace_version() {
 
     let err = result.unwrap_err().to_string();
     assert!(err.contains("version.workspace = true requires workspace.package.version"));
+}
+
+#[test]
+fn update_package_version_skips_workspace_inheritance_dotted_key() {
+    let input = "[package]\nname = \"foo\"\nversion.workspace = true\n";
+    let (out, applied) = update_manifest_versions(
+        Path::new("/foo/Cargo.toml"),
+        input,
+        Some("1.0.0-alpha"),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(
+        out.contains("version.workspace = true"),
+        "workspace inheritance was clobbered: {out}"
+    );
+    assert!(!out.contains("version = \"1.0.0-alpha\""));
+    assert!(applied.is_empty());
+}
+
+#[test]
+fn update_package_version_skips_workspace_inheritance_inline_table() {
+    let input = "[package]\nname = \"foo\"\nversion = { workspace = true }\n";
+    let (out, applied) = update_manifest_versions(
+        Path::new("/foo/Cargo.toml"),
+        input,
+        Some("1.0.0-alpha"),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(
+        out.contains("workspace = true"),
+        "workspace inheritance was clobbered: {out}"
+    );
+    assert!(!out.contains("version = \"1.0.0-alpha\""));
+    assert!(applied.is_empty());
+}
+
+#[test]
+fn has_workspace_version_inheritance_detects_dotted_key() {
+    let content = "[package]\nname = \"foo\"\nversion.workspace = true\n";
+    assert!(has_workspace_version_inheritance(content).unwrap());
+}
+
+#[test]
+fn has_workspace_version_inheritance_detects_inline_table() {
+    let content = "[package]\nname = \"foo\"\nversion = { workspace = true }\n";
+    assert!(has_workspace_version_inheritance(content).unwrap());
+}
+
+#[test]
+fn has_workspace_version_inheritance_returns_false_for_explicit_version() {
+    let content = "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n";
+    assert!(!has_workspace_version_inheritance(content).unwrap());
+}
+
+#[test]
+fn update_workspace_root_manifest_updates_version() {
+    let input = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+"#;
+    let (out, changed) = update_workspace_root_manifest(
+        Path::new("/Cargo.toml"),
+        input,
+        Some("0.1.0-alpha"),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(changed);
+    assert!(out.contains("version = \"0.1.0-alpha\""));
+    assert!(!out.contains("version = \"0.1.0\""));
+}
+
+#[test]
+fn update_workspace_root_manifest_updates_workspace_dependencies() {
+    let input = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+foo = { version = "0.1.0", path = "crates/foo" }
+"#;
+    let mut versions = BTreeMap::new();
+    versions.insert("foo".to_string(), "0.2.0".to_string());
+
+    let (out, changed) =
+        update_workspace_root_manifest(Path::new("/Cargo.toml"), input, None, &versions).unwrap();
+
+    assert!(changed);
+    assert!(out.contains("version = \"0.2.0\""));
+}
+
+#[test]
+fn update_workspace_root_manifest_no_change_when_up_to_date() {
+    let input = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+"#;
+    let (out, changed) = update_workspace_root_manifest(
+        Path::new("/Cargo.toml"),
+        input,
+        Some("0.1.0"),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(!changed);
+    assert_eq!(out.trim_end(), input.trim_end());
+}
+
+#[test]
+fn update_workspace_root_manifest_noop_without_workspace_package() {
+    let input = "[workspace]\nmembers = [\"crates/*\"]\n";
+
+    let (out, changed) = update_workspace_root_manifest(
+        Path::new("/Cargo.toml"),
+        input,
+        Some("0.2.0"),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert!(!changed);
+    assert_eq!(out.trim_end(), input.trim_end());
+}
+
+#[test]
+fn updates_renamed_dependency_via_package_field() {
+    let input = r#"[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+my-alias = { package = "actual-pkg", version = "0.1.0" }
+"#;
+    let mut updates = BTreeMap::new();
+    updates.insert("actual-pkg".to_string(), "0.2.0".to_string());
+
+    let (out, applied) =
+        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
+
+    assert!(applied.contains(&("actual-pkg".to_string(), "0.2.0".to_string())));
+    assert!(out.contains("version = \"0.2.0\""));
+    assert!(out.contains("package = \"actual-pkg\""));
+}
+
+#[test]
+fn updates_target_specific_dependency() {
+    let input = r#"[package]
+name = "demo"
+version = "0.1.0"
+
+[target.'cfg(unix)'.dependencies]
+foo = "0.1.0"
+"#;
+    let mut updates = BTreeMap::new();
+    updates.insert("foo".to_string(), "0.2.0".to_string());
+
+    let (out, applied) =
+        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
+
+    assert!(applied.contains(&("foo".to_string(), "0.2.0".to_string())));
+    assert!(out.contains("foo = \"0.2.0\""));
 }
