@@ -344,19 +344,19 @@ fn update_package_version_skips_workspace_inheritance_inline_table() {
 #[test]
 fn has_workspace_version_inheritance_detects_dotted_key() {
     let content = "[package]\nname = \"foo\"\nversion.workspace = true\n";
-    assert!(has_workspace_version_inheritance(content));
+    assert!(has_workspace_version_inheritance(content).unwrap());
 }
 
 #[test]
 fn has_workspace_version_inheritance_detects_inline_table() {
     let content = "[package]\nname = \"foo\"\nversion = { workspace = true }\n";
-    assert!(has_workspace_version_inheritance(content));
+    assert!(has_workspace_version_inheritance(content).unwrap());
 }
 
 #[test]
 fn has_workspace_version_inheritance_returns_false_for_explicit_version() {
     let content = "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n";
-    assert!(!has_workspace_version_inheritance(content));
+    assert!(!has_workspace_version_inheritance(content).unwrap());
 }
 
 #[test]

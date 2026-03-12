@@ -505,10 +505,14 @@ bar = { version = "1.0.0", path = "crates/bar" }
         assert_eq!(updates[0].new_version, "1.0.0-alpha");
 
         let foo_manifest = fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap();
+        let foo_doc = foo_manifest
+            .parse::<toml_edit::DocumentMut>()
+            .expect("foo Cargo.toml should be valid TOML");
         assert!(
-            foo_manifest.contains("version.workspace = true")
-                || foo_manifest.contains("workspace = true"),
-            "foo's workspace inheritance was clobbered: {foo_manifest}"
+            foo_doc["package"]["version"]["workspace"]
+                .as_bool()
+                .unwrap_or(false),
+            "foo's version.workspace inheritance was clobbered: {foo_manifest}"
         );
 
         let root_manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();

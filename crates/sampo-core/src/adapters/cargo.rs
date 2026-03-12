@@ -407,10 +407,10 @@ fn update_package_version(
 }
 
 /// Check whether a Cargo manifest inherits its version from the workspace root.
-pub fn has_workspace_version_inheritance(manifest_content: &str) -> bool {
-    let Ok(doc) = manifest_content.parse::<DocumentMut>() else {
-        return false;
-    };
+pub fn has_workspace_version_inheritance(manifest_content: &str) -> Result<bool> {
+    let doc: DocumentMut = manifest_content
+        .parse()
+        .map_err(|err| SampoError::Release(format!("Failed to parse manifest: {err}")))?;
 
     let version_item = doc
         .as_table()
@@ -418,7 +418,7 @@ pub fn has_workspace_version_inheritance(manifest_content: &str) -> bool {
         .and_then(Item::as_table)
         .and_then(|pkg| pkg.get("version"));
 
-    has_workspace_flag(version_item)
+    Ok(has_workspace_flag(version_item))
 }
 
 /// Finalize the workspace root manifest after member manifests have been updated.
@@ -442,7 +442,7 @@ pub fn finalize_workspace_root(
         let member_manifest = member.path.join(CARGO_MANIFEST);
         let content = fs::read_to_string(&member_manifest)?;
 
-        if !has_workspace_version_inheritance(&content) {
+        if !has_workspace_version_inheritance(&content)? {
             continue;
         }
 
@@ -465,11 +465,22 @@ pub fn finalize_workspace_root(
     let manifest_path = workspace_root.join(CARGO_MANIFEST);
     let input = fs::read_to_string(&manifest_path)?;
 
+    let cargo_member_names: BTreeSet<&str> = members
+        .iter()
+        .filter(|m| m.kind == PackageKind::Cargo)
+        .map(|m| m.name.as_str())
+        .collect();
+    let cargo_versions: BTreeMap<String, String> = new_version_by_name
+        .iter()
+        .filter(|(name, _)| cargo_member_names.contains(name.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     let (updated, changed) = update_workspace_root_manifest(
         &manifest_path,
         &input,
         workspace_version.as_deref(),
-        new_version_by_name,
+        &cargo_versions,
     )?;
 
     if changed {
