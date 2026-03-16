@@ -493,6 +493,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
     let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
     let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
+    let preserved_targets = collect_preserved_targets(&preserved_changesets, &workspace)?;
 
     let mut using_preserved = false;
     let mut cached_plan_state: Option<PlanState> = None;
@@ -522,7 +523,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
         using_preserved = true;
     } else {
-        match compute_plan_state(&current_changesets, &workspace, &config)? {
+        match compute_plan_state(&current_changesets, &workspace, &config, &preserved_targets)? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
                 if !is_prerelease_preview && !preserved_changesets.is_empty() {
@@ -570,7 +571,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             final_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
         }
 
-        match compute_plan_state(&final_changesets, &workspace, &config)? {
+        match compute_plan_state(&final_changesets, &workspace, &config, &preserved_targets)? {
             PlanOutcome::Plan(plan) => plan,
             PlanOutcome::NoApplicablePackages => {
                 println!("No applicable packages found in changesets.");
@@ -591,7 +592,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         final_changesets = current_changesets;
         match cached_plan_state {
             Some(plan) => plan,
-            None => match compute_plan_state(&final_changesets, &workspace, &config)? {
+            None => match compute_plan_state(&final_changesets, &workspace, &config, &preserved_targets)? {
                 PlanOutcome::Plan(plan) => plan,
                 PlanOutcome::NoApplicablePackages => {
                     println!("No applicable packages found in changesets.");
@@ -638,7 +639,15 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         &config,
     )?;
 
-    finalize_consumed_changesets(used_paths, &workspace.root, is_prerelease_release)?;
+    let prerelease_targets = collect_prerelease_targets(&releases);
+    finalize_consumed_changesets(
+        used_paths,
+        &workspace.root,
+        is_prerelease_release,
+        &final_changesets,
+        &workspace,
+        &prerelease_targets,
+    )?;
 
     // Regenerate lockfiles for all ecosystems present in the workspace.
     // This ensures the release branch includes consistent, up-to-date lockfiles
@@ -657,6 +666,7 @@ fn compute_plan_state(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
     config: &Config,
+    preserved_targets: &BTreeSet<String>,
 ) -> Result<PlanOutcome> {
     let (mut bump_by_pkg, messages_by_pkg, used_paths) =
         compute_initial_bumps(changesets, workspace, config)?;
@@ -669,7 +679,7 @@ fn compute_plan_state(
     apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
     apply_linked_dependencies(&mut bump_by_pkg, config, workspace)?;
 
-    let releases = prepare_release_plan(&bump_by_pkg, workspace)?;
+    let releases = prepare_release_plan(&bump_by_pkg, workspace, preserved_targets)?;
     if releases.is_empty() {
         return Ok(PlanOutcome::NoMatchingCrates);
     }
@@ -708,6 +718,19 @@ fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
     })
 }
 
+fn collect_prerelease_targets(releases: &ReleasePlan) -> BTreeSet<String> {
+    let mut targets = BTreeSet::new();
+    for (identifier, _, new_version) in releases {
+        if Version::parse(new_version)
+            .map(|v| !v.pre.is_empty())
+            .unwrap_or(false)
+        {
+            targets.insert(identifier.clone());
+        }
+    }
+    targets
+}
+
 fn is_spec_in_prerelease(workspace: &Workspace, spec: &PackageSpecifier) -> Result<bool> {
     let info = resolve_package_spec(workspace, spec)?;
 
@@ -740,6 +763,20 @@ fn all_preserved_targets_in_prerelease(
         }
     }
     Ok(true)
+}
+
+fn collect_preserved_targets(
+    changesets: &[ChangesetInfo],
+    workspace: &Workspace,
+) -> Result<BTreeSet<String>> {
+    let mut targets = BTreeSet::new();
+    for changeset in changesets {
+        for (spec, _, _) in &changeset.entries {
+            let info = resolve_package_spec(workspace, spec)?;
+            targets.insert(info.canonical_identifier().to_string());
+        }
+    }
+    Ok(targets)
 }
 
 /// Move all preserved changeset files from the prerelease directory to the
@@ -874,6 +911,9 @@ fn finalize_consumed_changesets(
     used_paths: BTreeSet<PathBuf>,
     workspace_root: &Path,
     preserve_for_prerelease: bool,
+    changesets: &[ChangesetInfo],
+    workspace: &Workspace,
+    prerelease_targets: &BTreeSet<String>,
 ) -> Result<()> {
     if used_paths.is_empty() {
         return Ok(());
@@ -881,11 +921,51 @@ fn finalize_consumed_changesets(
 
     if preserve_for_prerelease {
         let prerelease_dir = workspace_root.join(".sampo").join("prerelease");
+        let mut by_path: BTreeMap<&Path, &ChangesetInfo> = BTreeMap::new();
+        for changeset in changesets {
+            by_path.insert(changeset.path.as_path(), changeset);
+        }
         for path in used_paths {
             if !path.exists() {
                 continue;
             }
-            let _ = move_changeset_file(&path, &prerelease_dir)?;
+            if let Some(changeset) = by_path.get(path.as_path()) {
+                let mut prerelease_entries = Vec::new();
+                for entry in &changeset.entries {
+                    let info = resolve_package_spec(workspace, &entry.0)?;
+                    if prerelease_targets.contains(info.canonical_identifier()) {
+                        prerelease_entries.push(entry.clone());
+                    }
+                }
+
+                if prerelease_entries.is_empty() {
+                    fs::remove_file(&path)
+                        .map_err(|err| SampoError::Io(io_error_with_path(err, &path)))?;
+                    continue;
+                }
+
+                if prerelease_entries.len() == changeset.entries.len() {
+                    let _ = move_changeset_file(&path, &prerelease_dir)?;
+                    continue;
+                }
+
+                fs::create_dir_all(&prerelease_dir)?;
+                let file_name = path
+                    .file_name()
+                    .ok_or_else(|| SampoError::Changeset("Invalid changeset file name".to_string()))?;
+                let mut destination = prerelease_dir.join(file_name);
+                if destination.exists() {
+                    destination = unique_destination_path(&prerelease_dir, file_name);
+                }
+                let preserved_content =
+                    render_changeset_markdown_with_tags(&prerelease_entries, &changeset.message);
+                fs::write(&destination, preserved_content)
+                    .map_err(|err| SampoError::Io(io_error_with_path(err, &destination)))?;
+                fs::remove_file(&path)
+                    .map_err(|err| SampoError::Io(io_error_with_path(err, &path)))?;
+            } else {
+                let _ = move_changeset_file(&path, &prerelease_dir)?;
+            }
         }
         println!("Preserved consumed changesets for pre-release.");
     } else {
@@ -1271,6 +1351,7 @@ fn apply_linked_dependencies(
 fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
+    preserved_targets: &BTreeSet<String>,
 ) -> Result<ReleasePlan> {
     // Map package identifier -> PackageInfo for quick lookup
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
@@ -1287,7 +1368,16 @@ fn prepare_release_plan(
                 info.version.clone()
             };
 
-            let newv = bump_version(&old, *bump).unwrap_or_else(|_| old.clone());
+            let newv = match parse_version_string(&old) {
+                Ok(parsed) => {
+                    if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
+                        bump_prerelease_entry(&parsed, *bump).unwrap_or_else(|_| old.clone())
+                    } else {
+                        bump_version(&old, *bump).unwrap_or_else(|_| old.clone())
+                    }
+                }
+                Err(_) => old.clone(),
+            };
 
             releases.push((identifier.clone(), old, newv));
         }
@@ -1639,6 +1729,14 @@ fn strip_trailing_numeric_identifiers(pre: &Prerelease) -> Option<Prerelease> {
     }
 }
 
+fn prerelease_has_trailing_numeric(pre: &Prerelease) -> bool {
+    pre.as_str()
+        .split('.')
+        .last()
+        .map(|part| part.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
 fn apply_base_bump(version: &mut Version, bump: Bump) -> std::result::Result<(), String> {
     match bump {
         Bump::Patch => {
@@ -1666,6 +1764,35 @@ fn apply_base_bump(version: &mut Version, bump: Bump) -> std::result::Result<(),
     version.pre = Prerelease::EMPTY;
     version.build = BuildMetadata::EMPTY;
     Ok(())
+}
+
+fn should_bump_prerelease_base(
+    version: &Version,
+    identifier: &str,
+    preserved_targets: &BTreeSet<String>,
+) -> bool {
+    if version.pre.is_empty() {
+        return false;
+    }
+    if preserved_targets.contains(identifier) {
+        return false;
+    }
+    !prerelease_has_trailing_numeric(&version.pre)
+}
+
+fn bump_prerelease_entry(version: &Version, bump: Bump) -> std::result::Result<String, String> {
+    if version.pre.is_empty() {
+        return Err("Version does not contain a pre-release identifier".to_string());
+    }
+
+    let base_pre = strip_trailing_numeric_identifiers(&version.pre).ok_or_else(|| {
+        "Pre-release version must include a non-numeric identifier before the counter".to_string()
+    })?;
+
+    let mut updated = version.clone();
+    apply_base_bump(&mut updated, bump)?;
+    updated.pre = base_pre;
+    Ok(updated.to_string())
 }
 
 /// Bump a semver version string, including pre-release handling

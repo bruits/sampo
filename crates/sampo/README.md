@@ -42,7 +42,7 @@ Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate t
 
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
 
-Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). While a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
+Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). On the first pre-release release after entering pre mode, Sampo advances the base version according to the pending changeset bump so pre-releases stay ahead of the latest stable version (for example, `1.2.3-alpha` + patch → `1.2.4-alpha`). After that, while a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
 
 #### Changesets
 
