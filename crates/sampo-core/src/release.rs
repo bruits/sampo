@@ -1732,7 +1732,7 @@ fn strip_trailing_numeric_identifiers(pre: &Prerelease) -> Option<Prerelease> {
 fn prerelease_has_trailing_numeric(pre: &Prerelease) -> bool {
     pre.as_str()
         .split('.')
-        .last()
+        .next_back()
         .map(|part| part.chars().all(|ch| ch.is_ascii_digit()))
         .unwrap_or(false)
 }
