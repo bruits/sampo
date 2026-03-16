@@ -5,10 +5,8 @@ pub mod npm;
 pub mod packagist;
 pub mod pypi;
 
-pub use cargo::ManifestMetadata;
-
 use crate::errors::{Result, WorkspaceError};
-use crate::types::{PackageInfo, PackageKind};
+use crate::types::{PackageInfo, PackageKind, Workspace};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -150,7 +148,6 @@ impl PackageAdapter {
         input: &str,
         new_pkg_version: Option<&str>,
         new_version_by_name: &BTreeMap<String, String>,
-        metadata: Option<&ManifestMetadata>,
     ) -> Result<(String, Vec<(String, String)>)> {
         match self {
             Self::Cargo => cargo::update_manifest_versions(
@@ -158,57 +155,57 @@ impl PackageAdapter {
                 input,
                 new_pkg_version,
                 new_version_by_name,
-                metadata,
             ),
-            Self::Npm => {
-                debug_assert!(
-                    metadata.is_none(),
-                    "npm adapter does not use Cargo metadata"
-                );
-                npm::update_manifest_versions(
-                    manifest_path,
-                    input,
-                    new_pkg_version,
-                    new_version_by_name,
-                )
-            }
-            Self::Hex => {
-                debug_assert!(
-                    metadata.is_none(),
-                    "hex adapter does not use Cargo metadata"
-                );
-                hex::update_manifest_versions(
-                    manifest_path,
-                    input,
-                    new_pkg_version,
-                    new_version_by_name,
-                )
-            }
-            Self::PyPI => {
-                debug_assert!(
-                    metadata.is_none(),
-                    "pypi adapter does not use Cargo metadata"
-                );
-                pypi::update_manifest_versions(
-                    manifest_path,
-                    input,
-                    new_pkg_version,
-                    new_version_by_name,
-                )
-            }
-            Self::Packagist => {
-                debug_assert!(
-                    metadata.is_none(),
-                    "packagist adapter does not use Cargo metadata"
-                );
-                packagist::update_manifest_versions(
-                    manifest_path,
-                    input,
-                    new_pkg_version,
-                    new_version_by_name,
-                )
-            }
+            Self::Npm => npm::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+            ),
+            Self::Hex => hex::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+            ),
+            Self::PyPI => pypi::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+            ),
+            Self::Packagist => packagist::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+            ),
         }
+    }
+
+    /// Finalize workspace root manifests after all member manifests have been updated.
+    ///
+    /// For each ecosystem that uses workspace version inheritance (currently Cargo), this
+    /// detects which members inherit their version, validates they resolve to the same version,
+    /// and updates the workspace root manifest accordingly.
+    pub fn finalize_workspace_roots(
+        workspace: &Workspace,
+        new_version_by_name: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let has_cargo = workspace
+            .members
+            .iter()
+            .any(|pkg| pkg.kind == PackageKind::Cargo);
+
+        if has_cargo {
+            cargo::finalize_workspace_root(
+                &workspace.root,
+                &workspace.members,
+                new_version_by_name,
+            )?;
+        }
+
+        Ok(())
     }
 
     /// Adapter helper for matching from a PackageKind.

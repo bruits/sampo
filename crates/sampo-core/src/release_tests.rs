@@ -783,7 +783,7 @@ mod tests {
         let new_versions = BTreeMap::new();
         let manifest_path = std::path::Path::new("/test/crates/x/Cargo.toml");
         let (out, _) = crate::adapters::PackageAdapter::Cargo
-            .update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions, None)
+            .update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions)
             .unwrap();
         assert!(out.contains("version = \"0.2.0\""));
         assert!(out.contains("[dependencies]"));
@@ -818,7 +818,7 @@ tempfile = "3.0"
         let new_versions = BTreeMap::new();
         let manifest_path = std::path::Path::new("/test/crates/sampo-github-action/Cargo.toml");
         let (out, _) = crate::adapters::PackageAdapter::Cargo
-            .update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions, None)
+            .update_manifest_versions(manifest_path, input, Some("0.2.0"), &new_versions)
             .unwrap();
 
         // Should update version but preserve all other formatting
@@ -1694,5 +1694,77 @@ tempfile = "3.0"
             1,
             "prerelease dir should keep the rewritten mixed changeset"
         );
+    }
+
+    #[test]
+    fn workspace_inherited_versions_rejects_conflicting_bumps() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().to_path_buf();
+
+        {
+            let _lock = env_lock().lock().unwrap();
+            unsafe {
+                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+            }
+        }
+
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::create_dir_all(root.join("crates/foo/src")).unwrap();
+        fs::create_dir_all(root.join("crates/bar/src")).unwrap();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+foo = { version = "1.0.0", path = "crates/foo" }
+bar = { version = "1.0.0", path = "crates/bar" }
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            root.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/foo/src/lib.rs"), "").unwrap();
+
+        fs::write(
+            root.join("crates/bar/Cargo.toml"),
+            "[package]\nname = \"bar\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/bar/src/lib.rs"), "").unwrap();
+
+        // Create changesets with conflicting bump levels
+        let changesets_dir = root.join(".sampo/changesets");
+        fs::create_dir_all(&changesets_dir).unwrap();
+        fs::write(
+            changesets_dir.join("bump-foo.md"),
+            "---\nfoo: minor\n---\n\nfeat: foo minor change\n",
+        )
+        .unwrap();
+        fs::write(
+            changesets_dir.join("bump-bar.md"),
+            "---\nbar: major\n---\n\nbreaking: bar major change\n",
+        )
+        .unwrap();
+
+        let result = run_release(&root, false);
+        let err = result.expect_err("should fail with conflicting workspace-inherited versions");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("conflicting versions"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
     }
 }
