@@ -501,7 +501,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
                 prerelease_dir.display(),
                 err
             );
-            Vec::new()
+            BTreeSet::new()
         }
     };
 
@@ -602,7 +602,12 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         final_changesets = current_changesets;
         match cached_plan_state {
             Some(plan) => plan,
-            None => match compute_plan_state(&final_changesets, &workspace, &config, &preserved_targets)? {
+            None => match compute_plan_state(
+                &final_changesets,
+                &workspace,
+                &config,
+                &preserved_targets,
+            )? {
                 PlanOutcome::Plan(plan) => plan,
                 PlanOutcome::NoApplicablePackages => {
                     println!("No applicable packages found in changesets.");
@@ -960,9 +965,9 @@ fn finalize_consumed_changesets(
                 }
 
                 fs::create_dir_all(&prerelease_dir)?;
-                let file_name = path
-                    .file_name()
-                    .ok_or_else(|| SampoError::Changeset("Invalid changeset file name".to_string()))?;
+                let file_name = path.file_name().ok_or_else(|| {
+                    SampoError::Changeset("Invalid changeset file name".to_string())
+                })?;
                 let mut destination = prerelease_dir.join(file_name);
                 if destination.exists() {
                     destination = unique_destination_path(&prerelease_dir, file_name);
