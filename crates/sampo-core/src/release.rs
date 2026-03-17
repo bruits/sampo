@@ -493,7 +493,17 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
     let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
     let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
-    let preserved_targets = collect_preserved_targets(&preserved_changesets, &workspace)?;
+    let preserved_targets = match collect_preserved_targets(&preserved_changesets, &workspace) {
+        Ok(targets) => targets,
+        Err(err) => {
+            eprintln!(
+                "Warning: failed to resolve some preserved changesets in {}: {}",
+                prerelease_dir.display(),
+                err
+            );
+            Vec::new()
+        }
+    };
 
     let mut using_preserved = false;
     let mut cached_plan_state: Option<PlanState> = None;
