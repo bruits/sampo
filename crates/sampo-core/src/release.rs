@@ -1388,7 +1388,7 @@ fn prepare_release_plan(
                     if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
                         bump_prerelease_entry(&parsed, *bump).unwrap_or_else(|_| old.clone())
                     } else {
-                        bump_version(&old, *bump).unwrap_or_else(|_| old.clone())
+                        bump_version_from_parsed(&parsed, *bump).unwrap_or_else(|_| old.clone())
                     }
                 }
                 Err(_) => old.clone(),
@@ -1810,9 +1810,11 @@ fn bump_prerelease_entry(version: &Version, bump: Bump) -> std::result::Result<S
     Ok(updated.to_string())
 }
 
-/// Bump a semver version string, including pre-release handling
-pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String> {
-    let mut version = parse_version_string(old)?;
+fn bump_version_from_parsed(
+    parsed: &Version,
+    bump: Bump,
+) -> std::result::Result<String, String> {
+    let mut version = parsed.clone();
     let original_pre = version.pre.clone();
 
     if original_pre.is_empty() {
@@ -1828,15 +1830,28 @@ pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String
         Ok(version.to_string())
     } else {
         let base_pre = strip_trailing_numeric_identifiers(&original_pre).ok_or_else(|| {
-            format!(
-                "Pre-release version '{old}' must include a non-numeric identifier before the counter"
-            )
+            "Pre-release version must include a non-numeric identifier before the counter"
+                .to_string()
         })?;
 
         apply_base_bump(&mut version, bump)?;
         version.pre = base_pre;
         Ok(version.to_string())
     }
+}
+
+/// Bump a semver version string, including pre-release handling
+pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String> {
+    let version = parse_version_string(old)?;
+    bump_version_from_parsed(&version, bump).map_err(|err| {
+        if err.contains("Pre-release version must include a non-numeric identifier") {
+            format!(
+                "Pre-release version '{old}' must include a non-numeric identifier before the counter"
+            )
+        } else {
+            err
+        }
+    })
 }
 
 fn split_intro_and_versions(body: &str) -> (&str, &str) {
