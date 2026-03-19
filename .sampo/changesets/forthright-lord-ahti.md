@@ -2,4 +2,4 @@
 cargo/sampo-core: patch
 ---
 
-Prereleases now advance the base version before incrementing prerelease counters and only preserve prerelease-targeted changesets.
+Fixed prerelease versioning to advance the base version before incrementing prerelease counters, and to only preserve prerelease-targeted changesets.
