@@ -622,7 +622,7 @@ mod tests {
             .expect("first release should succeed");
         assert_eq!(output.released_packages.len(), 1);
         assert_eq!(output.released_packages[0].name, "pkg1");
-        workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
+        workspace.assert_crate_version("pkg1", "1.1.0-alpha");
 
         let prerelease_dir = workspace.root.join(".sampo/prerelease");
         assert!(prerelease_dir.exists());
@@ -634,9 +634,58 @@ mod tests {
             .expect("second release should succeed");
         assert_eq!(output.released_packages.len(), 1);
         assert_eq!(output.released_packages[0].name, "pkg1");
-        workspace.assert_crate_version("pkg1", "1.0.0-alpha.2");
+        workspace.assert_crate_version("pkg1", "1.1.0-alpha.1");
         workspace.assert_crate_version("pkg2", "1.0.0");
         workspace.assert_crate_version("pkg3", "1.0.0");
+    }
+
+    #[test]
+    fn prerelease_mixed_changesets_only_preserve_prerelease_entries() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg1", "1.0.0-alpha");
+        workspace.add_crate("pkg2", "1.0.0");
+        workspace.add_changeset(&["pkg1"], Bump::Minor, "feat: prerelease change");
+        workspace.add_changeset(&["pkg2"], Bump::Patch, "fix: stable change");
+
+        let output = workspace
+            .run_release(false)
+            .expect("release should succeed");
+        assert_eq!(output.released_packages.len(), 2);
+        workspace.assert_crate_version("pkg1", "1.1.0-alpha");
+        workspace.assert_crate_version("pkg2", "1.0.1");
+
+        let changesets_dir = workspace.root.join(".sampo/changesets");
+        let pending = fs::read_dir(&changesets_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .collect::<Vec<_>>();
+        assert!(pending.is_empty(), "changesets directory should be empty");
+
+        let prerelease_dir = workspace.root.join(".sampo/prerelease");
+        let preserved = fs::read_dir(&prerelease_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .collect::<Vec<_>>();
+        assert_eq!(preserved.len(), 1);
+
+        let preserved_text = fs::read_to_string(preserved[0].path()).unwrap();
+        assert!(preserved_text.contains("pkg1"));
+        assert!(!preserved_text.contains("pkg2"));
+    }
+
+    #[test]
+    fn prerelease_entry_bumps_base_before_counter() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg1", "1.2.3-alpha");
+        workspace.add_changeset(&["pkg1"], Bump::Patch, "fix: prerelease patch");
+
+        workspace
+            .run_release(false)
+            .expect("entry prerelease release should succeed");
+
+        workspace.assert_crate_version("pkg1", "1.2.4-alpha");
     }
 
     #[test]
@@ -650,7 +699,7 @@ mod tests {
         workspace
             .run_release(false)
             .expect("prerelease should succeed");
-        workspace.assert_crate_version("pkg1", "1.0.0-alpha.1");
+        workspace.assert_crate_version("pkg1", "1.1.0-alpha");
 
         let prerelease_dir = workspace.root.join(".sampo/prerelease");
         assert!(prerelease_dir.exists());
@@ -702,7 +751,7 @@ mod tests {
             .run_release(false)
             .expect("initial alpha pre-release should succeed");
 
-        workspace.assert_crate_version("foo", "1.0.0-alpha.1");
+        workspace.assert_crate_version("foo", "1.1.0-alpha");
 
         let packages = vec![String::from("foo")];
         let exit_updates = exit_prerelease(&workspace.root, &packages).unwrap();
@@ -717,7 +766,7 @@ mod tests {
             .run_release(false)
             .expect("beta pre-release should succeed");
 
-        workspace.assert_crate_version("foo", "1.0.0-beta.1");
+        workspace.assert_crate_version("foo", "1.2.0-beta");
 
         let changelog_path = workspace
             .crates
@@ -727,7 +776,7 @@ mod tests {
         let changelog = fs::read_to_string(changelog_path).expect("changelog to exist");
 
         assert!(
-            changelog.contains("## 1.0.0-beta.1"),
+            changelog.contains("## 1.2.0-beta"),
             "expected changelog to include beta entry"
         );
         assert!(
