@@ -1,5 +1,12 @@
 # sampo-github-action
 
+## 0.15.1 — 2026-03-22
+
+### Patch changes
+
+- [3819bb4](https://github.com/bruits/sampo/commit/3819bb44c0d29e5d431815d04d656e95fbc85057) In Cargo (Rust) projects, fixed a bug overwriting `version.workspace = true` in member crates. Sampo now preserves workspace version inheritance, and updates the root manifest's `[workspace.package].version` and `[workspace.dependencies]` correctly. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.13.1
+
 ## 0.15.0 — 2026-03-05
 
 ### Minor changes
