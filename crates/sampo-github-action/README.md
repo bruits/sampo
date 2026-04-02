@@ -72,6 +72,9 @@ Example:
       dist/{{crate}}-v{{version}}-*.tar.gz
 ```
 
+> [!IMPORTANT]
+> GitHub's **Immutable releases** repository setting must be disabled for release asset uploads to work.
+
 ### Using outputs to conditionally run steps
 
 The action exposes two outputs:

@@ -277,7 +277,7 @@ impl GitHubClient {
         }
     }
 
-    /// Create a GitHub Release
+    /// Create a GitHub Release for a tag.
     pub fn create_release(&self, tag: &str, body: &str, prerelease: bool) -> Result<String> {
         let api_url = format!("https://api.github.com/repos/{}/releases", self.repo);
 
@@ -313,7 +313,6 @@ impl GitHubClient {
 
             println!("Created GitHub release for {}: {}", tag, release.html_url);
 
-            // Return the upload URL without template parameters
             let upload_url = release
                 .upload_url
                 .split('{')
@@ -341,7 +340,7 @@ impl GitHubClient {
         }
     }
 
-    /// Fetch an existing GitHub Release by tag name and return its upload URL.
+    /// Fetch an existing GitHub Release by tag name.
     pub fn get_release_by_tag(&self, tag: &str) -> Result<String> {
         let api_url = format!(
             "https://api.github.com/repos/{}/releases/tags/{}",

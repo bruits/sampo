@@ -831,13 +831,12 @@ fn create_github_release_for_tag(
         None => format!("Automated release for tag {}", tag),
     };
 
-    // Create the release and get upload URL (or find the existing release)
     let upload_url = match github_client.create_release(
         tag,
         &body,
         tag_is_prerelease_with_config(tag, config.as_ref()),
     ) {
-        Ok(url) => url,
+        Ok(upload_url) => upload_url,
         Err(e) => {
             eprintln!(
                 "Warning: Failed to create GitHub release for {}: {}",
@@ -847,7 +846,6 @@ fn create_github_release_for_tag(
         }
     };
 
-    // Upload pre-built release assets if requested
     if !upload_url.is_empty() {
         let assets = resolve_release_assets(workspace, tag, &github_options.asset_specs)?;
         if assets.is_empty() {
