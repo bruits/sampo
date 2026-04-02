@@ -1,5 +1,11 @@
 # sampo-github-action
 
+## 0.15.2 — 2026-04-02
+
+### Patch changes
+
+- [f8d8ad5](https://github.com/bruits/sampo/commit/f8d8ad55a7c564774230998f41cdafb2c4a57f87) Fixed a Github settings issue that prevented uploading release assets in the GitHub Action. — Thanks @goulvenclech!
+
 ## 0.15.1 — 2026-04-02
 
 ### Patch changes
