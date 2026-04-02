@@ -199,7 +199,7 @@ impl Config {
             .unwrap_or(Mode::Auto);
 
         let dry_run = std::env::var("INPUT_DRY_RUN")
-            .map(|v| v.eq_ignore_ascii_case("true"))
+            .map(|v| v.eq_ignore_ascii_case("true") || v.trim() == "1")
             .unwrap_or(false);
 
         let working_directory = std::env::var("INPUT_WORKING_DIRECTORY")
@@ -254,7 +254,7 @@ impl Config {
             .filter(|v| !v.is_empty());
 
         let create_github_release = std::env::var("INPUT_CREATE_GITHUB_RELEASE")
-            .map(|v| v.eq_ignore_ascii_case("true"))
+            .map(|v| v.eq_ignore_ascii_case("true") || v.trim() == "1")
             .unwrap_or(false);
 
         let open_discussion = std::env::var("INPUT_OPEN_DISCUSSION")
@@ -852,8 +852,8 @@ fn create_github_release_for_tag(
         let assets = resolve_release_assets(workspace, tag, &github_options.asset_specs)?;
         if assets.is_empty() {
             if !github_options.asset_specs.is_empty() {
-                println!(
-                    "No release assets matched the configured patterns for {}.",
+                eprintln!(
+                    "Warning: No release assets matched the configured patterns for {}.",
                     tag
                 );
             }
@@ -873,8 +873,9 @@ fn create_github_release_for_tag(
                     }
                     Err(error) => {
                         eprintln!(
-                            "Warning: Failed to upload release asset '{}' ({}): {}",
+                            "Warning: Failed to upload release asset '{}' for {} ({}): {}",
                             asset.asset_name,
+                            tag,
                             asset.path.display(),
                             error
                         );

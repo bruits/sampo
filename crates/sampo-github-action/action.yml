@@ -139,6 +139,14 @@ runs:
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
         fi
 
+        # Extract the pinned version from this action's own Cargo.toml
+        ACTION_VERSION=$(sed -n 's/^version *= *"\([^"]*\)"/\1/p' "${{ github.action_path }}/Cargo.toml" | head -1)
+        if [[ -z "${ACTION_VERSION}" ]]; then
+          echo "Failed to extract version from ${{ github.action_path }}/Cargo.toml" >&2
+          exit 1
+        fi
+        echo "Pinned sampo-github-action version: ${ACTION_VERSION}"
+
         # Install or build sampo-github-action binary
         if [[ "${INPUT_USE_LOCAL_BUILD:-}" == "true" || "${INPUT_USE_LOCAL_BUILD:-}" == "1" ]]; then
           echo "Building local sampo-github-action..."
@@ -152,11 +160,11 @@ runs:
             echo "$HOME/.local/bin" >> $GITHUB_PATH
           else
             echo "Local build requested but sampo repository structure not found, falling back to published version..."
-            cargo binstall --no-confirm sampo-github-action
+            cargo binstall --no-confirm --version "${ACTION_VERSION}" sampo-github-action
           fi
         else
           echo "Installing sampo-github-action..."
-          cargo binstall --no-confirm sampo-github-action
+          cargo binstall --no-confirm --version "${ACTION_VERSION}" sampo-github-action
         fi
 
         # Ensure git available (needed for tags and pushing)
@@ -179,29 +187,10 @@ runs:
           exit 1
         fi
 
-        # Compute boolean flags based on explicit true values
-        DRY_FLAG=""
-        if [[ "${INPUT_DRY_RUN:-}" == "true" || "${INPUT_DRY_RUN:-}" == "1" ]]; then
-          DRY_FLAG="--dry-run"
-        fi
-
-        CREATE_GH_RELEASE_FLAG=""
-        if [[ "${INPUT_CREATE_GITHUB_RELEASE:-}" == "true" || "${INPUT_CREATE_GITHUB_RELEASE:-}" == "1" ]]; then
-          CREATE_GH_RELEASE_FLAG="--create-github-release"
-        fi
-
         # Run sampo-github-action binary directly
+        # (all configuration is read from INPUT_* env vars, no CLI flags needed)
         cd "${WORKDIR}"
-        sampo-github-action \
-          --mode "${INPUT_COMMAND}" \
-          ${DRY_FLAG} \
-          ${INPUT_WORKING_DIRECTORY:+--working-directory "${INPUT_WORKING_DIRECTORY}"} \
-          ${INPUT_CARGO_TOKEN:+--cargo-token "${INPUT_CARGO_TOKEN}"} \
-          ${INPUT_ARGS:+--args "${INPUT_ARGS}"} \
-          ${INPUT_BASE_BRANCH:+--base-branch "${INPUT_BASE_BRANCH}"} \
-          ${INPUT_PR_BRANCH:+--pr-branch "${INPUT_PR_BRANCH}"} \
-          ${INPUT_PR_TITLE:+--pr-title "${INPUT_PR_TITLE}"} \
-          ${CREATE_GH_RELEASE_FLAG}
+        sampo-github-action
 
         # Capture outputs exposed by the binary via GITHUB_OUTPUT
         # (Already written by the binary)

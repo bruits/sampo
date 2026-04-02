@@ -324,9 +324,72 @@ impl GitHubClient {
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
+
+            // If the release already exists, fetch it and return its upload URL
+            if status == 422 && error_text.contains("already_exists") {
+                eprintln!(
+                    "Warning: Release for {} already exists, fetching existing release.",
+                    tag
+                );
+                return self.get_release_by_tag(tag);
+            }
+
             Err(ActionError::SampoCommandFailed {
                 operation: "github-create-release".to_string(),
                 message: format!("Failed to create release ({}): {}", status, error_text),
+            })
+        }
+    }
+
+    /// Fetch an existing GitHub Release by tag name and return its upload URL.
+    pub fn get_release_by_tag(&self, tag: &str) -> Result<String> {
+        let api_url = format!(
+            "https://api.github.com/repos/{}/releases/tags/{}",
+            self.repo, tag
+        );
+
+        let response = self
+            .client
+            .get(&api_url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .map_err(|e| ActionError::SampoCommandFailed {
+                operation: "github-get-release".to_string(),
+                message: format!("HTTP request failed: {}", e),
+            })?;
+
+        if response.status().is_success() {
+            let release: Release =
+                response
+                    .json()
+                    .map_err(|e| ActionError::SampoCommandFailed {
+                        operation: "github-get-release".to_string(),
+                        message: format!("Failed to parse release response: {}", e),
+                    })?;
+
+            println!(
+                "Found existing GitHub release for {}: {}",
+                tag, release.html_url
+            );
+
+            let upload_url = release
+                .upload_url
+                .split('{')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            Ok(upload_url)
+        } else {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            Err(ActionError::SampoCommandFailed {
+                operation: "github-get-release".to_string(),
+                message: format!(
+                    "Failed to fetch release for tag {} ({}): {}",
+                    tag, status, error_text
+                ),
             })
         }
     }

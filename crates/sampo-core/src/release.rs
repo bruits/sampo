@@ -1800,10 +1800,7 @@ fn bump_prerelease_entry(version: &Version, bump: Bump) -> std::result::Result<S
     Ok(updated.to_string())
 }
 
-fn bump_version_from_parsed(
-    parsed: &Version,
-    bump: Bump,
-) -> std::result::Result<String, String> {
+fn bump_version_from_parsed(parsed: &Version, bump: Bump) -> std::result::Result<String, String> {
     let mut version = parsed.clone();
     let original_pre = version.pre.clone();
 
