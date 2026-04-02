@@ -1,5 +1,13 @@
 # sampo
 
+## 0.17.1 — 2026-04-02
+
+### Patch changes
+
+- [9f69d99](https://github.com/bruits/sampo/commit/9f69d99ae79d9cf5769941cc1211a860ca8a1c27) Fixed prerelease versioning to advance the base version before incrementing prerelease counters, and to only preserve prerelease-targeted changesets. — Thanks @rickmartensnl!
+- [3819bb4](https://github.com/bruits/sampo/commit/3819bb44c0d29e5d431815d04d656e95fbc85057) In Cargo (Rust) projects, fixed a bug overwriting `version.workspace = true` in member crates. Sampo now preserves workspace version inheritance, and updates the root manifest's `[workspace.package].version` and `[workspace.dependencies]` correctly. — Thanks @goulvenclech!
+- Updated dependencies: sampo-core@0.13.1
+
 ## 0.17.0 — 2026-03-05
 
 ### Minor changes
