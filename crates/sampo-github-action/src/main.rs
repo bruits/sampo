@@ -394,6 +394,20 @@ fn execute_operations(
                 };
                 released = release_prepared || stabilize_prepared;
             } else {
+                // Prerelease packages with preserved changesets need a stabilize PR even
+                // when there are no pending changesets in the regular changesets directory.
+                let prerelease_packages = collect_prerelease_packages(workspace)?;
+                if !prerelease_packages.is_empty() {
+                    println!(
+                        "No pending changesets but prerelease packages exist on branch '{}'; checking for stabilize PR.",
+                        branch
+                    );
+                    let github_client = create_github_client()?;
+                    released = prepare_stabilize_pr(workspace, config, repo_config, branch, &github_client)?;
+                    if released {
+                        return Ok((released, published));
+                    }
+                }
                 println!(
                     "No pending changesets found on branch '{}'. Checking for merged releases to publish.",
                     branch
@@ -606,26 +620,9 @@ fn prepare_stabilize_pr(
         Some(workspace),
     )?;
 
-    let exit_changes = sampo::exit_prerelease(workspace, &prerelease_packages)?;
-    if exit_changes.is_empty() {
-        println!("No packages required exiting pre-release. Skipping stabilize PR.",);
-        git::git(
-            &["reset", "--hard", &format!("origin/{}", base_branch)],
-            Some(workspace),
-        )?;
-        git::git(&["checkout", branch], Some(workspace))?;
-        return Ok(false);
-    }
-    println!(
-        "Exited pre-release mode for {} package(s).",
-        exit_changes.len()
-    );
-
-    let plan = sampo::capture_release_plan(workspace)?;
+    let plan = sampo::capture_stabilize_plan(workspace)?;
     if !plan.has_changes {
-        println!(
-            "No stable release changes detected after exiting pre-release. Skipping stabilize PR.",
-        );
+        println!("No stable release changes detected. Skipping stabilize PR.");
         git::git(
             &["reset", "--hard", &format!("origin/{}", base_branch)],
             Some(workspace),
@@ -648,7 +645,7 @@ fn prepare_stabilize_pr(
         body
     };
 
-    sampo::run_release(workspace, false, config.cargo_token.as_deref())?;
+    sampo::run_stabilize_release(workspace, false, config.cargo_token.as_deref())?;
 
     if !git::has_changes(workspace)? {
         println!("No file changes after stabilize release. Skipping commit/PR.");
