@@ -403,10 +403,13 @@ fn execute_operations(
                         branch
                     );
                     let github_client = create_github_client()?;
-                    released = prepare_stabilize_pr(workspace, config, repo_config, branch, &github_client)?;
-                    if released {
-                        return Ok((released, published));
-                    }
+                    released = prepare_stabilize_pr(
+                        workspace,
+                        config,
+                        repo_config,
+                        branch,
+                        &github_client,
+                    )?;
                 }
                 println!(
                     "No pending changesets found on branch '{}'. Checking for merged releases to publish.",

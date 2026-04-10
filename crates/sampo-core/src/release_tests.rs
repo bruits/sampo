@@ -1902,8 +1902,8 @@ bar = { version = "1.0.0", path = "crates/bar" }
         workspace.add_crate("foo", "0.2.7-alpha.6");
         workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
 
-        let output = run_stabilize_release(&workspace.root, true)
-            .expect("dry-run stabilize should succeed");
+        let output =
+            run_stabilize_release(&workspace.root, true).expect("dry-run stabilize should succeed");
         assert!(output.dry_run);
         assert!(!output.released_packages.is_empty());
         assert_eq!(output.released_packages[0].new_version, "0.2.7");

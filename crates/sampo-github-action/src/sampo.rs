@@ -6,9 +6,8 @@ use sampo_core::types::{
 use sampo_core::{
     Config, PublishExtraArgs, PublishOutput, detect_all_dependency_explanations,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    get_commit_hash_for_path, load_changesets,
-    run_publish as core_publish, run_release as core_release,
-    run_stabilize_release as core_stabilize_release,
+    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
+    run_release as core_release, run_stabilize_release as core_stabilize_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -104,7 +103,11 @@ pub fn capture_stabilize_plan(workspace: &Path) -> Result<ReleasePlan> {
 }
 
 /// Execute stabilize release (prerelease → stable).
-pub fn run_stabilize_release(workspace: &Path, dry_run: bool, cargo_token: Option<&str>) -> Result<()> {
+pub fn run_stabilize_release(
+    workspace: &Path,
+    dry_run: bool,
+    cargo_token: Option<&str>,
+) -> Result<()> {
     if let Some(token) = cargo_token {
         set_cargo_env_var(token);
     }

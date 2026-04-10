@@ -523,7 +523,13 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
         using_preserved = true;
     } else {
-        match compute_plan_state(&current_changesets, &workspace, &config, &preserved_targets, false)? {
+        match compute_plan_state(
+            &current_changesets,
+            &workspace,
+            &config,
+            &preserved_targets,
+            false,
+        )? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
                 if !is_prerelease_preview && !preserved_changesets.is_empty() {
@@ -571,7 +577,13 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             final_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
         }
 
-        match compute_plan_state(&final_changesets, &workspace, &config, &preserved_targets, false)? {
+        match compute_plan_state(
+            &final_changesets,
+            &workspace,
+            &config,
+            &preserved_targets,
+            false,
+        )? {
             PlanOutcome::Plan(plan) => plan,
             PlanOutcome::NoApplicablePackages => {
                 println!("No applicable packages found in changesets.");
