@@ -950,7 +950,7 @@ fn main() {
             identifier: "cargo/a".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
-            internal_deps: BTreeSet::new(),
+            internal_deps: BTreeSet::from(["cargo/b".into()]),
             internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
@@ -959,8 +959,8 @@ fn main() {
             identifier: "cargo/b".into(),
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
-            internal_deps: BTreeSet::from(["cargo/a".into()]),
-            // dev-dep back to A — should NOT create a cycle
+            internal_deps: BTreeSet::new(),
+            // dev-dep back to A — would be a cycle if counted for publish ordering
             internal_dev_deps: BTreeSet::from(["cargo/a".into()]),
             kind: PackageKind::Cargo,
         };
@@ -974,7 +974,7 @@ fn main() {
         include.insert("cargo/b".into());
 
         let order = topo_order(&map, &include).unwrap();
-        assert_eq!(order, vec!["cargo/a", "cargo/b"]);
+        assert_eq!(order, vec!["cargo/b", "cargo/a"]);
     }
 
     #[test]
