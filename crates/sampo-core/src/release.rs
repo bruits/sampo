@@ -523,7 +523,13 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
         using_preserved = true;
     } else {
-        match compute_plan_state(&current_changesets, &workspace, &config, &preserved_targets)? {
+        match compute_plan_state(
+            &current_changesets,
+            &workspace,
+            &config,
+            &preserved_targets,
+            false,
+        )? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
                 if !is_prerelease_preview && !preserved_changesets.is_empty() {
@@ -571,7 +577,13 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             final_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
         }
 
-        match compute_plan_state(&final_changesets, &workspace, &config, &preserved_targets)? {
+        match compute_plan_state(
+            &final_changesets,
+            &workspace,
+            &config,
+            &preserved_targets,
+            false,
+        )? {
             PlanOutcome::Plan(plan) => plan,
             PlanOutcome::NoApplicablePackages => {
                 println!("No applicable packages found in changesets.");
@@ -597,6 +609,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
                 &workspace,
                 &config,
                 &preserved_targets,
+                false,
             )? {
                 PlanOutcome::Plan(plan) => plan,
                 PlanOutcome::NoApplicablePackages => {
@@ -667,11 +680,135 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     })
 }
 
+/// Stabilize prerelease packages in the workspace, producing stable version numbers
+pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput> {
+    let workspace = discover_workspace(root)?;
+    let config = Config::load(&workspace.root)?;
+
+    let branch = current_branch()?;
+    if !config.is_release_branch(&branch) {
+        return Err(SampoError::Release(format!(
+            "Branch '{}' is not configured for releases (allowed: {:?})",
+            branch,
+            config.release_branches().into_iter().collect::<Vec<_>>()
+        )));
+    }
+
+    validate_fixed_dependencies(&config, &workspace)?;
+
+    let changesets_dir = workspace.root.join(".sampo").join("changesets");
+    let prerelease_dir = workspace.root.join(".sampo").join("prerelease");
+
+    let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
+    let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
+    let preserved_targets = collect_preserved_targets(&preserved_changesets, &workspace)?;
+
+    if current_changesets.is_empty() && preserved_changesets.is_empty() {
+        println!(
+            "No changesets found in {}",
+            workspace.root.join(".sampo").join("changesets").display()
+        );
+        return Ok(ReleaseOutput {
+            released_packages: vec![],
+            dry_run,
+        });
+    }
+
+    // Always restore all preserved changesets — unlike a normal release, which skips preserved
+    // changesets when every target is still in prerelease, stabilization always needs them.
+    let final_changesets = if current_changesets.is_empty() {
+        if dry_run {
+            preserved_changesets
+        } else {
+            restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
+            load_changesets(&changesets_dir, &config.changesets_tags)?
+        }
+    } else {
+        if dry_run {
+            let mut all = current_changesets;
+            all.extend(preserved_changesets);
+            all
+        } else {
+            if !preserved_changesets.is_empty() {
+                restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
+            }
+            load_changesets(&changesets_dir, &config.changesets_tags)?
+        }
+    };
+
+    let plan_state = match compute_plan_state(
+        &final_changesets,
+        &workspace,
+        &config,
+        &preserved_targets,
+        true,
+    )? {
+        PlanOutcome::Plan(plan) => plan,
+        PlanOutcome::NoApplicablePackages => {
+            println!("No applicable packages found in changesets.");
+            return Ok(ReleaseOutput {
+                released_packages: vec![],
+                dry_run,
+            });
+        }
+        PlanOutcome::NoMatchingCrates => {
+            println!("No matching workspace crates to release.");
+            return Ok(ReleaseOutput {
+                released_packages: vec![],
+                dry_run,
+            });
+        }
+    };
+
+    let PlanState {
+        mut messages_by_pkg,
+        used_paths,
+        releases,
+        released_packages,
+    } = plan_state;
+
+    print_release_plan(&workspace, &releases);
+
+    if dry_run {
+        println!("Dry-run: no files modified, no tags created.");
+        return Ok(ReleaseOutput {
+            released_packages,
+            dry_run: true,
+        });
+    }
+
+    apply_releases(
+        &releases,
+        &workspace,
+        &mut messages_by_pkg,
+        &final_changesets,
+        &config,
+    )?;
+
+    let prerelease_targets = BTreeSet::new();
+    finalize_consumed_changesets(
+        used_paths,
+        &workspace.root,
+        false,
+        &final_changesets,
+        &workspace,
+        &prerelease_targets,
+    )?;
+
+    let _ = regenerate_lockfile(&workspace);
+
+    Ok(ReleaseOutput {
+        released_packages,
+        dry_run: false,
+    })
+}
+
 fn compute_plan_state(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
     config: &Config,
     preserved_targets: &BTreeSet<String>,
+    stabilize: bool,
 ) -> Result<PlanOutcome> {
     let (mut bump_by_pkg, messages_by_pkg, used_paths) =
         compute_initial_bumps(changesets, workspace, config)?;
@@ -684,7 +821,7 @@ fn compute_plan_state(
     apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
     apply_linked_dependencies(&mut bump_by_pkg, config, workspace)?;
 
-    let releases = prepare_release_plan(&bump_by_pkg, workspace, preserved_targets)?;
+    let releases = prepare_release_plan(&bump_by_pkg, workspace, preserved_targets, stabilize)?;
     if releases.is_empty() {
         return Ok(PlanOutcome::NoMatchingCrates);
     }
@@ -1357,6 +1494,7 @@ fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
     preserved_targets: &BTreeSet<String>,
+    stabilize: bool,
 ) -> Result<ReleasePlan> {
     // Map package identifier -> PackageInfo for quick lookup
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
@@ -1375,7 +1513,10 @@ fn prepare_release_plan(
 
             let newv = match parse_version_string(&old) {
                 Ok(parsed) => {
-                    if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
+                    if stabilize && !parsed.pre.is_empty() {
+                        stabilize_version_from_parsed(&parsed, *bump)
+                            .unwrap_or_else(|_| old.clone())
+                    } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
                         bump_prerelease_entry(&parsed, *bump).unwrap_or_else(|_| old.clone())
                     } else {
                         bump_version_from_parsed(&parsed, *bump).unwrap_or_else(|_| old.clone())
@@ -1825,6 +1966,26 @@ fn bump_version_from_parsed(parsed: &Version, bump: Bump) -> std::result::Result
         version.pre = base_pre;
         Ok(version.to_string())
     }
+}
+
+fn stabilize_version_from_parsed(
+    parsed: &Version,
+    bump: Bump,
+) -> std::result::Result<String, String> {
+    let mut version = parsed.clone();
+    if version.pre.is_empty() {
+        apply_base_bump(&mut version, bump)?;
+        return Ok(version.to_string());
+    }
+    let implied = implied_prerelease_bump(&version)?;
+    if bump > implied {
+        // The changeset requests a bump larger than what the prerelease base already encodes,
+        // so we need to apply the additional bump before stripping the suffix.
+        apply_base_bump(&mut version, bump)?;
+    }
+    version.pre = Prerelease::EMPTY;
+    version.build = BuildMetadata::EMPTY;
+    Ok(version.to_string())
 }
 
 /// Bump a semver version string, including pre-release handling
@@ -2328,5 +2489,35 @@ mod tests {
         // The dependency graph should be empty since examples-package is ignored
         // and main-package depends on it
         assert!(dependents.is_empty());
+    }
+
+    #[test]
+    fn test_stabilize_version_from_parsed() {
+        fn stabilize(v: &str, bump: Bump) -> String {
+            let parsed = parse_version_string(v).unwrap();
+            stabilize_version_from_parsed(&parsed, bump).unwrap()
+        }
+
+        // Patch-implied prerelease: bump ≤ implied strips suffix, bump > implied applies bump first
+        assert_eq!(stabilize("0.2.7-alpha.6", Bump::Patch), "0.2.7");
+        assert_eq!(stabilize("0.2.7-alpha.6", Bump::Minor), "0.3.0");
+        assert_eq!(stabilize("0.2.7-alpha.6", Bump::Major), "1.0.0");
+
+        // Minor-implied prerelease
+        assert_eq!(stabilize("0.3.0-alpha", Bump::Patch), "0.3.0");
+        assert_eq!(stabilize("0.3.0-alpha", Bump::Minor), "0.3.0");
+        assert_eq!(stabilize("0.3.0-alpha", Bump::Major), "1.0.0");
+        assert_eq!(stabilize("0.3.0-alpha.1", Bump::Patch), "0.3.0");
+        assert_eq!(stabilize("0.3.0-alpha.1", Bump::Minor), "0.3.0");
+
+        // Major-implied prerelease: any bump strips the suffix
+        assert_eq!(stabilize("1.0.0-alpha", Bump::Patch), "1.0.0");
+        assert_eq!(stabilize("1.0.0-alpha", Bump::Minor), "1.0.0");
+        assert_eq!(stabilize("1.0.0-alpha", Bump::Major), "1.0.0");
+
+        // Stable input: behaves like a normal bump
+        assert_eq!(stabilize("0.2.7", Bump::Patch), "0.2.8");
+        assert_eq!(stabilize("0.2.7", Bump::Minor), "0.3.0");
+        assert_eq!(stabilize("0.2.7", Bump::Major), "1.0.0");
     }
 }

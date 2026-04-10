@@ -4,10 +4,10 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    Config, PublishExtraArgs, PublishOutput, VersionChange, detect_all_dependency_explanations,
+    Config, PublishExtraArgs, PublishOutput, detect_all_dependency_explanations,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    exit_prerelease as core_exit_prerelease, get_commit_hash_for_path, load_changesets,
-    run_publish as core_publish, run_release as core_release,
+    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
+    run_release as core_release, run_stabilize_release as core_stabilize_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -80,12 +80,44 @@ pub fn run_publish(
     })
 }
 
-/// Exit pre-release mode for the provided packages.
-pub fn exit_prerelease(workspace: &Path, packages: &[String]) -> Result<Vec<VersionChange>> {
-    core_exit_prerelease(workspace, packages).map_err(|e| ActionError::SampoCommandFailed {
-        operation: "exit-prerelease".to_string(),
-        message: format!("sampo pre exit failed: {}", e),
+/// Dry-run stabilize release to compute the stable version plan.
+pub fn capture_stabilize_plan(workspace: &Path) -> Result<ReleasePlan> {
+    let release_output =
+        core_stabilize_release(workspace, true).map_err(|e| ActionError::SampoCommandFailed {
+            operation: "stabilize-plan".to_string(),
+            message: format!("Stabilize plan failed: {}", e),
+        })?;
+
+    let has_changes = !release_output.released_packages.is_empty();
+    let mut releases: BTreeMap<String, (String, String, String)> = BTreeMap::new();
+    if has_changes {
+        for pkg in release_output.released_packages {
+            releases.insert(pkg.identifier, (pkg.name, pkg.old_version, pkg.new_version));
+        }
+    }
+
+    Ok(ReleasePlan {
+        has_changes,
+        releases,
     })
+}
+
+/// Execute stabilize release (prerelease → stable).
+pub fn run_stabilize_release(
+    workspace: &Path,
+    dry_run: bool,
+    cargo_token: Option<&str>,
+) -> Result<()> {
+    if let Some(token) = cargo_token {
+        set_cargo_env_var(token);
+    }
+
+    core_stabilize_release(workspace, dry_run).map_err(|e| ActionError::SampoCommandFailed {
+        operation: "stabilize-release".to_string(),
+        message: format!("sampo stabilize release failed: {}", e),
+    })?;
+
+    Ok(())
 }
 
 /// Compute a markdown PR body summarizing the pending release by crate,

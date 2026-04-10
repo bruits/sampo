@@ -1816,4 +1816,97 @@ bar = { version = "1.0.0", path = "crates/bar" }
             other => panic!("expected Release error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn stabilize_release_patch_on_prerelease_patch_base() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.2.7-alpha.6");
+        workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
+
+        let output = run_stabilize_release(&workspace.root, false)
+            .expect("stabilize release should succeed");
+        assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "0.2.7");
+    }
+
+    #[test]
+    fn stabilize_release_minor_on_prerelease_patch_base() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.2.7-alpha.6");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: new feature");
+
+        let output = run_stabilize_release(&workspace.root, false)
+            .expect("stabilize release should succeed");
+        assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "0.3.0");
+    }
+
+    #[test]
+    fn stabilize_release_patch_on_prerelease_minor_base() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.3.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
+
+        let output = run_stabilize_release(&workspace.root, false)
+            .expect("stabilize release should succeed");
+        assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "0.3.0");
+    }
+
+    #[test]
+    fn stabilize_release_minor_on_prerelease_minor_base() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.3.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: feature");
+
+        let output = run_stabilize_release(&workspace.root, false)
+            .expect("stabilize release should succeed");
+        assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "0.3.0");
+    }
+
+    #[test]
+    fn stabilize_release_from_preserved_changeset() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.2.7-alpha.7");
+        workspace.add_preserved_changeset(&["foo"], Bump::Patch, "fix: preserved patch fix");
+
+        let output = run_stabilize_release(&workspace.root, false)
+            .expect("stabilize release should succeed");
+        assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "0.2.7");
+    }
+
+    #[test]
+    fn stabilize_release_from_preserved_minor_changeset() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.3.0-alpha.1");
+        workspace.add_preserved_changeset(&["foo"], Bump::Minor, "feat: preserved feature");
+
+        let output = run_stabilize_release(&workspace.root, false)
+            .expect("stabilize release should succeed");
+        assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "0.3.0");
+    }
+
+    #[test]
+    fn stabilize_release_dry_run_patch_on_prerelease() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.2.7-alpha.6");
+        workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
+
+        let output =
+            run_stabilize_release(&workspace.root, true).expect("dry-run stabilize should succeed");
+        assert!(output.dry_run);
+        assert!(!output.released_packages.is_empty());
+        assert_eq!(output.released_packages[0].new_version, "0.2.7");
+        workspace.assert_crate_version("foo", "0.2.7-alpha.6");
+    }
 }
