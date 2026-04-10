@@ -872,6 +872,7 @@ fn discover_npm(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceE
             path,
             identifier,
             internal_deps,
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Npm,
         });
     }

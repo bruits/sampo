@@ -129,6 +129,7 @@ mod tests {
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/tools/internal-tool"),
                     internal_deps: Default::default(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
@@ -137,6 +138,7 @@ mod tests {
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/examples/lib"),
                     internal_deps: Default::default(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
@@ -145,6 +147,7 @@ mod tests {
                     version: "0.1.0".into(),
                     path: PathBuf::from("/repo/crates/normal"),
                     internal_deps: Default::default(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
             ],

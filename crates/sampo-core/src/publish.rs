@@ -860,6 +860,7 @@ fn main() {
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: BTreeSet::new(),
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
         let mut deps_b = BTreeSet::new();
@@ -870,6 +871,7 @@ fn main() {
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
         let mut deps_c = BTreeSet::new();
@@ -880,6 +882,7 @@ fn main() {
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/c"),
             internal_deps: deps_c,
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
 
@@ -908,6 +911,7 @@ fn main() {
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/a"),
             internal_deps: deps_a,
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
 
@@ -919,6 +923,7 @@ fn main() {
             version: "0.1.0".into(),
             path: PathBuf::from("/tmp/b"),
             internal_deps: deps_b,
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         };
 
@@ -933,6 +938,43 @@ fn main() {
         let result = topo_order(&map, &include);
         assert!(result.is_err());
         assert!(format!("{}", result.unwrap_err()).contains("dependency cycle"));
+    }
+
+    #[test]
+    fn dev_dep_cycle_does_not_block_publish_ordering() {
+        // A depends on B (regular dep), B dev-depends on A.
+        // This is valid in Cargo (dev-deps are stripped on publish)
+        // and should not be detected as a cycle.
+        let a = PackageInfo {
+            name: "a".into(),
+            identifier: "cargo/a".into(),
+            version: "0.1.0".into(),
+            path: PathBuf::from("/tmp/a"),
+            internal_deps: BTreeSet::new(),
+            internal_dev_deps: BTreeSet::new(),
+            kind: PackageKind::Cargo,
+        };
+        let b = PackageInfo {
+            name: "b".into(),
+            identifier: "cargo/b".into(),
+            version: "0.1.0".into(),
+            path: PathBuf::from("/tmp/b"),
+            internal_deps: BTreeSet::from(["cargo/a".into()]),
+            // dev-dep back to A — should NOT create a cycle
+            internal_dev_deps: BTreeSet::from(["cargo/a".into()]),
+            kind: PackageKind::Cargo,
+        };
+
+        let mut map: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+        map.insert("cargo/a".into(), &a);
+        map.insert("cargo/b".into(), &b);
+
+        let mut include = BTreeSet::new();
+        include.insert("cargo/a".into());
+        include.insert("cargo/b".into());
+
+        let order = topo_order(&map, &include).unwrap();
+        assert_eq!(order, vec!["cargo/a", "cargo/b"]);
     }
 
     #[test]
@@ -1302,6 +1344,7 @@ edition = "2021"
                     version: "1.0.0".to_string(),
                     path: main_pkg,
                     internal_deps: BTreeSet::new(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
@@ -1313,6 +1356,7 @@ edition = "2021"
                     version: "1.0.0".to_string(),
                     path: examples_pkg,
                     internal_deps: BTreeSet::new(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
             ],

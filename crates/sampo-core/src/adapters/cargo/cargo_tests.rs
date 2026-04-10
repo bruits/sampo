@@ -148,6 +148,57 @@ fn cargo_discoverer_detects_internal_deps() {
 }
 
 #[test]
+fn cargo_discoverer_separates_dev_deps() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-c")).unwrap();
+
+    // pkg-a: regular dep on pkg-b, dev-dep with version on pkg-c
+    fs::write(
+        crates_dir.join("pkg-a/Cargo.toml"),
+        "[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n\
+         [dependencies]\npkg-b={ version=\"0.1.0\", path=\"../pkg-b\" }\n\
+         [dev-dependencies]\npkg-c={ version=\"0.1.0\", path=\"../pkg-c\" }\n",
+    )
+    .unwrap();
+    // pkg-b: dev-dep on pkg-a, path-only (no version)
+    fs::write(
+        crates_dir.join("pkg-b/Cargo.toml"),
+        "[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n\
+         [dev-dependencies]\npkg-a={ path=\"../pkg-a\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        crates_dir.join("pkg-c/Cargo.toml"),
+        "[package]\nname=\"pkg-c\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+    let pkg_b = packages.iter().find(|p| p.name == "pkg-b").unwrap();
+
+    // pkg-a: regular dep on pkg-b, dev-dep (with version) on pkg-c
+    assert!(pkg_a.internal_deps.contains("cargo/pkg-b"));
+    assert!(!pkg_a.internal_deps.contains("cargo/pkg-c"));
+    assert!(pkg_a.internal_dev_deps.contains("cargo/pkg-c"));
+
+    // pkg-b: path-only dev-dep on pkg-a should NOT appear in internal_dev_deps
+    assert!(pkg_b.internal_deps.is_empty());
+    assert!(pkg_b.internal_dev_deps.is_empty());
+}
+
+#[test]
 fn skips_workspace_dependencies_when_updating() {
     let input = "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nfoo = { workspace = true, optional = true }\n";
     let mut updates = BTreeMap::new();

@@ -897,26 +897,40 @@ fn expand_cargo_member_pattern(
     Ok(())
 }
 
-/// Collect internal dependencies for a crate
+/// Collect internal dependencies for a crate.
+/// Returns (internal_deps, internal_dev_deps). Dev-dependencies are tracked
+/// separately because they don't create publish-order constraints (cargo strips
+/// them during publish), but their versions still potentially need updating during releases.
 fn collect_cargo_internal_deps(
     crate_dir: &Path,
     name_to_path: &BTreeMap<String, PathBuf>,
     manifest: &toml::Value,
-) -> BTreeSet<String> {
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut internal = BTreeSet::new();
+    let mut internal_dev = BTreeSet::new();
     for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
             for (dep_name, dep_val) in tbl {
                 if is_cargo_internal_dep(crate_dir, name_to_path, dep_name, dep_val) {
-                    internal.insert(PackageInfo::dependency_identifier(
-                        PackageKind::Cargo,
-                        dep_name,
-                    ));
+                    let id = PackageInfo::dependency_identifier(PackageKind::Cargo, dep_name);
+                    if key == "dev-dependencies" {
+                        // Only track dev-deps that have a version field —
+                        // path-only dev-deps have no version to update.
+                        let has_version = dep_val
+                            .as_table()
+                            .map(|t| t.contains_key("version"))
+                            .unwrap_or(false);
+                        if has_version {
+                            internal_dev.insert(id);
+                        }
+                    } else {
+                        internal.insert(id);
+                    }
                 }
             }
         }
     }
-    internal
+    (internal, internal_dev)
 }
 
 /// Check if a dependency is internal to the workspace
@@ -1037,13 +1051,15 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
     let mut out: Vec<PackageInfo> = Vec::new();
     for (name, version, path, manifest) in crates {
         let identifier = PackageInfo::dependency_identifier(PackageKind::Cargo, &name);
-        let internal_deps = collect_cargo_internal_deps(&path, &name_to_path, &manifest);
+        let (internal_deps, internal_dev_deps) =
+            collect_cargo_internal_deps(&path, &name_to_path, &manifest);
         out.push(PackageInfo {
             name,
             identifier,
             version,
             path,
             internal_deps,
+            internal_dev_deps,
             kind: PackageKind::Cargo,
         });
     }
