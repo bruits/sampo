@@ -1,5 +1,12 @@
 # sampo
 
+## 0.17.3 — 2026-04-10
+
+### Patch changes
+
+- [40c7c6d](https://github.com/bruits/sampo/commit/40c7c6decfcd39a1dc7c37681ca54785d385a048) In Cargo projects, fixed valid dev-dependency cycles incorrectly being rejected as dependency cycles during release. — Thanks @Princesseuh!
+- Updated dependencies: sampo-core@0.13.2
+
 ## 0.17.2 — 2026-04-02
 
 ### Patch changes
