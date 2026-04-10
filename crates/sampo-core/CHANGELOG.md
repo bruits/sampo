@@ -1,5 +1,12 @@
 # sampo-core
 
+## 0.13.2 — 2026-04-10
+
+### Patch changes
+
+- [40c7c6d](https://github.com/bruits/sampo/commit/40c7c6decfcd39a1dc7c37681ca54785d385a048) In Cargo projects, fixed valid dev-dependency cycles incorrectly being rejected as dependency cycles during release. — Thanks @Princesseuh!
+- [c00b72b](https://github.com/bruits/sampo/commit/c00b72bb0b13e24ec264e9df78f9e62e3ac9bd4e) Fixed incorrect stable version computation when stabilizing a prerelease package (e.g. `0.2.7-alpha.6` + patch now correctly produces `0.2.7` instead of `0.2.8`). Fixed the stabilize PR not being created after merging a prerelease PR. — Thanks @rickmartensnl!
+
 ## 0.13.1 — 2026-04-02
 
 ### Patch changes
