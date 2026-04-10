@@ -1,5 +1,7 @@
 ---
+cargo/sampo: patch
 cargo/sampo-core: patch
+cargo/sampo-github-action: patch
 ---
 
-Fixes valid dependency cycles in Cargo dev-dependencies that were preventing publishes despite being allowed by Cargo
+In Cargo projects, fixed valid dev-dependency cycles incorrectly being rejected as dependency cycles during release.
