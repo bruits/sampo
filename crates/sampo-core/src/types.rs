@@ -174,6 +174,9 @@ pub struct PackageInfo {
     pub version: String,
     pub path: PathBuf,
     pub internal_deps: BTreeSet<String>,
+    /// Dev-only internal dependencies (not needed for publish ordering, but
+    /// their versions should still be updated during releases).
+    pub internal_dev_deps: BTreeSet<String>,
     pub kind: PackageKind,
 }
 
@@ -552,6 +555,7 @@ mod tests {
             version: "0.1.0".to_string(),
             path: PathBuf::from(format!("crates/{name}")),
             internal_deps: BTreeSet::new(),
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::Cargo,
         }
     }

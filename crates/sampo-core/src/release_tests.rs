@@ -1577,6 +1577,7 @@ tempfile = "3.0"
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-a"),
                     internal_deps: BTreeSet::from(["cargo/pkg-b".to_string()]),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
@@ -1585,6 +1586,7 @@ tempfile = "3.0"
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-b"),
                     internal_deps: BTreeSet::new(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
                 PackageInfo {
@@ -1593,6 +1595,7 @@ tempfile = "3.0"
                     version: "1.0.0".to_string(),
                     path: PathBuf::from("/test/pkg-c"),
                     internal_deps: BTreeSet::new(),
+                    internal_dev_deps: BTreeSet::new(),
                     kind: PackageKind::Cargo,
                 },
             ],
@@ -1679,6 +1682,7 @@ tempfile = "3.0"
                 version: "1.0.0".to_string(),
                 path: PathBuf::from("/test/pkg-a"),
                 internal_deps: BTreeSet::new(),
+                internal_dev_deps: BTreeSet::new(),
                 kind: PackageKind::Cargo,
             }],
         };

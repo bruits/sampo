@@ -147,6 +147,7 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
             version,
             path: dir,
             internal_deps: internal,
+            internal_dev_deps: BTreeSet::new(),
             kind: PackageKind::PyPI,
         });
     }

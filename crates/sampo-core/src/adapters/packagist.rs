@@ -571,6 +571,7 @@ fn discover_packagist(root: &Path) -> std::result::Result<Vec<PackageInfo>, Work
         version,
         path: root.to_path_buf(),
         internal_deps: std::collections::BTreeSet::new(),
+        internal_dev_deps: std::collections::BTreeSet::new(),
         kind: PackageKind::Packagist,
     }];
 
