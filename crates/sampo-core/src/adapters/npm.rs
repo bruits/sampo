@@ -453,7 +453,9 @@ fn detect_package_manager(dir: &Path, info: &NpmManifestInfo) -> PackageManager 
         if ancestor.join("pnpm-lock.yaml").exists() {
             return PackageManager::Pnpm;
         }
-        if ancestor.join("bun.lockb").exists() {
+        if ancestor.join("bun.lockb").exists()
+            || ancestor.join("bun.lock").exists()
+        {
             return PackageManager::Bun;
         }
         if ancestor.join("yarn.lock").exists() {
@@ -526,7 +528,11 @@ fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
         PackageManager::Bun => (
             "bun",
             vec!["install", "--frozen-lockfile=false"],
-            "bun.lockb",
+            if workspace_root.join("bun.lockb").exists() {
+                "bun.lockb"
+            } else {
+                "bun.lock"
+            },
         ),
     };
 
@@ -566,7 +572,9 @@ fn detect_workspace_package_manager(workspace_root: &Path) -> Result<PackageMana
     if workspace_root.join("pnpm-lock.yaml").exists() {
         return Ok(PackageManager::Pnpm);
     }
-    if workspace_root.join("bun.lockb").exists() {
+    if workspace_root.join("bun.lockb").exists()
+        || workspace_root.join("bun.lock").exists()
+    {
         return Ok(PackageManager::Bun);
     }
     if workspace_root.join("yarn.lock").exists() {

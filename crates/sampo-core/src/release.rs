@@ -1205,6 +1205,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
                     || workspace.root.join("pnpm-lock.yaml").exists()
                     || workspace.root.join("yarn.lock").exists()
                     || workspace.root.join("bun.lockb").exists()
+                    || workspace.root.join("bun.lock").exists()
                     || workspace.root.join("npm-shrinkwrap.json").exists()
             }
             PackageKind::Hex => workspace.root.join("mix.lock").exists(),
