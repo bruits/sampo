@@ -226,6 +226,51 @@ fn updates_workspace_dependency_with_explicit_version() {
 }
 
 #[test]
+fn does_not_add_version_to_path_only_dev_dep() {
+    let input = "\
+[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n\n\
+[dev-dependencies]\npkg-a = { path = \"../pkg-a\" }\n";
+    let mut updates = BTreeMap::new();
+    updates.insert("pkg-a".to_string(), "0.2.0".to_string());
+
+    let (out, applied) =
+        update_manifest_versions(Path::new("/pkg-b/Cargo.toml"), input, None, &updates).unwrap();
+
+    assert!(!out.contains("0.2.0"));
+    assert!(applied.is_empty());
+}
+
+#[test]
+fn updates_version_on_dev_dep_with_existing_version() {
+    let input = "\
+[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n\n\
+[dev-dependencies]\npkg-c = { version = \"0.1.0\", path = \"../pkg-c\" }\n";
+    let mut updates = BTreeMap::new();
+    updates.insert("pkg-c".to_string(), "0.2.0".to_string());
+
+    let (out, applied) =
+        update_manifest_versions(Path::new("/pkg-a/Cargo.toml"), input, None, &updates).unwrap();
+
+    assert!(out.contains("version = \"0.2.0\""));
+    assert!(applied.contains(&("pkg-c".to_string(), "0.2.0".to_string())));
+}
+
+#[test]
+fn does_not_add_version_to_path_only_dev_dep_table_form() {
+    let input = "\
+[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n\n\
+[dev-dependencies.pkg-a]\npath = \"../pkg-a\"\n";
+    let mut updates = BTreeMap::new();
+    updates.insert("pkg-a".to_string(), "0.2.0".to_string());
+
+    let (out, applied) =
+        update_manifest_versions(Path::new("/pkg-b/Cargo.toml"), input, None, &updates).unwrap();
+
+    assert!(!out.contains("0.2.0"));
+    assert!(applied.is_empty());
+}
+
+#[test]
 fn keeps_workspace_dependency_shorthand_for_patch_bump() {
     assert!(compute_workspace_dependency_version("0.1", "0.1.14").is_none());
 }
