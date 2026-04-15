@@ -259,7 +259,7 @@ fn detect_workspace_package_manager_pnpm() {
 }
 
 #[test]
-fn detect_workspace_package_manager_bun() {
+fn detect_workspace_package_manager_bun_old() {
     let temp = tempdir().unwrap();
     let root = temp.path();
     fs::write(
@@ -268,6 +268,21 @@ fn detect_workspace_package_manager_bun() {
     )
     .unwrap();
     fs::write(root.join("bun.lockb"), "").unwrap();
+
+    let result = super::detect_workspace_package_manager(root).unwrap();
+    assert_eq!(result, super::PackageManager::Bun);
+}
+
+#[test]
+fn detect_workspace_package_manager_bun() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"app","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(root.join("bun.lock"), "").unwrap();
 
     let result = super::detect_workspace_package_manager(root).unwrap();
     assert_eq!(result, super::PackageManager::Bun);

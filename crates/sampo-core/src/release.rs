@@ -292,7 +292,11 @@ pub fn detect_all_dependency_explanations(
         if let Some(crate_info) = by_id.get(crate_id) {
             // Find which internal dependencies were updated
             let mut updated_deps = Vec::new();
-            for dep_name in crate_info.internal_deps.iter().chain(&crate_info.internal_dev_deps) {
+            for dep_name in crate_info
+                .internal_deps
+                .iter()
+                .chain(&crate_info.internal_dev_deps)
+            {
                 if let Some(new_version) = new_version_by_name.get(dep_name as &str) {
                     // This internal dependency was updated
                     let display_dep = by_id
@@ -355,7 +359,11 @@ pub fn detect_fixed_dependency_policy_packages(
             continue;
         }
 
-        for dep_name in crate_info.internal_deps.iter().chain(&crate_info.internal_dev_deps) {
+        for dep_name in crate_info
+            .internal_deps
+            .iter()
+            .chain(&crate_info.internal_dev_deps)
+        {
             dependents
                 .entry(dep_name.clone())
                 .or_default()
@@ -1205,6 +1213,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
                     || workspace.root.join("pnpm-lock.yaml").exists()
                     || workspace.root.join("yarn.lock").exists()
                     || workspace.root.join("bun.lockb").exists()
+                    || workspace.root.join("bun.lock").exists()
                     || workspace.root.join("npm-shrinkwrap.json").exists()
             }
             PackageKind::Hex => workspace.root.join("mix.lock").exists(),
