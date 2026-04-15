@@ -731,17 +731,15 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
             restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
             load_changesets(&changesets_dir, &config.changesets_tags)?
         }
+    } else if dry_run {
+        let mut all = current_changesets;
+        all.extend(preserved_changesets);
+        all
     } else {
-        if dry_run {
-            let mut all = current_changesets;
-            all.extend(preserved_changesets);
-            all
-        } else {
-            if !preserved_changesets.is_empty() {
-                restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
-            }
-            load_changesets(&changesets_dir, &config.changesets_tags)?
+        if !preserved_changesets.is_empty() {
+            restore_prerelease_changesets(&prerelease_dir, &changesets_dir)?;
         }
+        load_changesets(&changesets_dir, &config.changesets_tags)?
     };
 
     let plan_state = match compute_plan_state(
