@@ -562,8 +562,9 @@ fn update_all_dependencies(doc: &mut DocumentMut, dep_name: &str, new_version: &
     let top_level = doc.as_table_mut();
 
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        let is_dev = section == "dev-dependencies";
         if let Some(table) = top_level.get_mut(section).and_then(Item::as_table_mut) {
-            changed |= update_deps_in_table(table, dep_name, new_version);
+            changed |= update_deps_in_table(table, dep_name, new_version, is_dev);
         }
     }
 
@@ -571,9 +572,10 @@ fn update_all_dependencies(doc: &mut DocumentMut, dep_name: &str, new_version: &
         for (_, target_item) in targets.iter_mut() {
             if let Some(target_table) = target_item.as_table_mut() {
                 for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                    let is_dev = section == "dev-dependencies";
                     if let Some(table) = target_table.get_mut(section).and_then(Item::as_table_mut)
                     {
-                        changed |= update_deps_in_table(table, dep_name, new_version);
+                        changed |= update_deps_in_table(table, dep_name, new_version, is_dev);
                     }
                 }
             }
@@ -583,12 +585,17 @@ fn update_all_dependencies(doc: &mut DocumentMut, dep_name: &str, new_version: &
     changed
 }
 
-fn update_deps_in_table(table: &mut Table, dep_name: &str, new_version: &str) -> bool {
+fn update_deps_in_table(
+    table: &mut Table,
+    dep_name: &str,
+    new_version: &str,
+    is_dev: bool,
+) -> bool {
     let mut changed = false;
 
     // Direct match by key name
     if let Some(item) = table.get_mut(dep_name) {
-        changed |= update_standard_dependency_item(item, new_version);
+        changed |= update_standard_dependency_item(item, new_version, is_dev);
     }
 
     // Renamed deps: entries where key != dep_name but `package = "dep_name"`
@@ -600,7 +607,7 @@ fn update_deps_in_table(table: &mut Table, dep_name: &str, new_version: &str) ->
 
     for key in renamed_keys {
         if let Some(item) = table.get_mut(&key) {
-            changed |= update_standard_dependency_item(item, new_version);
+            changed |= update_standard_dependency_item(item, new_version, is_dev);
         }
     }
 
@@ -623,10 +630,12 @@ fn has_package_field(item: &Item, name: &str) -> bool {
     }
 }
 
-fn update_standard_dependency_item(item: &mut Item, new_version: &str) -> bool {
+fn update_standard_dependency_item(item: &mut Item, new_version: &str, is_dev: bool) -> bool {
     match item {
-        Item::Value(Value::InlineTable(table)) => update_inline_dependency(table, new_version),
-        Item::Table(table) => update_table_dependency(table, new_version),
+        Item::Value(Value::InlineTable(table)) => {
+            update_inline_dependency(table, new_version, is_dev)
+        }
+        Item::Table(table) => update_table_dependency(table, new_version, is_dev),
         Item::Value(value) => {
             if value.as_str() == Some(new_version) {
                 false
@@ -639,12 +648,17 @@ fn update_standard_dependency_item(item: &mut Item, new_version: &str) -> bool {
     }
 }
 
-fn update_inline_dependency(table: &mut InlineTable, new_version: &str) -> bool {
+fn update_inline_dependency(table: &mut InlineTable, new_version: &str, is_dev: bool) -> bool {
     if table
         .get("workspace")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
+        return false;
+    }
+
+    // Path-only dev-dependencies are never resolved from the registry.
+    if is_dev && table.get("path").is_some() && table.get("version").is_none() {
         return false;
     }
 
@@ -661,12 +675,19 @@ fn update_inline_dependency(table: &mut InlineTable, new_version: &str) -> bool 
     needs_update
 }
 
-fn update_table_dependency(table: &mut Table, new_version: &str) -> bool {
+fn update_table_dependency(table: &mut Table, new_version: &str, is_dev: bool) -> bool {
     if table
         .get("workspace")
         .and_then(Item::as_value)
         .and_then(Value::as_bool)
         .unwrap_or(false)
+    {
+        return false;
+    }
+
+    if is_dev
+        && table.get("path").and_then(Item::as_value).is_some()
+        && table.get("version").and_then(Item::as_value).is_none()
     {
         return false;
     }
