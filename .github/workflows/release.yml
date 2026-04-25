@@ -60,7 +60,7 @@ jobs:
           rm -rf dist/tmp
 
       - name: Upload release binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.crate }}-${{ matrix.target }}
           path: dist/${{ matrix.crate }}-${{ matrix.target }}.tar.gz
