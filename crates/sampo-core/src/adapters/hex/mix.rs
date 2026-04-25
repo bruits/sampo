@@ -329,7 +329,7 @@ pub(super) fn update_manifest_versions(
         return Ok((input.to_string(), applied));
     }
 
-    replacements.sort_by(|a, b| a.start.cmp(&b.start));
+    replacements.sort_by_key(|a| a.start);
     let mut output = input.to_string();
     for replacement in replacements.into_iter().rev() {
         output.replace_range(replacement.start..replacement.end, &replacement.replacement);
@@ -843,10 +843,8 @@ fn parse_dependency_tuple(
             "string" if requirement.is_none() => {
                 requirement = parse_string_literal_node(source, child);
             }
-            "keywords" => {
-                if path.is_none() {
-                    path = path_from_keywords(child, source, manifest_dir);
-                }
+            "keywords" if path.is_none() => {
+                path = path_from_keywords(child, source, manifest_dir);
             }
             _ => {}
         }
