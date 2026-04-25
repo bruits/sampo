@@ -20,7 +20,7 @@ rand = "0.8"
 rustc-hash = "2.0"
 semver = "1.0.26"
 serde_json = "1.0"
-toml = "0.8"
+toml = "1.1"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 sampo-core = { version = "0.13.3", path = "../sampo-core" }
 clap = { version = "4.6", features = ["derive"] }
