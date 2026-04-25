@@ -2154,7 +2154,7 @@ fn update_changelog(
                 _ => 3, // Unknown headings go last
             }
         };
-        sections.sort_by(|(a, _), (b, _)| bump_order(a).cmp(&bump_order(b)));
+        sections.sort_by_key(|(a, _)| bump_order(a));
     }
 
     // Render sections
