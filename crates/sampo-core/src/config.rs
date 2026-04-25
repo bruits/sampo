@@ -1,8 +1,15 @@
 use crate::errors::SampoError;
+use crate::tag_template::TagTemplate;
+use crate::types::PackageKind;
 use rustc_hash::FxHashSet;
-use semver::Version;
 use std::collections::BTreeSet;
 use std::path::Path;
+
+/// Includes the ecosystem so same-named packages across ecosystems get distinct tags.
+pub const DEFAULT_TAG_FORMAT: &str = "{ecosystem}-{package_name}-v{version}";
+
+/// Used by packages selected via `git.short_tags` (Packagist requires `vX.Y.Z`).
+pub const DEFAULT_SHORT_TAGS_FORMAT: &str = "v{version}";
 
 /// Configuration for Sampo
 #[derive(Debug, Clone)]
@@ -24,8 +31,10 @@ pub struct Config {
     pub ignore: Vec<String>,
     pub git_default_branch: Option<String>,
     pub git_release_branches: Vec<String>,
-    /// Package using short tag format (`v{version}`) for Packagist compatibility.
+    /// Package using short tag format for Packagist compatibility.
     pub git_short_tags: Option<String>,
+    pub git_tag_format: TagTemplate,
+    pub git_short_tags_format: TagTemplate,
 }
 
 impl Default for Config {
@@ -46,6 +55,8 @@ impl Default for Config {
             git_default_branch: None,
             git_release_branches: Vec::new(),
             git_short_tags: None,
+            git_tag_format: TagTemplate::from_static(DEFAULT_TAG_FORMAT),
+            git_short_tags_format: TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
         }
     }
 }
@@ -274,40 +285,54 @@ impl Config {
             }
         }
 
-        let (git_default_branch, git_release_branches, git_short_tags) = value
-            .get("git")
-            .and_then(|v| v.as_table())
-            .map(|git_table| {
-                let default_branch = git_table
-                    .get("default_branch")
-                    .and_then(|v| v.as_str())
+        let git_table = value.get("git").and_then(|v| v.as_table());
+
+        let git_default_branch = git_table
+            .and_then(|t| t.get("default_branch"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let git_release_branches = git_table
+            .and_then(|t| t.get("release_branches"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str())
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-
-                let release_branches = git_table
-                    .get("release_branches")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|item| item.as_str())
-                            .map(|s| s.trim())
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .collect::<Vec<String>>()
-                    })
-                    .unwrap_or_default();
-
-                let short_tags = git_table
-                    .get("short_tags")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string());
-
-                (default_branch, release_branches, short_tags)
+                    .map(|s| s.to_string())
+                    .collect::<Vec<String>>()
             })
-            .unwrap_or((None, Vec::new(), None));
+            .unwrap_or_default();
+
+        let git_short_tags = git_table
+            .and_then(|t| t.get("short_tags"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        let git_tag_format = match git_table.and_then(|t| t.get("tag_format")) {
+            Some(value) => {
+                let raw = value
+                    .as_str()
+                    .ok_or_else(|| SampoError::Config("git.tag_format must be a string".into()))?;
+                TagTemplate::parse(raw)?
+            }
+            None => TagTemplate::from_static(DEFAULT_TAG_FORMAT),
+        };
+
+        let git_short_tags_format = match git_table.and_then(|t| t.get("short_tags_format")) {
+            Some(value) => {
+                let raw = value.as_str().ok_or_else(|| {
+                    SampoError::Config("git.short_tags_format must be a string".into())
+                })?;
+                TagTemplate::parse(raw)?
+            }
+            None => TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
+        };
 
         Ok(Self {
             version,
@@ -325,6 +350,8 @@ impl Config {
             git_default_branch,
             git_release_branches,
             git_short_tags,
+            git_tag_format,
+            git_short_tags_format,
         })
     }
 
@@ -347,45 +374,47 @@ impl Config {
         self.release_branches().contains(branch)
     }
 
-    /// Returns true if the given package should use short tag format (`v{version}`).
+    /// Returns true if the given package should use the short tag format.
     pub fn uses_short_tags(&self, package_name: &str) -> bool {
         self.git_short_tags
             .as_ref()
             .is_some_and(|name| name == package_name)
     }
 
-    /// Builds a git tag name for the given package and version.
-    pub fn build_tag_name(&self, package_name: &str, version: &str) -> String {
+    /// Returns the template that applies to the given package.
+    pub fn tag_template_for(&self, package_name: &str) -> &TagTemplate {
         if self.uses_short_tags(package_name) {
-            format!("v{}", version)
+            &self.git_short_tags_format
         } else {
-            format!("{}-v{}", package_name, version)
+            &self.git_tag_format
         }
     }
 
-    /// Parses a tag and returns (package_name, version).
+    /// Builds a git tag name for the given package and version.
+    pub fn build_tag_name(&self, kind: PackageKind, package_name: &str, version: &str) -> String {
+        self.tag_template_for(package_name)
+            .render(kind, package_name, version)
+    }
+
+    /// Parses a tag and returns `(package_name, version)`.
+    ///
+    /// Tries the short-tag template first (it typically lacks `{package_name}`
+    /// and only matches the one configured package), then the regular template.
     pub fn parse_tag(&self, tag: &str) -> Option<(String, String)> {
-        if let Some(short_pkg) = self
-            .git_short_tags
-            .as_ref()
-            .filter(|_| tag.starts_with('v'))
+        if let Some(short_pkg) = self.git_short_tags.as_deref()
+            && let Some(captured) = self.git_short_tags_format.match_tag(tag)
+            && let Some(version) = captured.version
         {
-            let version_str = tag.trim_start_matches('v');
-            if Version::parse(version_str).is_ok() {
-                return Some((short_pkg.clone(), version_str.to_string()));
-            }
+            let name = captured
+                .package_name
+                .unwrap_or_else(|| short_pkg.to_string());
+            return Some((name, version));
         }
 
-        // Iterate over all "-v" positions to handle prereleases containing "-v" (e.g., "pkg-v1.2.3-v1").
-        for (idx, _) in tag.match_indices("-v") {
-            let name = &tag[..idx];
-            let version = &tag[idx + 2..];
-            if name.is_empty() || version.is_empty() {
-                continue;
-            }
-            if Version::parse(version).is_ok() {
-                return Some((name.to_string(), version.to_string()));
-            }
+        if let Some(captured) = self.git_tag_format.match_tag(tag)
+            && let (Some(name), Some(version)) = (captured.package_name, captured.version)
+        {
+            return Some((name, version));
         }
 
         None
@@ -765,11 +794,59 @@ mod tests {
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
-        assert_eq!(config.build_tag_name("my-package", "1.2.3"), "v1.2.3");
         assert_eq!(
-            config.build_tag_name("other-package", "1.2.3"),
-            "other-package-v1.2.3"
+            config.build_tag_name(PackageKind::Packagist, "my-package", "1.2.3"),
+            "v1.2.3"
         );
+        assert_eq!(
+            config.build_tag_name(PackageKind::Cargo, "other-package", "1.2.3"),
+            "cargo-other-package-v1.2.3"
+        );
+    }
+
+    #[test]
+    fn build_tag_name_default_includes_ecosystem() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config::load(temp.path()).unwrap();
+        assert_eq!(
+            config.build_tag_name(PackageKind::Cargo, "sampo-core", "0.1.0"),
+            "cargo-sampo-core-v0.1.0"
+        );
+        assert_eq!(
+            config.build_tag_name(PackageKind::Npm, "sampo-core", "0.1.0"),
+            "npm-sampo-core-v0.1.0"
+        );
+    }
+
+    #[test]
+    fn build_tag_name_honours_custom_format() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\ntag_format = \"{package_name}-v{version}\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+        assert_eq!(
+            config.build_tag_name(PackageKind::Cargo, "my-crate", "1.2.3"),
+            "my-crate-v1.2.3"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_tag_format() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\ntag_format = \"{kind}-v{version}\"\n",
+        )
+        .unwrap();
+
+        let err = Config::load(temp.path()).unwrap_err();
+        assert!(format!("{err}").contains("unknown placeholder"));
     }
 
     #[test]
@@ -791,9 +868,8 @@ mod tests {
             config.parse_tag("v1.2.3-alpha.1"),
             Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
         );
-        // Standard format still works
         assert_eq!(
-            config.parse_tag("other-package-v1.2.3"),
+            config.parse_tag("cargo-other-package-v1.2.3"),
             Some(("other-package".to_string(), "1.2.3".to_string()))
         );
     }
@@ -855,25 +931,76 @@ mod tests {
     }
 
     #[test]
-    fn parse_tag_without_short_tags_config() {
+    fn parse_tag_with_default_format() {
         let temp = tempfile::tempdir().unwrap();
         let config = Config::load(temp.path()).unwrap();
 
+        // Without short_tags, the default format requires an ecosystem prefix.
         assert_eq!(config.parse_tag("v1.2.3"), None);
+        assert_eq!(config.parse_tag("my-package-v1.2.3"), None);
+        assert_eq!(
+            config.parse_tag("cargo-my-package-v1.2.3"),
+            Some(("my-package".to_string(), "1.2.3".to_string()))
+        );
+        assert_eq!(
+            config.parse_tag("npm-my-package-v1.2.3-alpha.1"),
+            Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
+        );
+        // -v in prerelease still parses correctly thanks to semver validation
+        assert_eq!(
+            config.parse_tag("cargo-my-package-v1.2.3-v1"),
+            Some(("my-package".to_string(), "1.2.3-v1".to_string()))
+        );
+        assert_eq!(config.parse_tag("cargo-my-package-vfoo"), None);
+        assert_eq!(config.parse_tag("cargo-my-package-v1.2"), None);
+    }
+
+    #[test]
+    fn build_tag_name_combines_tag_format_and_short_tags_format() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\n\
+             tag_format = \"{package_name}-v{version}\"\n\
+             short_tags = \"my-php-pkg\"\n\
+             short_tags_format = \"release-{version}\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
+        assert_eq!(
+            config.build_tag_name(PackageKind::Cargo, "core", "1.0.0"),
+            "core-v1.0.0"
+        );
+        assert_eq!(
+            config.build_tag_name(PackageKind::Packagist, "my-php-pkg", "1.0.0"),
+            "release-1.0.0"
+        );
+        assert_eq!(
+            config.parse_tag("core-v1.0.0"),
+            Some(("core".to_string(), "1.0.0".to_string()))
+        );
+        assert_eq!(
+            config.parse_tag("release-1.0.0"),
+            Some(("my-php-pkg".to_string(), "1.0.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_tag_with_legacy_format_via_config() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\ntag_format = \"{package_name}-v{version}\"\n",
+        )
+        .unwrap();
+
+        let config = Config::load(temp.path()).unwrap();
         assert_eq!(
             config.parse_tag("my-package-v1.2.3"),
             Some(("my-package".to_string(), "1.2.3".to_string()))
         );
-        assert_eq!(
-            config.parse_tag("my-package-v1.2.3-alpha.1"),
-            Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
-        );
-        // -v in prerelease requires semver validation to parse correctly
-        assert_eq!(
-            config.parse_tag("my-package-v1.2.3-v1"),
-            Some(("my-package".to_string(), "1.2.3-v1".to_string()))
-        );
-        assert_eq!(config.parse_tag("my-package-vfoo"), None);
-        assert_eq!(config.parse_tag("my-package-v1.2"), None);
     }
 }

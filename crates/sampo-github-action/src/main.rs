@@ -919,25 +919,13 @@ fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<Stri
     extract_changelog_section(&changelog, &version)
 }
 
-/// Parse tag using config for short tag support, falling back to standard format.
+/// Parse a tag through the configured templates (or the default templates
+/// when no config is available).
 fn parse_tag_with_config(tag: &str, config: Option<&SampoConfig>) -> Option<(String, String)> {
-    if let Some(cfg) = config {
-        cfg.parse_tag(tag)
-    } else {
-        // Fallback to standard format only when no config is available
-        parse_tag(tag)
+    match config {
+        Some(cfg) => cfg.parse_tag(tag),
+        None => SampoConfig::default().parse_tag(tag),
     }
-}
-
-/// Parse tags in standard format `<crate>-v<version>`.
-fn parse_tag(tag: &str) -> Option<(String, String)> {
-    let idx = tag.rfind("-v")?;
-    let (name, ver) = tag.split_at(idx);
-    let version = ver.trim_start_matches("-v").to_string();
-    if name.is_empty() || version.is_empty() {
-        return None;
-    }
-    Some((name.to_string(), version))
 }
 
 fn tag_is_prerelease_with_config(tag: &str, config: Option<&SampoConfig>) -> bool {
@@ -1260,8 +1248,8 @@ mod tests {
 
     #[test]
     fn tag_pre_release_detection() {
-        assert!(tag_is_prerelease("sampo-v1.2.0-alpha.1"));
-        assert!(!tag_is_prerelease("sampo-v1.2.0"));
+        assert!(tag_is_prerelease("cargo-sampo-v1.2.0-alpha.1"));
+        assert!(!tag_is_prerelease("cargo-sampo-v1.2.0"));
         assert!(!tag_is_prerelease("invalid"));
     }
 
@@ -1372,7 +1360,7 @@ mod tests {
             rename: Some("{{crate}}-{{version}}.tar.gz".to_string()),
         }];
 
-        let assets = resolve_release_assets(workspace, "my-crate-v1.0.0", &specs)
+        let assets = resolve_release_assets(workspace, "cargo-my-crate-v1.0.0", &specs)
             .expect("asset resolution should succeed");
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].asset_name, "my-crate-1.0.0.tar.gz");
@@ -1380,21 +1368,22 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tag() {
+    fn parse_tag_with_default_template() {
         assert_eq!(
-            parse_tag("my-crate-v1.2.3"),
-            Some(("my-crate".into(), "1.2.3".into()))
+            parse_tag_with_config("cargo-my-crate-v1.2.3", None),
+            Some(("my-crate".to_string(), "1.2.3".to_string()))
         );
         assert_eq!(
-            parse_tag("sampo-v0.9.0"),
-            Some(("sampo".into(), "0.9.0".into()))
+            parse_tag_with_config("npm-sampo-v0.9.0", None),
+            Some(("sampo".to_string(), "0.9.0".to_string()))
         );
         assert_eq!(
-            parse_tag("sampo-github-action-v0.8.2"),
-            Some(("sampo-github-action".into(), "0.8.2".into()))
+            parse_tag_with_config("cargo-sampo-github-action-v0.8.2", None),
+            Some(("sampo-github-action".to_string(), "0.8.2".to_string()))
         );
-        assert_eq!(parse_tag("nope"), None);
-        assert_eq!(parse_tag("-v1.0.0"), None);
+        assert_eq!(parse_tag_with_config("nope", None), None);
+        // Short format needs an explicit ecosystem prefix under the default template.
+        assert_eq!(parse_tag_with_config("v1.2.3", None), None);
     }
 
     #[test]
@@ -1420,9 +1409,8 @@ mod tests {
             Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
         );
 
-        // Standard format still works for other packages
         assert_eq!(
-            parse_tag_with_config("other-package-v2.0.0", Some(&config)),
+            parse_tag_with_config("cargo-other-package-v2.0.0", Some(&config)),
             Some(("other-package".to_string(), "2.0.0".to_string()))
         );
 
@@ -1431,13 +1419,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_tag_with_config_falls_back_without_config() {
+    fn parse_tag_honours_custom_tag_format() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[git]\ntag_format = \"{package_name}-v{version}\"\n",
+        )
+        .unwrap();
+
+        let config = SampoConfig::load(temp.path()).unwrap();
         assert_eq!(
-            parse_tag_with_config("my-crate-v1.2.3", None),
+            parse_tag_with_config("my-crate-v1.2.3", Some(&config)),
             Some(("my-crate".to_string(), "1.2.3".to_string()))
         );
-
-        assert_eq!(parse_tag_with_config("v1.2.3", None), None);
     }
 
     #[test]
@@ -1464,11 +1460,11 @@ mod tests {
         assert!(!tag_is_prerelease_with_config("v2.3.4", Some(&config)));
 
         assert!(tag_is_prerelease_with_config(
-            "other-v1.0.0-alpha.1",
+            "cargo-other-v1.0.0-alpha.1",
             Some(&config)
         ));
         assert!(!tag_is_prerelease_with_config(
-            "other-v1.0.0",
+            "cargo-other-v1.0.0",
             Some(&config)
         ));
     }
@@ -1582,7 +1578,7 @@ mod tests {
         ];
 
         // Test with sampo tag - should only match sampo binaries
-        let sampo_assets = resolve_release_assets(workspace, "sampo-v0.9.0", &specs)
+        let sampo_assets = resolve_release_assets(workspace, "cargo-sampo-v0.9.0", &specs)
             .expect("sampo asset resolution should succeed");
         assert_eq!(
             sampo_assets.len(),
@@ -1598,8 +1594,9 @@ mod tests {
         assert!(sampo_assets.iter().any(|a| a.asset_name.contains("darwin")));
 
         // Test with sampo-github-action tag - should only match action binaries
-        let action_assets = resolve_release_assets(workspace, "sampo-github-action-v0.8.2", &specs)
-            .expect("action asset resolution should succeed");
+        let action_assets =
+            resolve_release_assets(workspace, "cargo-sampo-github-action-v0.8.2", &specs)
+                .expect("action asset resolution should succeed");
         assert_eq!(
             action_assets.len(),
             2,

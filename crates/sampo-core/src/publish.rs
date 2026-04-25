@@ -130,6 +130,8 @@ pub fn run_publish(
         });
     }
 
+    detect_tag_collisions(&config, &all_non_ignored)?;
+
     // Validate internal deps do not include non-publishable packages
     let mut errors: Vec<String> = Vec::new();
     for identifier in &publishable {
@@ -242,12 +244,17 @@ pub fn run_publish(
         adapter.publish(manifest.as_path(), dry_run, &args)?;
         any_published = true;
 
-        let tag = config.build_tag_name(&package.name, &package.version);
+        let tag = config.build_tag_name(package.kind, &package.name, &package.version);
 
         // Tag immediately after successful publish to ensure partial failures still tag what succeeded
         if !dry_run {
-            if let Err(e) = tag_published_crate(&ws.root, &config, &package.name, &package.version)
-            {
+            if let Err(e) = tag_published_crate(
+                &ws.root,
+                &config,
+                package.kind,
+                &package.name,
+                &package.version,
+            ) {
                 eprintln!(
                     "Warning: failed to create tag for {}@{}: {}",
                     package.name, package.version, e
@@ -255,7 +262,13 @@ pub fn run_publish(
             } else {
                 tags_to_create.push(tag);
             }
-        } else if !package_tag_exists(&ws.root, &config, &package.name, &package.version)? {
+        } else if !package_tag_exists(
+            &ws.root,
+            &config,
+            package.kind,
+            &package.name,
+            &package.version,
+        )? {
             tags_to_create.push(tag);
         }
     }
@@ -270,18 +283,28 @@ pub fn run_publish(
         if publishable.contains(package.canonical_identifier()) {
             continue;
         }
-        if !package_tag_exists(&ws.root, &config, &package.name, &package.version)? {
+        if !package_tag_exists(
+            &ws.root,
+            &config,
+            package.kind,
+            &package.name,
+            &package.version,
+        )? {
             private_packages_to_tag.push(*package);
         }
     }
 
     if any_published || !private_packages_to_tag.is_empty() {
         for package in &private_packages_to_tag {
-            let tag = config.build_tag_name(&package.name, &package.version);
+            let tag = config.build_tag_name(package.kind, &package.name, &package.version);
             if !dry_run {
-                if let Err(e) =
-                    tag_published_crate(&ws.root, &config, &package.name, &package.version)
-                {
+                if let Err(e) = tag_published_crate(
+                    &ws.root,
+                    &config,
+                    package.kind,
+                    &package.name,
+                    &package.version,
+                ) {
                     eprintln!(
                         "Warning: failed to create tag for {}@{}: {}",
                         package.name, package.version, e
@@ -307,9 +330,38 @@ pub fn run_publish(
     })
 }
 
+/// Reject the publish run when two packages would render to the same git tag
+/// (e.g. cross-ecosystem same-name collisions, or a custom template that drops
+/// `{package_name}`). Scoped to all non-ignored packages — private ones get
+/// tagged too.
+fn detect_tag_collisions(config: &Config, packages: &[&PackageInfo]) -> Result<()> {
+    let mut seen: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+    for package in packages {
+        let tag = config.build_tag_name(package.kind, &package.name, &package.version);
+        if let Some(existing) = seen.insert(tag.clone(), package) {
+            let template_hint = if config.uses_short_tags(&package.name)
+                || config.uses_short_tags(&existing.name)
+            {
+                "Adjust git.tag_format and/or git.short_tags_format to include {ecosystem} and/or {package_name}."
+            } else {
+                "Adjust git.tag_format to include {ecosystem} and/or {package_name}."
+            };
+            return Err(SampoError::Publish(format!(
+                "tag collision: '{}' and '{}' both render to git tag '{}'. {}",
+                existing.canonical_identifier(),
+                package.canonical_identifier(),
+                tag,
+                template_hint
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn package_tag_exists(
     repo_root: &Path,
     config: &Config,
+    kind: PackageKind,
     crate_name: &str,
     version: &str,
 ) -> Result<bool> {
@@ -317,7 +369,7 @@ fn package_tag_exists(
         return Ok(false);
     }
 
-    let tag = config.build_tag_name(crate_name, version);
+    let tag = config.build_tag_name(kind, crate_name, version);
     let out = Command::new("git")
         .arg("-C")
         .arg(repo_root)
@@ -341,6 +393,7 @@ fn package_tag_exists(
 pub fn tag_published_crate(
     repo_root: &Path,
     config: &Config,
+    kind: PackageKind,
     crate_name: &str,
     version: &str,
 ) -> Result<bool> {
@@ -348,10 +401,10 @@ pub fn tag_published_crate(
         // Not a git repo, skip
         return Ok(false);
     }
-    if package_tag_exists(repo_root, config, crate_name, version)? {
+    if package_tag_exists(repo_root, config, kind, crate_name, version)? {
         return Ok(false);
     }
-    let tag = config.build_tag_name(crate_name, version);
+    let tag = config.build_tag_name(kind, crate_name, version);
 
     let msg = format!("Release {} {}", crate_name, version);
     let status = Command::new("git")
@@ -466,6 +519,44 @@ mod tests {
         process::Command,
         sync::{Mutex, MutexGuard, OnceLock},
     };
+
+    fn make_package(kind: PackageKind, name: &str, version: &str) -> PackageInfo {
+        PackageInfo {
+            name: name.to_string(),
+            identifier: PackageInfo::dependency_identifier(kind, name),
+            version: version.to_string(),
+            path: PathBuf::from(format!("crates/{name}")),
+            internal_deps: std::collections::BTreeSet::new(),
+            internal_dev_deps: std::collections::BTreeSet::new(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn detect_tag_collisions_passes_when_default_format_disambiguates() {
+        let cargo_pkg = make_package(PackageKind::Cargo, "shared", "1.0.0");
+        let npm_pkg = make_package(PackageKind::Npm, "shared", "1.0.0");
+        let packages = vec![&cargo_pkg, &npm_pkg];
+        let config = Config::default();
+        detect_tag_collisions(&config, &packages).expect("default format must disambiguate");
+    }
+
+    #[test]
+    fn detect_tag_collisions_errors_when_template_drops_ecosystem() {
+        let cargo_pkg = make_package(PackageKind::Cargo, "shared", "1.0.0");
+        let npm_pkg = make_package(PackageKind::Npm, "shared", "1.0.0");
+        let packages = vec![&cargo_pkg, &npm_pkg];
+        let config = Config {
+            git_tag_format: crate::tag_template::TagTemplate::parse("{package_name}-v{version}")
+                .unwrap(),
+            ..Config::default()
+        };
+        let err = detect_tag_collisions(&config, &packages).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("tag collision"));
+        assert!(msg.contains("cargo/shared"));
+        assert!(msg.contains("npm/shared"));
+    }
 
     #[test]
     fn args_for_kind_returns_universal_only_when_no_ecosystem_args() {
@@ -1463,11 +1554,11 @@ edition = "2021"
 
         // Verify each tag exists once
         assert!(
-            tag_lines.contains(&"publishable-crate-v1.0.0"),
+            tag_lines.contains(&"cargo-publishable-crate-v1.0.0"),
             "Missing tag for publishable crate"
         );
         assert!(
-            tag_lines.contains(&"private-crate-v1.0.0"),
+            tag_lines.contains(&"cargo-private-crate-v1.0.0"),
             "Missing tag for private crate"
         );
 
@@ -1656,11 +1747,11 @@ edition = "2021"
         );
 
         assert!(
-            tag_lines.contains(&"private-one-v1.0.0"),
+            tag_lines.contains(&"cargo-private-one-v1.0.0"),
             "Missing tag for private-one"
         );
         assert!(
-            tag_lines.contains(&"private-two-v1.0.0"),
+            tag_lines.contains(&"cargo-private-two-v1.0.0"),
             "Missing tag for private-two"
         );
     }
@@ -1743,11 +1834,11 @@ edition = "2021"
         );
 
         assert!(
-            tag_lines.contains(&"publishable-crate-v1.0.0"),
+            tag_lines.contains(&"cargo-publishable-crate-v1.0.0"),
             "Missing tag for publishable crate"
         );
         assert!(
-            tag_lines.contains(&"private-crate-v1.0.0"),
+            tag_lines.contains(&"cargo-private-crate-v1.0.0"),
             "Private tag should have been created because publishable package was published"
         );
     }
@@ -1830,12 +1921,12 @@ edition = "2021"
 
         // Both packages should receive tags
         assert!(
-            tag_lines.contains(&"lib-core-v1.0.0"),
+            tag_lines.contains(&"cargo-lib-core-v1.0.0"),
             "Publishable package should receive a tag. Got tags: {:?}",
             tag_lines
         );
         assert!(
-            tag_lines.contains(&"internal-service-v0.5.0"),
+            tag_lines.contains(&"cargo-internal-service-v0.5.0"),
             "Private package should receive a tag in mixed workspace. Got tags: {:?}",
             tag_lines
         );
@@ -2032,8 +2123,8 @@ edition = "2021"
             .output()
             .expect("git tag list should succeed");
         let tags = String::from_utf8_lossy(&output.stdout);
-        assert!(tags.contains("lib-core-v1.0.0"));
-        assert!(tags.contains("internal-service-v0.5.0"));
+        assert!(tags.contains("cargo-lib-core-v1.0.0"));
+        assert!(tags.contains("cargo-internal-service-v0.5.0"));
 
         // Now: bump ONLY the private package (simulates a release PR affecting only private crates)
         let service_manifest = workspace.root.join("crates/internal-service/Cargo.toml");
@@ -2069,7 +2160,7 @@ edition = "2021"
         let tags = String::from_utf8_lossy(&output.stdout);
 
         assert!(
-            tags.contains("internal-service-v0.6.0"),
+            tags.contains("cargo-internal-service-v0.6.0"),
             "Private package should receive a tag even when the publishable package was skipped. \
              This is the exact bug from the review. Got tags: {}",
             tags
