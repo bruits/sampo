@@ -20,6 +20,9 @@ env:
   RUSTFLAGS: "-Dwarnings"
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
