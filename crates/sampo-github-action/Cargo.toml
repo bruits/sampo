@@ -13,7 +13,7 @@ categories = ["development-tools"]
 
 [dependencies]
 sampo-core = { version = "0.13.3", path = "../sampo-core" }
-thiserror = "1.0"
+thiserror = "2.0"
 glob = "0.3"
 rustc-hash = "2.0"
 serde_json = "1.0"

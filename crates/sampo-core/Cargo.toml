@@ -14,7 +14,7 @@ categories = ["development-tools"]
 [dependencies]
 glob = "0.3"
 rustc-hash = "2.0"
-thiserror = "1.0"
+thiserror = "2.0"
 toml = "0.8"
 toml_edit = "0.25"
 changesets = "0.4"
