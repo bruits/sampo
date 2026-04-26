@@ -10,6 +10,7 @@ pub mod prerelease;
 pub mod process;
 pub mod publish;
 pub mod release;
+pub mod tag_template;
 pub mod types;
 pub mod workspace;
 
