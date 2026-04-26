@@ -1,4 +1,5 @@
 use crate::adapters::PackageAdapter;
+use crate::tag_template::Placeholder;
 use crate::types::{PackageInfo, PackageKind, PublishOutput};
 use crate::{
     Config, current_branch, discover_workspace,
@@ -130,7 +131,9 @@ pub fn run_publish(
         });
     }
 
-    detect_tag_collisions(&config, &all_non_ignored)?;
+    for warning in check_tag_conflicts(&config, &all_non_ignored)? {
+        eprintln!("Warning: {warning}");
+    }
 
     // Validate internal deps do not include non-publishable packages
     let mut errors: Vec<String> = Vec::new();
@@ -330,32 +333,101 @@ pub fn run_publish(
     })
 }
 
-/// Reject the publish run when two packages would render to the same git tag
-/// (e.g. cross-ecosystem same-name collisions, or a custom template that drops
-/// `{package_name}`). Scoped to all non-ignored packages — private ones get
-/// tagged too.
-fn detect_tag_collisions(config: &Config, packages: &[&PackageInfo]) -> Result<()> {
-    let mut seen: BTreeMap<String, &PackageInfo> = BTreeMap::new();
+/// Two-tier tag-conflict diagnostics, scoped to all non-ignored packages
+/// (private ones get tagged too):
+///
+/// - Errors when two packages currently render to the *same* git tag (a release
+///   right now would collide).
+/// - Returns warnings when ≥2 packages share a name across ≥2 ecosystems and
+///   the active template doesn't include `{ecosystem}` — they happen to render
+///   distinct tags only because their versions differ today, and a future bump
+///   that aligns the versions will collide silently.
+///
+/// Both diagnostics suggest adding `{ecosystem}` to the user's `tag_format`.
+/// Callers must surface the returned warnings — losing them silently defeats
+/// the point of running this check.
+#[must_use = "tag-conflict warnings must be surfaced to the user"]
+fn check_tag_conflicts(config: &Config, packages: &[&PackageInfo]) -> Result<Vec<String>> {
+    let mut by_tag: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for package in packages {
         let tag = config.build_tag_name(package.kind, &package.name, &package.version);
-        if let Some(existing) = seen.insert(tag.clone(), package) {
-            let template_hint = if config.uses_short_tags(&package.name)
-                || config.uses_short_tags(&existing.name)
-            {
-                "Adjust git.tag_format and/or git.short_tags_format to include {ecosystem} and/or {package_name}."
-            } else {
-                "Adjust git.tag_format to include {ecosystem} and/or {package_name}."
-            };
+        if let Some(existing) = by_tag.insert(tag.clone(), package) {
             return Err(SampoError::Publish(format!(
-                "tag collision: '{}' and '{}' both render to git tag '{}'. {}",
+                "tag conflict: '{}' and '{}' both render to git tag '{}'. {}",
                 existing.canonical_identifier(),
                 package.canonical_identifier(),
                 tag,
-                template_hint
+                tag_conflict_hint(config, &[existing, package])
             )));
         }
     }
-    Ok(())
+
+    let mut by_name: BTreeMap<&str, Vec<&PackageInfo>> = BTreeMap::new();
+    for package in packages {
+        by_name
+            .entry(package.name.as_str())
+            .or_default()
+            .push(*package);
+    }
+
+    let mut warnings = Vec::new();
+    for (name, group) in &by_name {
+        if group.len() < 2 {
+            continue;
+        }
+        let mut kinds: BTreeSet<PackageKind> = BTreeSet::new();
+        for package in group {
+            kinds.insert(package.kind);
+        }
+        if kinds.len() < 2 {
+            continue;
+        }
+        let any_template_disambiguates = group.iter().any(|package| {
+            config
+                .tag_template_for(&package.name)
+                .contains(Placeholder::Ecosystem)
+        });
+        if any_template_disambiguates {
+            continue;
+        }
+        let mut identifiers: Vec<String> = group
+            .iter()
+            .map(|package| format!("'{}'", package.canonical_identifier()))
+            .collect();
+        identifiers.sort();
+        warnings.push(format!(
+            "packages {} share the name '{}' across ecosystems; the current `tag_format` will collide once their versions match. {}",
+            join_with_and(&identifiers),
+            name,
+            tag_conflict_hint(config, group)
+        ));
+    }
+
+    Ok(warnings)
+}
+
+fn join_with_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [only] => only.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [head @ .., last] => format!("{}, and {last}", head.join(", ")),
+    }
+}
+
+/// Picks the right hint depending on whether any package in `group` is on the
+/// short-tag path (so we mention `short_tags_format` too).
+fn tag_conflict_hint(config: &Config, group: &[&PackageInfo]) -> String {
+    let touches_short_tags = group
+        .iter()
+        .any(|package| config.uses_short_tags(&package.name));
+    if touches_short_tags {
+        "Add `{ecosystem}` to `git.tag_format` and/or `git.short_tags_format` in `.sampo/config.toml` to disambiguate (e.g. `tag_format = \"{ecosystem}-{package_name}-v{version}\"`)."
+            .to_string()
+    } else {
+        "Add `{ecosystem}` to `git.tag_format` in `.sampo/config.toml` to disambiguate (e.g. `tag_format = \"{ecosystem}-{package_name}-v{version}\"`)."
+            .to_string()
+    }
 }
 
 fn package_tag_exists(
@@ -533,29 +605,97 @@ mod tests {
     }
 
     #[test]
-    fn detect_tag_collisions_passes_when_default_format_disambiguates() {
+    fn check_tag_conflicts_errors_on_same_rendered_tag() {
+        // Default template drops `{ecosystem}`, so two same-name same-version
+        // packages from different ecosystems collide right now.
         let cargo_pkg = make_package(PackageKind::Cargo, "shared", "1.0.0");
         let npm_pkg = make_package(PackageKind::Npm, "shared", "1.0.0");
         let packages = vec![&cargo_pkg, &npm_pkg];
         let config = Config::default();
-        detect_tag_collisions(&config, &packages).expect("default format must disambiguate");
+        let err = check_tag_conflicts(&config, &packages).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("tag conflict"), "{msg}");
+        assert!(msg.contains("cargo/shared"), "{msg}");
+        assert!(msg.contains("npm/shared"), "{msg}");
+        assert!(msg.contains("shared-v1.0.0"), "{msg}");
+        assert!(msg.contains("{ecosystem}"), "{msg}");
     }
 
     #[test]
-    fn detect_tag_collisions_errors_when_template_drops_ecosystem() {
+    fn check_tag_conflicts_warns_when_cross_ecosystem_names_match() {
+        // Different versions today → no immediate collision, but a future
+        // alignment would. Default template lacks `{ecosystem}`, so warn.
+        let cargo_pkg = make_package(PackageKind::Cargo, "shared", "1.0.0");
+        let npm_pkg = make_package(PackageKind::Npm, "shared", "2.3.4");
+        let packages = vec![&cargo_pkg, &npm_pkg];
+        let config = Config::default();
+        let warnings = check_tag_conflicts(&config, &packages).expect("no immediate collision");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = &warnings[0];
+        assert!(warning.contains("'cargo/shared'"), "{warning}");
+        assert!(warning.contains("'npm/shared'"), "{warning}");
+        assert!(warning.contains("share the name 'shared'"), "{warning}");
+        assert!(warning.contains("{ecosystem}"), "{warning}");
+    }
+
+    #[test]
+    fn check_tag_conflicts_silent_when_template_includes_ecosystem() {
         let cargo_pkg = make_package(PackageKind::Cargo, "shared", "1.0.0");
         let npm_pkg = make_package(PackageKind::Npm, "shared", "1.0.0");
         let packages = vec![&cargo_pkg, &npm_pkg];
         let config = Config {
-            git_tag_format: crate::tag_template::TagTemplate::parse("{package_name}-v{version}")
-                .unwrap(),
+            git_tag_format: crate::tag_template::TagTemplate::parse(
+                "{ecosystem}-{package_name}-v{version}",
+            )
+            .unwrap(),
             ..Config::default()
         };
-        let err = detect_tag_collisions(&config, &packages).unwrap_err();
+        let warnings = check_tag_conflicts(&config, &packages)
+            .expect("ecosystem in template prevents collisions");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn check_tag_conflicts_silent_when_names_disjoint() {
+        let cargo_pkg = make_package(PackageKind::Cargo, "alpha", "1.0.0");
+        let npm_pkg = make_package(PackageKind::Npm, "beta", "1.0.0");
+        let packages = vec![&cargo_pkg, &npm_pkg];
+        let config = Config::default();
+        let warnings = check_tag_conflicts(&config, &packages).expect("no shared names");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn check_tag_conflicts_short_tags_hint_mentions_short_format() {
+        // When at least one conflicting package sits on the short-tag path,
+        // the hint must mention `short_tags_format` too.
+        let cargo_pkg = make_package(PackageKind::Cargo, "alpha", "1.0.0");
+        let php_pkg = make_package(PackageKind::Packagist, "beta", "1.0.0");
+        let packages = vec![&cargo_pkg, &php_pkg];
+        let config = Config {
+            git_tag_format: crate::tag_template::TagTemplate::parse("v{version}").unwrap(),
+            git_short_tags: Some("alpha".to_string()),
+            ..Config::default()
+        };
+        let err = check_tag_conflicts(&config, &packages).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("tag collision"));
-        assert!(msg.contains("cargo/shared"));
-        assert!(msg.contains("npm/shared"));
+        assert!(msg.contains("short_tags_format"), "{msg}");
+    }
+
+    #[test]
+    fn check_tag_conflicts_warning_uses_oxford_comma_for_three_groups() {
+        let cargo_pkg = make_package(PackageKind::Cargo, "shared", "1.0.0");
+        let npm_pkg = make_package(PackageKind::Npm, "shared", "2.0.0");
+        let hex_pkg = make_package(PackageKind::Hex, "shared", "3.0.0");
+        let packages = vec![&cargo_pkg, &npm_pkg, &hex_pkg];
+        let config = Config::default();
+        let warnings = check_tag_conflicts(&config, &packages).expect("no immediate collision");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = &warnings[0];
+        assert!(
+            warning.contains("'cargo/shared', 'hex/shared', and 'npm/shared'"),
+            "{warning}"
+        );
     }
 
     #[test]
@@ -1554,11 +1694,11 @@ edition = "2021"
 
         // Verify each tag exists once
         assert!(
-            tag_lines.contains(&"cargo-publishable-crate-v1.0.0"),
+            tag_lines.contains(&"publishable-crate-v1.0.0"),
             "Missing tag for publishable crate"
         );
         assert!(
-            tag_lines.contains(&"cargo-private-crate-v1.0.0"),
+            tag_lines.contains(&"private-crate-v1.0.0"),
             "Missing tag for private crate"
         );
 
@@ -1747,11 +1887,11 @@ edition = "2021"
         );
 
         assert!(
-            tag_lines.contains(&"cargo-private-one-v1.0.0"),
+            tag_lines.contains(&"private-one-v1.0.0"),
             "Missing tag for private-one"
         );
         assert!(
-            tag_lines.contains(&"cargo-private-two-v1.0.0"),
+            tag_lines.contains(&"private-two-v1.0.0"),
             "Missing tag for private-two"
         );
     }
@@ -1834,11 +1974,11 @@ edition = "2021"
         );
 
         assert!(
-            tag_lines.contains(&"cargo-publishable-crate-v1.0.0"),
+            tag_lines.contains(&"publishable-crate-v1.0.0"),
             "Missing tag for publishable crate"
         );
         assert!(
-            tag_lines.contains(&"cargo-private-crate-v1.0.0"),
+            tag_lines.contains(&"private-crate-v1.0.0"),
             "Private tag should have been created because publishable package was published"
         );
     }
@@ -1921,12 +2061,12 @@ edition = "2021"
 
         // Both packages should receive tags
         assert!(
-            tag_lines.contains(&"cargo-lib-core-v1.0.0"),
+            tag_lines.contains(&"lib-core-v1.0.0"),
             "Publishable package should receive a tag. Got tags: {:?}",
             tag_lines
         );
         assert!(
-            tag_lines.contains(&"cargo-internal-service-v0.5.0"),
+            tag_lines.contains(&"internal-service-v0.5.0"),
             "Private package should receive a tag in mixed workspace. Got tags: {:?}",
             tag_lines
         );
@@ -2123,8 +2263,8 @@ edition = "2021"
             .output()
             .expect("git tag list should succeed");
         let tags = String::from_utf8_lossy(&output.stdout);
-        assert!(tags.contains("cargo-lib-core-v1.0.0"));
-        assert!(tags.contains("cargo-internal-service-v0.5.0"));
+        assert!(tags.contains("lib-core-v1.0.0"));
+        assert!(tags.contains("internal-service-v0.5.0"));
 
         // Now: bump ONLY the private package (simulates a release PR affecting only private crates)
         let service_manifest = workspace.root.join("crates/internal-service/Cargo.toml");
@@ -2160,7 +2300,7 @@ edition = "2021"
         let tags = String::from_utf8_lossy(&output.stdout);
 
         assert!(
-            tags.contains("cargo-internal-service-v0.6.0"),
+            tags.contains("internal-service-v0.6.0"),
             "Private package should receive a tag even when the publishable package was skipped. \
              This is the exact bug from the review. Got tags: {}",
             tags

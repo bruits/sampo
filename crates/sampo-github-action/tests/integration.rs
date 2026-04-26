@@ -498,14 +498,14 @@ fn test_publish_private_packages_creates_tags_and_reports_published() {
 
     // Verify that git tags were actually created for the private package
     let tag_output = Command::new("git")
-        .args(["tag", "--list", "cargo-foo-v*"])
+        .args(["tag", "--list", "foo-v*"])
         .current_dir(ws.path())
         .output()
         .expect("failed to list git tags");
 
     let tags = String::from_utf8_lossy(&tag_output.stdout);
     assert!(
-        tags.contains("cargo-foo-v0.1.0"),
+        tags.contains("foo-v0.1.0"),
         "Expected git tag for private package foo@0.1.0, got tags: {}",
         tags
     );

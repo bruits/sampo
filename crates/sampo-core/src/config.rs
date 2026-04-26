@@ -5,8 +5,9 @@ use rustc_hash::FxHashSet;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// Includes the ecosystem so same-named packages across ecosystems get distinct tags.
-pub const DEFAULT_TAG_FORMAT: &str = "{ecosystem}-{package_name}-v{version}";
+/// Stays narrow by default; cross-ecosystem same-name conflicts are caught at
+/// publish time and surface a hint suggesting `{ecosystem}` in the template.
+pub const DEFAULT_TAG_FORMAT: &str = "{package_name}-v{version}";
 
 /// Used by packages selected via `git.short_tags` (Packagist requires `vX.Y.Z`).
 pub const DEFAULT_SHORT_TAGS_FORMAT: &str = "v{version}";
@@ -800,21 +801,21 @@ mod tests {
         );
         assert_eq!(
             config.build_tag_name(PackageKind::Cargo, "other-package", "1.2.3"),
-            "cargo-other-package-v1.2.3"
+            "other-package-v1.2.3"
         );
     }
 
     #[test]
-    fn build_tag_name_default_includes_ecosystem() {
+    fn build_tag_name_default_omits_ecosystem() {
         let temp = tempfile::tempdir().unwrap();
         let config = Config::load(temp.path()).unwrap();
         assert_eq!(
             config.build_tag_name(PackageKind::Cargo, "sampo-core", "0.1.0"),
-            "cargo-sampo-core-v0.1.0"
+            "sampo-core-v0.1.0"
         );
         assert_eq!(
             config.build_tag_name(PackageKind::Npm, "sampo-core", "0.1.0"),
-            "npm-sampo-core-v0.1.0"
+            "sampo-core-v0.1.0"
         );
     }
 
@@ -824,14 +825,14 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[git]\ntag_format = \"{package_name}-v{version}\"\n",
+            "[git]\ntag_format = \"{ecosystem}-{package_name}-v{version}\"\n",
         )
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
         assert_eq!(
             config.build_tag_name(PackageKind::Cargo, "my-crate", "1.2.3"),
-            "my-crate-v1.2.3"
+            "cargo-my-crate-v1.2.3"
         );
     }
 
@@ -869,7 +870,7 @@ mod tests {
             Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
         );
         assert_eq!(
-            config.parse_tag("cargo-other-package-v1.2.3"),
+            config.parse_tag("other-package-v1.2.3"),
             Some(("other-package".to_string(), "1.2.3".to_string()))
         );
     }
@@ -935,24 +936,23 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config = Config::load(temp.path()).unwrap();
 
-        // Without short_tags, the default format requires an ecosystem prefix.
-        assert_eq!(config.parse_tag("v1.2.3"), None);
-        assert_eq!(config.parse_tag("my-package-v1.2.3"), None);
         assert_eq!(
-            config.parse_tag("cargo-my-package-v1.2.3"),
+            config.parse_tag("my-package-v1.2.3"),
             Some(("my-package".to_string(), "1.2.3".to_string()))
         );
         assert_eq!(
-            config.parse_tag("npm-my-package-v1.2.3-alpha.1"),
+            config.parse_tag("my-package-v1.2.3-alpha.1"),
             Some(("my-package".to_string(), "1.2.3-alpha.1".to_string()))
         );
-        // -v in prerelease still parses correctly thanks to semver validation
+        // -v in prerelease still parses correctly thanks to semver validation.
         assert_eq!(
-            config.parse_tag("cargo-my-package-v1.2.3-v1"),
+            config.parse_tag("my-package-v1.2.3-v1"),
             Some(("my-package".to_string(), "1.2.3-v1".to_string()))
         );
-        assert_eq!(config.parse_tag("cargo-my-package-vfoo"), None);
-        assert_eq!(config.parse_tag("cargo-my-package-v1.2"), None);
+        // Tags without `{package_name}` are rejected by the default template.
+        assert_eq!(config.parse_tag("v1.2.3"), None);
+        assert_eq!(config.parse_tag("my-package-vfoo"), None);
+        assert_eq!(config.parse_tag("my-package-v1.2"), None);
     }
 
     #[test]
@@ -988,19 +988,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_tag_with_legacy_format_via_config() {
+    fn parse_tag_with_ecosystem_format_via_config() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[git]\ntag_format = \"{package_name}-v{version}\"\n",
+            "[git]\ntag_format = \"{ecosystem}-{package_name}-v{version}\"\n",
         )
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
         assert_eq!(
-            config.parse_tag("my-package-v1.2.3"),
+            config.parse_tag("cargo-my-package-v1.2.3"),
             Some(("my-package".to_string(), "1.2.3".to_string()))
         );
+        // Legacy-shape tags are rejected once the user opts into the disambiguating template.
+        assert_eq!(config.parse_tag("my-package-v1.2.3"), None);
     }
 }

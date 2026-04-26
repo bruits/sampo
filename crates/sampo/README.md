@@ -162,11 +162,14 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 > [!TIP]
 > At runtime you can override the detected branch with the `SAMPO_RELEASE_BRANCH` environment variable, which is useful for local testing or custom CI setups.
 
-`tag_format`: Template used for git tags created by `sampo publish` (default: `"{ecosystem}-{package_name}-v{version}"`). Supported placeholders:
+`tag_format`: Template used for git tags created by `sampo publish` (default: `"{package_name}-v{version}"`). Supported placeholders:
 
 - `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, or `packagist`.
 - `{package_name}` — the package's local name.
 - `{version}` — the released version (required).
+
+> [!IMPORTANT]
+> If your workspace ships packages with the same name across multiple ecosystems (e.g. a Cargo crate and an npm package both called `foo`), `sampo publish` warns you that the default template will eventually collide and suggests `tag_format = "{ecosystem}-{package_name}-v{version}"`. If two packages would already produce the same tag for the release in flight, the publish errors out with the same hint.
 
 `short_tags`: Optional package name that should use the short tag format (see `short_tags_format`) instead of `tag_format`.
 
