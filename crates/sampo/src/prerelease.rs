@@ -401,7 +401,7 @@ fn prompt_mode() -> Result<InteractiveMode> {
     let options = ["Enter pre-release mode", "Exit pre-release mode"];
     let selection = Select::with_theme(&theme)
         .with_prompt("Choose pre-release action")
-        .items(&options)
+        .items(options)
         .default(0)
         .report(false)
         .interact()

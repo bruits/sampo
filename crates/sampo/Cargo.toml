@@ -16,19 +16,20 @@ name = "sampo"
 path = "src/main.rs"
 
 [dependencies]
-rand = "0.8"
+rand = "0.10"
 rustc-hash = "2.0"
 semver = "1.0.26"
 serde_json = "1.0"
-toml = "0.8"
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+toml = "1"
+reqwest = { version = "0.13", features = ["json", "blocking"] }
 sampo-core = { version = "0.13.3", path = "../sampo-core" }
 clap = { version = "4.6", features = ["derive"] }
-dialoguer = { version = "0.11", default-features = true }
+dialoguer = { version = "0.12", default-features = true }
 dirs = "6.0.0"
-self_update = { version = "0.42", default-features = false, features = [
+self_update = { version = "0.44", default-features = false, features = [
     "archive-tar",
     "compression-flate2",
+    "reqwest",
     "rustls",
 ] }
 

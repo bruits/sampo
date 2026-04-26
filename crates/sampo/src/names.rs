@@ -1,4 +1,4 @@
-use rand::{rngs::ThreadRng, seq::SliceRandom};
+use rand::{rngs::ThreadRng, seq::IndexedRandom};
 
 const ADJECTIVE: [&str; 35] = [
     "valiant",

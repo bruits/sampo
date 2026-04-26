@@ -61,8 +61,7 @@ impl Config {
 
         let text = std::fs::read_to_string(&path)
             .map_err(|e| SampoError::Config(format!("failed to read {}: {e}", path.display())))?;
-        let value: toml::Value = text
-            .parse()
+        let value: toml::Value = toml::from_str(&text)
             .map_err(|e| SampoError::Config(format!("invalid config.toml: {e}")))?;
 
         let version = value

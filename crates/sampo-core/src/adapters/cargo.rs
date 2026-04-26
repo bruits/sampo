@@ -239,7 +239,7 @@ fn run_cargo_dry_run(
 fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let value: toml::Value = text.parse().map_err(|e| {
+    let value: toml::Value = toml::from_str(&text).map_err(|e| {
         SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
     })?;
 
@@ -1017,7 +1017,7 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
 
     let text = fs::read_to_string(&cargo_toml_path)
         .map_err(|e| WorkspaceError::Io(crate::errors::io_error_with_path(e, &cargo_toml_path)))?;
-    let root_toml: toml::Value = text.parse().map_err(|e| {
+    let root_toml: toml::Value = toml::from_str(&text).map_err(|e| {
         WorkspaceError::InvalidManifest(format!("{}: {}", cargo_toml_path.display(), e))
     })?;
 
@@ -1042,7 +1042,7 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
         let text = fs::read_to_string(&manifest_path).map_err(|e| {
             WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
         })?;
-        let value: toml::Value = text.parse().map_err(|e| {
+        let value: toml::Value = toml::from_str(&text).map_err(|e| {
             WorkspaceError::InvalidManifest(format!("{}: {}", manifest_path.display(), e))
         })?;
         let pkg = value

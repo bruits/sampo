@@ -299,7 +299,7 @@ fn prompt_tag_selection(tags: &[String]) -> Result<String> {
 }
 
 fn unique_changeset_path(dir: &Path) -> PathBuf {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let base = names::generate_file_name(&mut rng);
     let mut candidate = dir.join(format!("{base}.md"));
     // If somehow exists, add counter suffix

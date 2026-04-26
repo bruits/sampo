@@ -237,7 +237,7 @@ mod tests {
         ) {
             let from_dir = self.crates.get(from_crate).expect("from crate must exist");
             let manifest = fs::read_to_string(from_dir.join("Cargo.toml")).unwrap();
-            let manifest_toml: toml::Value = manifest.parse().unwrap();
+            let manifest_toml: toml::Value = toml::from_str(&manifest).unwrap();
 
             let dep_entry = manifest_toml
                 .get("dependencies")

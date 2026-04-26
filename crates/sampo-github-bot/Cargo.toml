@@ -15,15 +15,15 @@ categories = ["development-tools"]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 octocrab = "0.49"
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 http = "1"
-thiserror = "1"
+thiserror = "2"
 jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "rust_crypto"] }
 base64 = "0.22"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 sampo-core = { version = "0.13.3", path = "../sampo-core" }

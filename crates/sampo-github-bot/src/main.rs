@@ -12,7 +12,7 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use octocrab::models::issues::Comment;
 use serde::{Deserialize, Serialize};
