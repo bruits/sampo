@@ -23,8 +23,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
             crate: sampo
             binary: sampo
-          - os: macos-latest
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            crate: sampo
+            binary: sampo
+          - os: macos-13
             target: x86_64-apple-darwin
+            crate: sampo
+            binary: sampo
+          - os: macos-latest
+            target: aarch64-apple-darwin
             crate: sampo
             binary: sampo
           - os: windows-latest
@@ -81,6 +89,25 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Assemble npm platform binaries
+        run: bash scripts/assemble-npm-binaries.sh dist packages
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Configure npm auth
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "Error: NPM_TOKEN secret is not configured on the sampo environment." >&2
+            echo "Add it before running this workflow, or remove the npm publish steps." >&2
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
       - name: Run Sampo to release & publish
         id: sampo
         uses: bruits/sampo/crates/sampo-github-action@main
@@ -90,7 +117,9 @@ jobs:
           create-github-release: true
           release-assets: |
             dist/{{crate}}-x86_64-unknown-linux-gnu.tar.gz => {{crate}}-{{version}}-x86_64-unknown-linux-gnu.tar.gz
+            dist/{{crate}}-aarch64-unknown-linux-gnu.tar.gz => {{crate}}-{{version}}-aarch64-unknown-linux-gnu.tar.gz
             dist/{{crate}}-x86_64-apple-darwin.tar.gz => {{crate}}-{{version}}-x86_64-apple-darwin.tar.gz
+            dist/{{crate}}-aarch64-apple-darwin.tar.gz => {{crate}}-{{version}}-aarch64-apple-darwin.tar.gz
             dist/{{crate}}-x86_64-pc-windows-msvc.tar.gz => {{crate}}-{{version}}-x86_64-pc-windows-msvc.tar.gz
           open-discussion: "sampo,sampo-github-action,sampo-github-bot"
           discussion-category: announcements
@@ -98,6 +127,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Check if sampo-github-bot was updated
         id: check-bot-update

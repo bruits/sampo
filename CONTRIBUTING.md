@@ -78,6 +78,12 @@ This crate is an [`axum`](https://docs.rs/axum/latest/axum/) web service that po
 
 `sampo-github-action` ships the binary invoked by the composite action. It orchestrates releases by shelling out to git and calling GitHub APIs via [`reqwest`](https://docs.rs/reqwest/latest/reqwest/), so behaviour depends on having credentials and a clean git workspace. We provide integration tests that simulate a repository in temporary directories, but reproducing a full workflow locally is tricky: the action expects to run inside GitHub Actions with environment variables like `GITHUB_TOKEN`, a checked-out repo, and sometimes `cargo-binstall` tooling. Testing changes often means pushing branches to a test repo and observing the results in a real workflow run... Help is welcome to improve this experience!
 
+### Packages
+
+Beside the Cargo crates, the repository also ships the `sampo` CLI on npm so it can be installed without a Cargo toolchain. The `packages/` directory is a pnpm workspace holding the JS shim (`packages/sampo`) and the per-platform binary carriers (`packages/sampo-<os>-<arch>`), all pinned to the same version. Reference them in changesets as `npm/sampo` (or `npm/sampo-<os>-<arch>` when needed); the `fixed` group in `.sampo/config.toml` keeps everything in lockstep, and the shim refuses to run on a version mismatch — so dropping a package from the group would surface as a runtime error for users on that platform. Working on this npm distribution layer requires [Node.js](https://nodejs.org/) and [pnpm](https://pnpm.io/).
+
+At release time, `scripts/assemble-npm-binaries.sh` copies the CI-built binaries into each platform package's `bin/` before `sampo publish` pushes them to npm. Adding a new platform therefore requires three coordinated changes: a new `packages/sampo-<os>-<arch>` directory, a new row in the `mappings` array inside the script, and a matching entry in the build matrix of `.github/workflows/release.yml`. The script fails loudly on any missing artefact, but a forgotten `mappings` entry would silently ship an empty `bin/` for that platform.
+
 ---
 
 Thank you once again for contributing, we deeply appreciate all contributions, no matter how small or big.

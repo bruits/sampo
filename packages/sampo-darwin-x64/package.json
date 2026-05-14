@@ -1,0 +1,28 @@
+{
+  "name": "sampo-darwin-x64",
+  "version": "0.17.4",
+  "description": "Sampo CLI binary for darwin-x64",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bruits/sampo.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "sampo": "bin/sampo"
+  },
+  "files": [
+    "bin/sampo"
+  ],
+  "scripts": {
+    "prepublishOnly": "test -x bin/sampo"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
