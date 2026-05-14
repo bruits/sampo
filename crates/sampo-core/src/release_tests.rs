@@ -123,6 +123,31 @@ mod tests {
             self
         }
 
+        /// Like `add_dependency`, but uses the raw constraint string as-is.
+        /// Useful for testing range constraints like `"^0.1"` or `"~1.0"`.
+        fn add_dependency_with_constraint(
+            &mut self,
+            from: &str,
+            to: &str,
+            constraint: &str,
+        ) -> &mut Self {
+            let from_dir = self.crates.get(from).expect("from crate must exist");
+            let current_manifest = fs::read_to_string(from_dir.join("Cargo.toml")).unwrap();
+
+            let dependency_section = format!(
+                "\n[dependencies]\n{} = {{ path=\"../{}\", version=\"{}\" }}\n",
+                to, to, constraint
+            );
+
+            fs::write(
+                from_dir.join("Cargo.toml"),
+                current_manifest + &dependency_section,
+            )
+            .unwrap();
+
+            self
+        }
+
         fn write_changeset_to_dir(
             dir: &std::path::Path,
             packages: &[&str],
@@ -1899,5 +1924,335 @@ bar = { version = "1.0.0", path = "crates/bar" }
         assert!(!output.released_packages.is_empty());
         assert_eq!(output.released_packages[0].new_version, "0.2.7");
         workspace.assert_crate_version("foo", "0.2.7-alpha.6");
+    }
+
+    #[test]
+    fn range_constraint_preserved_through_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency_with_constraint("a", "b", "^0.1")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        workspace.run_release(false).unwrap();
+
+        // b gets a patch bump -> 0.1.1
+        workspace.assert_crate_version("b", "0.1.1");
+
+        // a's dependency constraint "^0.1" should be preserved (0.1.1 satisfies ^0.1)
+        workspace.assert_dependency_version("a", "b", "^0.1");
+    }
+
+    #[test]
+    fn pinned_version_updated_through_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency("a", "b", "0.1.0")
+            .add_changeset(&["b"], Bump::Minor, "feat: b minor");
+
+        workspace.run_release(false).unwrap();
+
+        // b gets a minor bump -> 0.2.0
+        workspace.assert_crate_version("b", "0.2.0");
+
+        // a's pinned version "0.1.0" should be updated to "0.2.0"
+        workspace.assert_dependency_version("a", "b", "0.2.0");
+    }
+
+    #[test]
+    fn constraint_violation_in_fixed_group_blocks_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0") // tilde: allows 1.0.x only
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor"); // b -> 1.1.0, violates ~1.0.0
+
+        let result = workspace.run_release(true);
+        assert!(
+            result.is_err(),
+            "Expected release to fail due to constraint violation in fixed group"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("constraint") || err_msg.contains("Constraint"),
+            "Error should mention constraint violation, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn constraint_violation_without_group_allows_release() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0") // tilde: allows 1.0.x only
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor"); // b -> 1.1.0, violates ~1.0.0
+        // No fixed/linked config — violation is only a warning, release proceeds
+
+        let result = workspace.run_release(true);
+        assert!(
+            result.is_ok(),
+            "Expected release to succeed with warning, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// Pins `SAMPO_RELEASE_BRANCH=main` under a briefly-held lock; a long-lived
+    /// `EnvVarGuard` would serialise every parallel test against this one.
+    fn setup_sampo_root(
+        dir: &std::path::Path,
+        config: &str,
+        changeset_packages: &[&str],
+        bump: Bump,
+        message: &str,
+    ) {
+        {
+            let _lock = env_lock().lock().unwrap();
+            unsafe {
+                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+            }
+        }
+        fs::create_dir_all(dir.join(".sampo")).unwrap();
+        fs::write(dir.join(".sampo/config.toml"), config).unwrap();
+        TestWorkspace::write_changeset_to_dir(
+            &dir.join(".sampo/changesets"),
+            changeset_packages,
+            bump,
+            message,
+        );
+    }
+
+    fn assert_constraint_violation_blocks(result: crate::errors::Result<ReleaseOutput>) {
+        match result {
+            Ok(output) => panic!(
+                "Expected release to fail due to constraint violation in fixed group, got Ok({:?})",
+                output.released_packages
+            ),
+            Err(crate::errors::SampoError::ConstraintViolation(_)) => {}
+            Err(other) => panic!("Expected SampoError::ConstraintViolation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn npm_constraint_violation_in_fixed_group_blocks_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // pnpm-lock.yaml is the cheapest way to satisfy detect_workspace_package_manager
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: 9\n").unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{
+  "name": "root-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("packages/pkg-a")).unwrap();
+        fs::write(
+            root.join("packages/pkg-a/package.json"),
+            r#"{
+  "name": "pkg-a",
+  "version": "1.0.0",
+  "dependencies": { "pkg-b": "~1.0.0" }
+}
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("packages/pkg-b")).unwrap();
+        fs::write(
+            root.join("packages/pkg-b/package.json"),
+            r#"{
+  "name": "pkg-b",
+  "version": "1.0.0"
+}
+"#,
+        )
+        .unwrap();
+
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"npm/pkg-a\", \"npm/pkg-b\"]]\n",
+            &["npm/pkg-b"],
+            Bump::Minor,
+            "bump pkg-b minor",
+        );
+
+        // pkg-b 1.0.0 -> 1.1.0 violates `~1.0.0` (1.0.x only) on pkg-a; the
+        // fixed group must hard-error rather than rewrite the manifest.
+        assert_constraint_violation_blocks(run_release(root, true));
+    }
+
+    #[test]
+    fn pypi_constraint_violation_in_fixed_group_blocks_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("pyproject.toml"),
+            r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("packages/pkg-a")).unwrap();
+        fs::write(
+            root.join("packages/pkg-a/pyproject.toml"),
+            r#"
+[project]
+name = "pkg-a"
+version = "1.0.0"
+dependencies = ["pkg-b>=1.0,<2.0"]
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("packages/pkg-b")).unwrap();
+        fs::write(
+            root.join("packages/pkg-b/pyproject.toml"),
+            r#"
+[project]
+name = "pkg-b"
+version = "1.5.0"
+dependencies = []
+"#,
+        )
+        .unwrap();
+
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"pypi/pkg-a\", \"pypi/pkg-b\"]]\n",
+            &["pypi/pkg-b"],
+            Bump::Major,
+            "bump pkg-b major",
+        );
+
+        // pkg-b 1.5.0 -> 2.0.0 violates `>=1.0,<2.0` on pkg-a.
+        assert_constraint_violation_blocks(run_release(root, true));
+    }
+
+    #[test]
+    fn hex_constraint_violation_in_fixed_group_blocks_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Hex umbrella project: root mix.exs with apps_path, two apps under apps/.
+        fs::write(
+            root.join("mix.exs"),
+            r#"
+defmodule Workspace.MixProject do
+  use Mix.Project
+
+  def project do
+    [apps_path: "apps", version: "0.0.0"]
+  end
+end
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("apps/pkg_a")).unwrap();
+        fs::write(
+            root.join("apps/pkg_a/mix.exs"),
+            r#"
+defmodule PkgA.MixProject do
+  use Mix.Project
+
+  def project do
+    [app: :pkg_a, version: "1.0.0", deps: deps()]
+  end
+
+  defp deps do
+    [{:pkg_b, "~> 1.0.0"}]
+  end
+end
+"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("apps/pkg_b")).unwrap();
+        fs::write(
+            root.join("apps/pkg_b/mix.exs"),
+            r#"
+defmodule PkgB.MixProject do
+  use Mix.Project
+
+  def project do
+    [app: :pkg_b, version: "1.0.0"]
+  end
+end
+"#,
+        )
+        .unwrap();
+
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"hex/pkg_a\", \"hex/pkg_b\"]]\n",
+            &["hex/pkg_b"],
+            Bump::Minor,
+            "bump pkg_b minor",
+        );
+
+        // pkg_b 1.0.0 -> 1.1.0 violates the pessimistic `~> 1.0.0` on pkg_a
+        // (which means >=1.0.0 <1.1.0 in Hex semantics).
+        assert_constraint_violation_blocks(run_release(root, true));
+    }
+
+    #[test]
+    fn ignored_package_bypasses_constraint_validation() {
+        // Regression (PR #181): `ignore` filters in `compute_initial_bumps`
+        // before `validate_dependency_constraints`, so an ignored package
+        // can't trigger a fixed-group violation. `c` carries an unrelated
+        // changeset so the release isn't vacuously the "nothing to release"
+        // path.
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_crate("c", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0")
+            .set_config(
+                "[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\nignore = [\"cargo/b\"]\n",
+            )
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor")
+            .add_changeset(&["cargo/c"], Bump::Patch, "fix c patch");
+
+        let output = workspace
+            .run_release(true)
+            .expect("ignored packages must not trigger constraint validation");
+
+        let released: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(
+            released.contains(&"c"),
+            "expected `c` to be released, got {:?}",
+            released
+        );
+        assert!(
+            !released.contains(&"b"),
+            "ignored package `b` must not appear in released packages, got {:?}",
+            released
+        );
     }
 }

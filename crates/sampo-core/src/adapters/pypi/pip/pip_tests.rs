@@ -155,12 +155,12 @@ dependencies = []
 }
 
 #[test]
-fn update_manifest_versions_updates_dependencies() {
+fn update_manifest_versions_rewrites_violated_dependencies() {
     let manifest = r#"
 [project]
 name = "my-pkg"
 version = "0.1.0"
-dependencies = ["other-pkg>=1.0.0", "another>=2.0"]
+dependencies = ["other-pkg>=2.0.0", "another>=2.0"]
 "#;
 
     let mut versions = BTreeMap::new();
@@ -174,7 +174,26 @@ dependencies = ["other-pkg>=1.0.0", "another>=2.0"]
 }
 
 #[test]
-fn update_manifest_versions_updates_optional_dependencies() {
+fn update_manifest_versions_preserves_satisfied_dependencies() {
+    let manifest = r#"
+[project]
+name = "my-pkg"
+version = "0.1.0"
+dependencies = ["other-pkg>=1.0.0"]
+"#;
+
+    let mut versions = BTreeMap::new();
+    versions.insert("other-pkg".to_string(), "1.5.0".to_string());
+
+    let (updated, applied) =
+        update_manifest_versions(Path::new("pyproject.toml"), manifest, None, &versions).unwrap();
+
+    assert!(updated.contains("other-pkg>=1.0.0"));
+    assert!(applied.iter().all(|(name, _)| name != "other-pkg"));
+}
+
+#[test]
+fn update_manifest_versions_rewrites_violated_optional_dependencies() {
     let manifest = r#"
 [project]
 name = "my-pkg"
@@ -182,7 +201,7 @@ version = "0.1.0"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0", "my-dep>=1.0.0"]
+dev = ["pytest>=7.0.0", "my-dep>=3.0.0"]
 "#;
 
     let mut versions = BTreeMap::new();
@@ -314,11 +333,11 @@ fn extract_package_name_rejects_empty() {
 }
 
 #[test]
-fn try_update_dependency_spec_preserves_operator() {
+fn try_update_dependency_spec_preserves_operator_on_violation() {
     let mut versions = BTreeMap::new();
     versions.insert("requests".to_string(), "3.0.0".to_string());
 
-    let result = try_update_dependency_spec("requests>=2.0.0", &versions);
+    let result = try_update_dependency_spec("requests>=4.0.0", &versions);
     assert_eq!(
         result,
         Some(("requests".to_string(), "requests>=3.0.0".to_string()))
@@ -334,6 +353,23 @@ fn try_update_dependency_spec_preserves_operator() {
     assert_eq!(
         result,
         Some(("requests".to_string(), "requests~=3.0.0".to_string()))
+    );
+}
+
+#[test]
+fn try_update_dependency_spec_preserves_satisfied_range() {
+    // Issue #175.
+    let mut versions = BTreeMap::new();
+    versions.insert("requests".to_string(), "3.0.0".to_string());
+
+    assert_eq!(
+        try_update_dependency_spec("requests>=2.0.0", &versions),
+        None
+    );
+    assert_eq!(try_update_dependency_spec("requests>1.0", &versions), None);
+    assert_eq!(
+        try_update_dependency_spec("requests!=1.0.0", &versions),
+        None
     );
 }
 
@@ -371,7 +407,7 @@ fn try_update_dependency_spec_preserves_extras() {
     versions.insert("requests".to_string(), "3.0.0".to_string());
 
     // Single extra
-    let result = try_update_dependency_spec("requests[security]>=2.0.0", &versions);
+    let result = try_update_dependency_spec("requests[security]>=4.0.0", &versions);
     assert_eq!(
         result,
         Some((
@@ -381,7 +417,7 @@ fn try_update_dependency_spec_preserves_extras() {
     );
 
     // Multiple extras
-    let result = try_update_dependency_spec("requests[security,socks]>=2.0.0", &versions);
+    let result = try_update_dependency_spec("requests[security,socks]>=4.0.0", &versions);
     assert_eq!(
         result,
         Some((
@@ -393,6 +429,10 @@ fn try_update_dependency_spec_preserves_extras() {
     // Extra without version - skip (bare dependency)
     let result = try_update_dependency_spec("requests[security]", &versions);
     assert_eq!(result, None);
+
+    // Satisfied range with extras
+    let result = try_update_dependency_spec("requests[security]>=2.0.0", &versions);
+    assert_eq!(result, None);
 }
 
 #[test]
@@ -403,7 +443,7 @@ fn try_update_dependency_spec_preserves_environment_markers() {
 
     // Python version marker
     let result = try_update_dependency_spec(
-        "typing-extensions>=4.0; python_version < \"3.10\"",
+        "typing-extensions>=6.0; python_version < \"3.10\"",
         &versions,
     );
     assert_eq!(
@@ -415,7 +455,7 @@ fn try_update_dependency_spec_preserves_environment_markers() {
     );
 
     // Platform marker
-    let result = try_update_dependency_spec("pywin32>=300; sys_platform == 'win32'", &versions);
+    let result = try_update_dependency_spec("pywin32>=500; sys_platform == 'win32'", &versions);
     assert_eq!(
         result,
         Some((
@@ -426,6 +466,13 @@ fn try_update_dependency_spec_preserves_environment_markers() {
 
     // Marker without version - skip (bare dependency)
     let result = try_update_dependency_spec("pywin32; sys_platform == 'win32'", &versions);
+    assert_eq!(result, None);
+
+    // Satisfied constraint with marker
+    let result = try_update_dependency_spec(
+        "typing-extensions>=4.0; python_version < \"3.10\"",
+        &versions,
+    );
     assert_eq!(result, None);
 }
 
@@ -468,7 +515,7 @@ fn try_update_dependency_spec_preserves_extras_with_markers() {
 
     // Extras + version + markers
     let result = try_update_dependency_spec(
-        "requests[security]>=2.0; python_version >= \"3.8\"",
+        "requests[security]>=4.0; python_version >= \"3.8\"",
         &versions,
     );
     assert_eq!(
@@ -492,13 +539,13 @@ fn try_update_dependency_spec_skips_multiple_constraints_with_markers() {
 }
 
 #[test]
-fn try_update_dependency_spec_handles_all_operators() {
+fn try_update_dependency_spec_handles_all_operators_on_violation() {
     let mut versions = BTreeMap::new();
     versions.insert("pkg".to_string(), "5.0.0".to_string());
 
     // >=
     assert_eq!(
-        try_update_dependency_spec("pkg>=1.0", &versions),
+        try_update_dependency_spec("pkg>=6.0", &versions),
         Some(("pkg".to_string(), "pkg>=5.0.0".to_string()))
     );
 
@@ -514,21 +561,15 @@ fn try_update_dependency_spec_handles_all_operators() {
         Some(("pkg".to_string(), "pkg==5.0.0".to_string()))
     );
 
-    // ~=
+    // ~= (~=1.0 ≡ >=1.0,<2.0, so 5.0.0 violates)
     assert_eq!(
         try_update_dependency_spec("pkg~=1.0", &versions),
         Some(("pkg".to_string(), "pkg~=5.0.0".to_string()))
     );
 
-    // !=
-    assert_eq!(
-        try_update_dependency_spec("pkg!=1.0", &versions),
-        Some(("pkg".to_string(), "pkg!=5.0.0".to_string()))
-    );
-
     // >
     assert_eq!(
-        try_update_dependency_spec("pkg>1.0", &versions),
+        try_update_dependency_spec("pkg>6.0", &versions),
         Some(("pkg".to_string(), "pkg>5.0.0".to_string()))
     );
 
@@ -864,8 +905,8 @@ fn try_update_dependency_spec_matches_with_normalized_names() {
     // Map has uppercase/underscore name
     versions.insert("My_Package".to_string(), "3.0.0".to_string());
 
-    // Dependency uses lowercase/dash - should still match
-    let result = try_update_dependency_spec("my-package>=2.0.0", &versions);
+    // Dependency uses lowercase/dash
+    let result = try_update_dependency_spec("my-package>=4.0.0", &versions);
     assert_eq!(
         result,
         Some(("My_Package".to_string(), "my-package>=3.0.0".to_string()))
@@ -877,8 +918,7 @@ fn try_update_dependency_spec_matches_underscore_to_dash() {
     let mut versions = BTreeMap::new();
     versions.insert("typing-extensions".to_string(), "5.0.0".to_string());
 
-    // Dependency uses underscore
-    let result = try_update_dependency_spec("typing_extensions>=4.0.0", &versions);
+    let result = try_update_dependency_spec("typing_extensions>=6.0.0", &versions);
     assert_eq!(
         result,
         Some((
@@ -893,8 +933,7 @@ fn try_update_dependency_spec_matches_dot_to_dash() {
     let mut versions = BTreeMap::new();
     versions.insert("zope-interface".to_string(), "6.0.0".to_string());
 
-    // Dependency uses dots
-    let result = try_update_dependency_spec("zope.interface>=5.0.0", &versions);
+    let result = try_update_dependency_spec("zope.interface>=7.0.0", &versions);
     assert_eq!(
         result,
         Some((
@@ -909,15 +948,13 @@ fn try_update_dependency_spec_case_insensitive_match() {
     let mut versions = BTreeMap::new();
     versions.insert("Flask".to_string(), "3.0.0".to_string());
 
-    // Dependency uses lowercase
-    let result = try_update_dependency_spec("flask>=2.0.0", &versions);
+    let result = try_update_dependency_spec("flask>=4.0.0", &versions);
     assert_eq!(
         result,
         Some(("Flask".to_string(), "flask>=3.0.0".to_string()))
     );
 
-    // Dependency uses uppercase
-    let result = try_update_dependency_spec("FLASK>=2.0.0", &versions);
+    let result = try_update_dependency_spec("FLASK>=4.0.0", &versions);
     assert_eq!(
         result,
         Some(("Flask".to_string(), "FLASK>=3.0.0".to_string()))
@@ -930,9 +967,8 @@ fn try_update_dependency_spec_returns_original_name_from_map() {
     // The map has the "canonical" name as stored in package info
     versions.insert("My_Special_Package".to_string(), "2.0.0".to_string());
 
-    let result = try_update_dependency_spec("my-special-package>=1.0.0", &versions);
+    let result = try_update_dependency_spec("my-special-package>=3.0.0", &versions);
 
-    // Should return the original name from the map, not the dependency spec name
     assert!(result.is_some());
     let (returned_name, _) = result.unwrap();
     assert_eq!(returned_name, "My_Special_Package");
@@ -1536,4 +1572,350 @@ version = "0.1.0"
 
     assert_eq!(paths.len(), 1);
     assert!(paths.iter().next().unwrap().ends_with("valid-pkg"));
+}
+
+mod constraint_validation {
+    use super::*;
+    use crate::types::ConstraintCheckResult;
+
+    fn assert_constraint(constraint: &str, new_version: &str) -> ConstraintCheckResult {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = format!(
+            r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep{}"]
+"#,
+            constraint
+        );
+        fs::write(&manifest_path, &content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = match find_dependency_constraint(&text, "test-dep").unwrap() {
+            Some(c) => c,
+            None => {
+                return ConstraintCheckResult::Skipped {
+                    reason: "dependency 'test-dep' not found in manifest".to_string(),
+                };
+            }
+        };
+        check_pep440_constraint(&constraint, new_version).unwrap()
+    }
+
+    fn assert_satisfied(constraint: &str, new_version: &str) {
+        assert_eq!(
+            assert_constraint(constraint, new_version),
+            ConstraintCheckResult::Satisfied,
+            "expected '{}' to be satisfied by '{}'",
+            constraint,
+            new_version
+        );
+    }
+
+    fn assert_not_satisfied(constraint: &str, new_version: &str) {
+        let result = assert_constraint(constraint, new_version);
+        assert!(
+            matches!(result, ConstraintCheckResult::NotSatisfied { .. }),
+            "expected '{}' to be not satisfied by '{}', got {:?}",
+            constraint,
+            new_version,
+            result
+        );
+    }
+
+    fn assert_skipped(constraint: &str, new_version: &str) {
+        let result = assert_constraint(constraint, new_version);
+        assert!(
+            matches!(result, ConstraintCheckResult::Skipped { .. }),
+            "expected '{}' to be skipped for '{}', got {:?}",
+            constraint,
+            new_version,
+            result
+        );
+    }
+
+    #[test]
+    fn compatible_release_3_part_satisfied() {
+        assert_satisfied("~=1.4.2", "1.4.5");
+    }
+
+    #[test]
+    fn compatible_release_2_part_satisfied() {
+        assert_satisfied("~=1.4", "1.5.0");
+    }
+
+    #[test]
+    fn compatible_release_3_part_not_satisfied() {
+        assert_not_satisfied("~=1.4.2", "1.5.0");
+    }
+
+    #[test]
+    fn compatible_release_2_part_not_satisfied() {
+        assert_not_satisfied("~=1.4", "2.0.0");
+    }
+
+    #[test]
+    fn exact_satisfied() {
+        assert_satisfied("==1.2.3", "1.2.3");
+    }
+
+    #[test]
+    fn exact_not_satisfied() {
+        assert_not_satisfied("==1.2.3", "1.2.4");
+    }
+
+    #[test]
+    fn exact_wildcard_satisfied() {
+        assert_satisfied("==1.2.*", "1.2.5");
+    }
+
+    #[test]
+    fn exact_wildcard_not_satisfied() {
+        assert_not_satisfied("==1.2.*", "1.3.0");
+    }
+
+    #[test]
+    fn not_equal_satisfied() {
+        assert_satisfied("!=1.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn not_equal_not_satisfied() {
+        assert_not_satisfied("!=1.0.0", "1.0.0");
+    }
+
+    #[test]
+    fn not_equal_wildcard_satisfied() {
+        assert_satisfied("!=1.0.*", "2.0.0");
+    }
+
+    #[test]
+    fn not_equal_wildcard_not_satisfied() {
+        assert_not_satisfied("!=1.0.*", "1.0.5");
+    }
+
+    #[test]
+    fn gte_satisfied() {
+        assert_satisfied(">=1.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn gte_not_satisfied() {
+        assert_not_satisfied(">=2.0.0", "1.9.9");
+    }
+
+    #[test]
+    fn gt_satisfied() {
+        assert_satisfied(">1.0.0", "1.0.1");
+    }
+
+    #[test]
+    fn gt_not_satisfied_equal() {
+        assert_not_satisfied(">1.0.0", "1.0.0");
+    }
+
+    #[test]
+    fn lte_satisfied() {
+        assert_satisfied("<=2.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn lte_not_satisfied() {
+        assert_not_satisfied("<=2.0.0", "2.0.1");
+    }
+
+    #[test]
+    fn lt_satisfied() {
+        assert_satisfied("<2.0.0", "1.9.9");
+    }
+
+    #[test]
+    fn lt_not_satisfied() {
+        assert_not_satisfied("<2.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn compound_and_satisfied() {
+        assert_satisfied(">=1.0.0,<2.0.0", "1.5.0");
+    }
+
+    #[test]
+    fn compound_and_not_satisfied() {
+        assert_not_satisfied(">=1.0.0,<2.0.0", "2.0.0");
+    }
+
+    #[test]
+    fn compound_and_whitespace_satisfied() {
+        assert_satisfied(">=1.0, <2.0", "1.5.0");
+    }
+
+    #[test]
+    fn skip_pinned_version() {
+        assert_skipped("1.2.3", "2.0.0");
+    }
+
+    #[test]
+    fn skip_prerelease_version() {
+        assert_skipped("~=1.0.0", "2.0.0-beta.1");
+    }
+
+    #[test]
+    fn skip_url_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep @ https://example.com/archive.tar.gz"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "2.0.0").unwrap();
+        assert!(
+            matches!(result, ConstraintCheckResult::Skipped { .. }),
+            "expected URL dependency to be skipped, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn skip_dep_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = []
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let result = find_dependency_constraint(&text, "missing-dep").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn skip_empty_constraint() {
+        assert_skipped("", "1.0.0");
+    }
+
+    #[test]
+    fn skip_prerelease_in_constraint() {
+        assert_skipped(">=1.0.0a1", "2.0.0");
+    }
+
+    #[test]
+    fn extras_parsed_correctly() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep[extra]>=1.0.0"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn marker_stripped_constraint_evaluated() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep>=1.0.0; python_version>=\"3.8\""]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn extras_and_marker_stripped() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["test-dep[extra]>=1.0.0; python_version>=\"3.8\""]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn pep503_normalization() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = ["Test_Dep>=1.0.0"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn optional_dependency_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("pyproject.toml");
+        let content = r#"[project]
+name = "test-pkg"
+version = "1.0.0"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["test-dep>=1.0.0"]
+"#;
+        fs::write(&manifest_path, content).unwrap();
+
+        let text = fs::read_to_string(&manifest_path).unwrap();
+        let constraint = find_dependency_constraint(&text, "test-dep")
+            .unwrap()
+            .unwrap();
+        let result = check_pep440_constraint(&constraint, "1.5.0").unwrap();
+        assert_eq!(result, ConstraintCheckResult::Satisfied);
+    }
+
+    #[test]
+    fn post_release_version_not_skipped() {
+        // .post is stable, must not be skipped as pre-release
+        assert_satisfied(">=1.0.0", "1.0.0.post1");
+    }
+
+    #[test]
+    fn post_release_constraint_not_skipped() {
+        // .post in constraint is stable, must not be skipped
+        assert_satisfied(">=1.0.0.post1", "2.0.0");
+    }
 }

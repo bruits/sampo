@@ -4,6 +4,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -142,6 +143,29 @@ impl PyPIAdapter {
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         pip::regenerate_lockfile(workspace_root)
     }
+}
+
+pub(super) fn check_dependency_constraint(
+    manifest_path: &Path,
+    dep_name: &str,
+    _current_constraint: &str,
+    new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    use crate::types::ConstraintCheckResult;
+
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+
+    let constraint = match pip::find_dependency_constraint(&text, dep_name)? {
+        Some(c) => c,
+        None => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("dependency '{}' not found in manifest", dep_name),
+            });
+        }
+    };
+
+    pip::check_pep440_constraint(&constraint, new_version)
 }
 
 pub(super) fn publish_dry_run(

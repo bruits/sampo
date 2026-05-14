@@ -1,8 +1,10 @@
 /// Cargo ecosystem adapter for all Cargo operations.
 use crate::errors::{Result, SampoError, WorkspaceError};
-use crate::types::{PackageInfo, PackageKind};
+use crate::types::{PackageInfo, PackageKind, Workspace};
+use cargo_metadata::MetadataCommand;
+use rustc_hash::FxHashSet;
 use semver::{Version, VersionReq};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -74,6 +76,45 @@ impl CargoAdapter {
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         regenerate_cargo_lockfile(workspace_root)
+    }
+}
+
+/// Check if a Cargo dependency version constraint is satisfied by a new version.
+pub(super) fn check_dependency_constraint(
+    _dep_name: &str,
+    current_constraint: &str,
+    new_version: &str,
+) -> Result<crate::types::ConstraintCheckResult> {
+    use crate::types::ConstraintCheckResult;
+
+    let constraint = current_constraint.trim();
+    let version_str = new_version.trim();
+
+    let req = match VersionReq::parse(constraint) {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable constraint '{}'", constraint),
+            });
+        }
+    };
+
+    let version = match Version::parse(version_str) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(ConstraintCheckResult::Skipped {
+                reason: format!("unparseable version '{}'", version_str),
+            });
+        }
+    };
+
+    if req.matches(&version) {
+        Ok(ConstraintCheckResult::Satisfied)
+    } else {
+        Ok(ConstraintCheckResult::NotSatisfied {
+            constraint: constraint.to_string(),
+            new_version: version_str.to_string(),
+        })
     }
 }
 
@@ -335,6 +376,135 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
         s.push_str(&a.to_string_lossy());
     }
     s
+}
+
+/// Metadata extracted from `cargo_metadata` for the workspace.
+pub struct ManifestMetadata {
+    packages: Vec<MetadataPackage>,
+    by_manifest: HashMap<PathBuf, usize>,
+}
+
+struct MetadataPackage {
+    dependencies: Vec<MetadataDependency>,
+}
+
+struct MetadataDependency {
+    manifest_key: String,
+    package_name: String,
+    version_req: String,
+}
+
+impl ManifestMetadata {
+    pub fn load(workspace: &Workspace) -> Result<Self> {
+        let manifest_path = workspace.root.join("Cargo.toml");
+        let metadata = MetadataCommand::new()
+            .manifest_path(&manifest_path)
+            .no_deps()
+            .exec()
+            .map_err(|err| {
+                SampoError::Release(format!(
+                    "Failed to load cargo metadata for {}: {err}",
+                    manifest_path.display()
+                ))
+            })?;
+
+        let workspace_ids: FxHashSet<_> = metadata.workspace_members.iter().cloned().collect();
+
+        let mut packages = Vec::new();
+        let mut by_manifest = HashMap::new();
+
+        for package in metadata.packages {
+            if !workspace_ids.contains(&package.id) {
+                continue;
+            }
+
+            let manifest_path: PathBuf = package.manifest_path.clone().into();
+            let dependencies = package
+                .dependencies
+                .iter()
+                .map(|dep| MetadataDependency {
+                    manifest_key: dep.rename.clone().unwrap_or_else(|| dep.name.clone()),
+                    package_name: dep.name.clone(),
+                    version_req: dep.req.to_string(),
+                })
+                .collect();
+
+            let idx = packages.len();
+            by_manifest.insert(manifest_path.clone(), idx);
+            packages.push(MetadataPackage { dependencies });
+        }
+
+        Ok(Self {
+            packages,
+            by_manifest,
+        })
+    }
+
+    fn package_for_manifest(&self, manifest_path: &Path) -> Option<&MetadataPackage> {
+        self.by_manifest
+            .get(manifest_path)
+            .and_then(|idx| self.packages.get(*idx))
+    }
+
+    /// Returns the version constraint for a dependency of a package, if found.
+    /// The `dep_name` is the package name (not the alias/manifest key).
+    pub fn get_dependency_constraint(
+        &self,
+        manifest_path: &Path,
+        dep_name: &str,
+    ) -> Option<String> {
+        let package = self.package_for_manifest(manifest_path)?;
+        package
+            .dependencies
+            .iter()
+            .find(|dep| dep.package_name == dep_name)
+            .map(|dep| dep.version_req.clone())
+    }
+
+    /// Check if a dependency's version in the raw TOML is a pinned exact version.
+    /// Pinned versions (bare semver like `"1.0.0"`) will be updated during manifest updates,
+    /// while range constraints (e.g., `"^1.0"`) are preserved and need constraint validation.
+    pub fn is_dependency_pinned(&self, manifest_path: &Path, dep_name: &str) -> bool {
+        let manifest_key = self
+            .package_for_manifest(manifest_path)
+            .and_then(|pkg| {
+                pkg.dependencies
+                    .iter()
+                    .find(|d| d.package_name == dep_name)
+                    .map(|d| d.manifest_key.as_str())
+            })
+            .unwrap_or(dep_name);
+
+        let content = match fs::read_to_string(manifest_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let doc: DocumentMut = match content.parse() {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+
+        let top = doc.as_table();
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(raw) = raw_dep_version(top, section, manifest_key) {
+                return Version::parse(raw.trim()).is_ok();
+            }
+        }
+
+        if let Some(targets) = top.get("target").and_then(Item::as_table) {
+            for (_, target_item) in targets.iter() {
+                if let Some(target_table) = target_item.as_table() {
+                    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                        if let Some(raw) = raw_dep_version(target_table, section, manifest_key) {
+                            return Version::parse(raw.trim()).is_ok();
+                        }
+                    }
+                }
+            }
+        }
+
+        false
+    }
 }
 
 /// Update a Cargo manifest by setting the package version (if provided) and retargeting internal
@@ -614,6 +784,34 @@ fn update_deps_in_table(
     changed
 }
 
+/// Extract the raw version string for a dependency from a TOML table section.
+fn raw_dep_version<'a>(parent: &'a Table, section: &str, dep_name: &str) -> Option<&'a str> {
+    let dep_table = parent.get(section)?.as_table()?;
+    let item = dep_table.get(dep_name)?;
+    match item {
+        Item::Value(Value::String(s)) => Some(s.value()),
+        Item::Value(Value::InlineTable(t)) => t.get("version").and_then(Value::as_str),
+        Item::Table(t) => t
+            .get("version")
+            .and_then(Item::as_value)
+            .and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Returns true if the existing dependency version should be replaced with the exact new version.
+/// Pinned versions (bare semver) are always replaced; range constraints are preserved.
+fn should_update_dependency_version(existing: &str, new_version: &str) -> bool {
+    let trimmed = existing.trim();
+
+    if Version::parse(trimmed).is_ok() {
+        return trimmed != new_version;
+    }
+
+    // Deferred to constraint validation in release.rs
+    false
+}
+
 fn has_package_field(item: &Item, name: &str) -> bool {
     match item {
         Item::Value(Value::InlineTable(table)) => {
@@ -637,12 +835,12 @@ fn update_standard_dependency_item(item: &mut Item, new_version: &str, is_dev: b
         }
         Item::Table(table) => update_table_dependency(table, new_version, is_dev),
         Item::Value(value) => {
-            if value.as_str() == Some(new_version) {
-                false
-            } else {
-                *item = Item::Value(Value::from(new_version));
-                true
+            let current = value.as_str().unwrap_or_default();
+            if !should_update_dependency_version(current, new_version) {
+                return false;
             }
+            *item = Item::Value(Value::from(new_version));
+            true
         }
         _ => false,
     }
@@ -662,11 +860,12 @@ fn update_inline_dependency(table: &mut InlineTable, new_version: &str, is_dev: 
         return false;
     }
 
-    let needs_update = table
-        .get("version")
-        .and_then(Value::as_str)
-        .map(|current| current != new_version)
-        .unwrap_or(true);
+    let current = table.get("version").and_then(Value::as_str);
+    let needs_update = match current {
+        Some(existing) => should_update_dependency_version(existing, new_version),
+        // No version field present — don't insert one
+        None => false,
+    };
 
     if needs_update {
         table.insert("version", Value::from(new_version));
@@ -692,12 +891,15 @@ fn update_table_dependency(table: &mut Table, new_version: &str, is_dev: bool) -
         return false;
     }
 
-    let needs_update = table
+    let current = table
         .get("version")
         .and_then(Item::as_value)
-        .and_then(Value::as_str)
-        .map(|current| current != new_version)
-        .unwrap_or(true);
+        .and_then(Value::as_str);
+    let needs_update = match current {
+        Some(existing) => should_update_dependency_version(existing, new_version),
+        // No version field present — don't insert one
+        None => false,
+    };
 
     if needs_update {
         table.insert("version", Item::Value(Value::from(new_version)));

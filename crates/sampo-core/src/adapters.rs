@@ -6,7 +6,7 @@ pub mod packagist;
 pub mod pypi;
 
 use crate::errors::{Result, WorkspaceError};
-use crate::types::{PackageInfo, PackageKind, Workspace};
+use crate::types::{ConstraintCheckResult, PackageInfo, PackageKind, Workspace};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -216,6 +216,45 @@ impl PackageAdapter {
             PackageKind::Hex => Self::Hex,
             PackageKind::PyPI => Self::PyPI,
             PackageKind::Packagist => Self::Packagist,
+        }
+    }
+
+    /// Check if a dependency version constraint is satisfied by a new version.
+    pub fn check_dependency_constraint(
+        &self,
+        manifest_path: &Path,
+        dep_name: &str,
+        current_constraint: &str,
+        new_version: &str,
+    ) -> Result<ConstraintCheckResult> {
+        match self {
+            Self::Cargo => {
+                cargo::check_dependency_constraint(dep_name, current_constraint, new_version)
+            }
+            Self::Npm => npm::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
+            Self::Hex => hex::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
+            Self::PyPI => pypi::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
+            Self::Packagist => packagist::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
         }
     }
 }
