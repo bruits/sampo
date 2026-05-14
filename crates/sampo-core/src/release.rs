@@ -1,4 +1,5 @@
 use crate::adapters::PackageAdapter;
+use crate::adapters::cargo::ManifestMetadata;
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::types::{

@@ -742,8 +742,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.3.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(
             applied.is_empty(),
@@ -762,8 +761,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "2.0.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(
             applied.is_empty(),
@@ -785,8 +783,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.3.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
         assert!(
@@ -803,8 +800,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.3.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(
             applied.is_empty(),
@@ -824,8 +820,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.3.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
         assert!(
@@ -844,8 +839,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.2.5".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(applied.is_empty(), "tilde range should not trigger update");
         assert!(
@@ -864,8 +858,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.5.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(
             applied.is_empty(),
@@ -887,8 +880,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.3.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(
             applied.is_empty(),
@@ -910,8 +902,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.3.0".to_string());
 
         let (out, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
         assert!(
@@ -930,8 +921,7 @@ mod range_constraint_preservation {
         updates.insert("bar".to_string(), "1.0.0".to_string());
 
         let (_, applied) =
-            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates, None)
-                .unwrap();
+            update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap();
 
         assert!(
             applied.is_empty(),
