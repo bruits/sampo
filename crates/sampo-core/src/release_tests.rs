@@ -1603,21 +1603,8 @@ tempfile = "3.0"
 
         // Create config with fixed dependencies
         let config = Config {
-            version: 1,
-            github_repository: None,
-            changelog_show_commit_hash: true,
-            changelog_show_acknowledgments: true,
-            changelog_show_release_date: true,
-            changelog_release_date_format: "%Y-%m-%d".to_string(),
-            changelog_release_date_timezone: None,
-            changesets_tags: vec![],
             fixed_dependencies: vec![vec!["pkg-a".to_string(), "pkg-c".to_string()]],
-            linked_dependencies: vec![],
-            ignore_unpublished: false,
-            ignore: vec![],
-            git_default_branch: None,
-            git_release_branches: Vec::new(),
-            git_short_tags: None,
+            ..Config::default()
         };
 
         // Create changeset that affects pkg-b only
