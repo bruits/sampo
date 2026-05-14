@@ -22,7 +22,7 @@ We take security issues very seriously. If you discover a vulnerability, please 
 
 ### Guidelines for Reporting
 
-- Do **not** report vulnerabilities publicly via issues or discussions.
+- Do **not** report vulnerabilities publicly via issues or other public channels.
 - Please provide as much detail as possible about the vulnerability to help us investigate and resolve it quickly.
 
 ### What to Expect

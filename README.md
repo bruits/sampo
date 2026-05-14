@@ -7,7 +7,7 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
-Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md).
+Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md) or join us on [Discord](https://discord.com/invite/84pd4QtmzA)!
 
 ## Crates
 

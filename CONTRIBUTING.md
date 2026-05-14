@@ -15,10 +15,10 @@ We're also committed to fostering a welcoming and respectful community. Any issu
 
 ## Before Opening Issues
 
-- **Do not report security vulnerabilities publicly** (e.g., in issues or discussions), please refer to our [security policy](./SECURITY.md).
-- **Do not create issues for questions about using Sampo.** Instead, ask your question in our [GitHub Discussions](https://github.com/bruits/sampo/discussions/categories/q-a).
-- **Do not create issues for ideas or suggestions.** Instead, share your thoughts in our [GitHub Discussions](https://github.com/bruits/sampo/discussions/categories/ideas).
-- **Check for duplicates.** Look through existing issues and discussions to see if your topic has already been addressed.
+- **Do not report security vulnerabilities publicly** (e.g., in issues), please refer to our [security policy](./SECURITY.md).
+- **Do not create issues for questions about using Sampo.** Instead, ask on our [Discord](https://discord.com/invite/84pd4QtmzA).
+- **For ideas or feature suggestions**, open a [feature request issue](https://github.com/bruits/sampo/issues/new?template=02-feature-request.yml) or chat about it first on [Discord](https://discord.com/invite/84pd4QtmzA).
+- **Check for duplicates.** Look through existing issues to see if your topic has already been addressed.
 - In general, provide as much detail as possible. No worries if it's not perfect, we'll figure it out together.
 
 ## Before submitting Pull Requests (PRs)
