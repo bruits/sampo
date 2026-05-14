@@ -13,6 +13,9 @@
   "files": [
     "bin/sampo.exe"
   ],
+  "scripts": {
+    "prepublishOnly": "test -f bin/sampo.exe"
+  },
   "os": [
     "win32"
   ],

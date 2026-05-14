@@ -22,10 +22,20 @@ if (!pkg) {
 
 // Resolve via package.json then join: pnpm's strict layouts don't expose bin/ files directly.
 const exe = process.platform === "win32" ? "sampo.exe" : "sampo";
+const ourVersion = require("../package.json").version;
 let binary;
 try {
-  const pkgJson = createRequire(__filename).resolve(`${pkg}/package.json`);
-  binary = path.join(path.dirname(pkgJson), "bin", exe);
+  const pkgJsonPath = createRequire(__filename).resolve(`${pkg}/package.json`);
+  const platformVersion = require(pkgJsonPath).version;
+  if (platformVersion !== ourVersion) {
+    // Guards against lockfile drift leaving an older binary alongside a newer shim.
+    console.error(
+      `sampo: version mismatch — shim is ${ourVersion} but ${pkg} is ${platformVersion}. ` +
+        `Reinstall sampo to realign the platform binary.`,
+    );
+    process.exit(1);
+  }
+  binary = path.join(path.dirname(pkgJsonPath), "bin", exe);
 } catch {
   console.error(
     `sampo: failed to resolve ${pkg}. The optional dependency was not installed — ` +

@@ -13,6 +13,9 @@
   "files": [
     "bin/sampo"
   ],
+  "scripts": {
+    "prepublishOnly": "test -x bin/sampo"
+  },
   "os": [
     "linux"
   ],

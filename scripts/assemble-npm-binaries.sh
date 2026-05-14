@@ -39,6 +39,11 @@ for entry in "${mappings[@]}"; do
   mkdir -p "$dest_dir"
   tar -xzf "$archive" -C "$dest_dir" "$binary"
 
+  if [ ! -s "${dest_dir}/${binary}" ]; then
+    echo "extraction did not produce ${dest_dir}/${binary}" >&2
+    exit 1
+  fi
+
   if [ "$binary" != "sampo.exe" ]; then
     chmod +x "${dest_dir}/${binary}"
   fi
