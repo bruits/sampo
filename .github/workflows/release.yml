@@ -92,7 +92,7 @@ jobs:
       - name: Assemble npm platform binaries
         run: bash scripts/assemble-npm-binaries.sh dist packages
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org

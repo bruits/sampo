@@ -25,6 +25,6 @@ semver = "1.0"
 tempfile = "3.0"
 
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/{ name }-v{ version }/{ name }-{ version }-{ target }{ archive-suffix }"
+pkg-url = "{ repo }/releases/download/cargo-{ name }-v{ version }/{ name }-{ version }-{ target }{ archive-suffix }"
 bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"

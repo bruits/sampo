@@ -36,10 +36,14 @@ try {
     process.exit(1);
   }
   binary = path.join(path.dirname(pkgJsonPath), "bin", exe);
-} catch {
+} catch (err) {
+  const detail = err && (err.code || err.name) ? ` (${err.code || err.name})` : "";
+  const message = err && err.message ? `: ${err.message}` : "";
   console.error(
-    `sampo: failed to resolve ${pkg}. The optional dependency was not installed — ` +
-      `check your install logs (npm/pnpm/yarn may have skipped it due to --no-optional or a platform mismatch).`,
+    `sampo: failed to load ${pkg}${detail}${message}. ` +
+      `If the optional dependency was skipped at install time, check your install logs ` +
+      `(npm/pnpm/yarn may have skipped it due to --no-optional or a platform mismatch); ` +
+      `otherwise inspect node_modules/${pkg}/ for a corrupt install.`,
   );
   process.exit(1);
 }
