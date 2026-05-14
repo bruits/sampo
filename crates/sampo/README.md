@@ -14,15 +14,6 @@ Install Sampo using Cargo:
 cargo install sampo
 ```
 
-Or install from npm (works on Linux, macOS, and Windows):
-
-```bash
-pnpm add -D sampo   && pnpm sampo --help    # or:
-npm  i   -D sampo   && npx  sampo --help    # or:
-yarn add -D sampo   && yarn sampo --help    # or:
-bun  add -D sampo   && bunx sampo --help
-```
-
 Initialize Sampo in your repository:
 
 ```bash
