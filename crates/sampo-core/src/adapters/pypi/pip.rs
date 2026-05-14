@@ -621,6 +621,14 @@ fn try_update_dependency_spec(
         return None;
     }
 
+    // Leave already-satisfied ranges untouched (issue #175); unparseable falls through.
+    if !pep440_constraint_contains_prerelease(after_extras)
+        && let Some(parsed_new) = parse_pep440_version(new_version)
+        && let Some(true) = pep440_version_satisfies(after_extras, parsed_new)
+    {
+        return None;
+    }
+
     let new_spec = VersionOperator::ALL.iter().find_map(|&op| {
         after_extras
             .strip_prefix(op.as_str())

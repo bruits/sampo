@@ -778,8 +778,18 @@ fn compute_dependency_constraint(old_spec: &str, new_version: &str) -> Option<St
         return Some(format!("^{}", new_version));
     }
 
-    // Skip complex constraints with logical operators
-    if trimmed.contains("||") || trimmed.contains(" ") && !trimmed.starts_with('^') {
+    // OR / multi-comparator AND is too risky to rewrite. A leading `^` does
+    // not exempt multi-part ANDs (e.g. `^1.0 ^2.0`).
+    if trimmed.contains("||") || trimmed.contains(' ') || trimmed.contains(',') {
+        return None;
+    }
+
+    // Preserve any non-pinned range that the new version already satisfies (issue #175).
+    if !is_pinned_version(trimmed)
+        && !constraint_contains_prerelease(trimmed)
+        && let Some(parsed) = parse_composer_version(new_version)
+        && let Some(true) = composer_version_satisfies(trimmed, parsed)
+    {
         return None;
     }
 

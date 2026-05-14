@@ -891,12 +891,14 @@ fn validate_dependency_constraints(
     let linked_groups =
         resolve_config_groups(workspace, &config.linked_dependencies, "packages.linked")?;
 
-    // Load cargo metadata once for constraint extraction on Cargo packages.
+    // Load cargo metadata for Cargo constraint extraction. Propagate failures:
+    // swallowing them defaults every constraint to `"*"` and silently bypasses
+    // fixed/linked range checks.
     let has_cargo = releases
         .iter()
         .any(|(id, _, _)| by_id.get(id).is_some_and(|p| p.kind == PackageKind::Cargo));
     let cargo_metadata = if has_cargo {
-        ManifestMetadata::load(workspace).ok()
+        Some(ManifestMetadata::load(workspace)?)
     } else {
         None
     };

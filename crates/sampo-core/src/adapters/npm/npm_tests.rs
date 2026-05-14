@@ -436,6 +436,42 @@ fn updates_package_json_versions_preserving_formatting() {
 }
 
 #[test]
+fn updates_package_json_preserves_satisfied_ranges() {
+    // Issue #175: satisfied ranges round-trip unchanged across spec shapes.
+    let input = r#"{
+  "name": "app",
+  "version": "1.0.0",
+  "dependencies": {
+    "pkg-caret": "^1.0.0",
+    "pkg-tilde": "~1.2.0",
+    "pkg-x": "1.x",
+    "pkg-hyphen": "1.0.0 - 2.0.0",
+    "pkg-gte": ">=1.0.0",
+    "pkg-or": "^1.0.0 || ^2.0.0"
+  }
+}
+"#;
+    let mut updates = BTreeMap::new();
+    updates.insert("pkg-caret".to_string(), "1.5.0".to_string());
+    updates.insert("pkg-tilde".to_string(), "1.2.7".to_string());
+    updates.insert("pkg-x".to_string(), "1.9.0".to_string());
+    updates.insert("pkg-hyphen".to_string(), "1.5.0".to_string());
+    updates.insert("pkg-gte".to_string(), "3.0.0".to_string());
+    updates.insert("pkg-or".to_string(), "2.5.0".to_string());
+
+    let (out, applied) =
+        update_manifest_versions(Path::new("/repo/package.json"), input, None, &updates).unwrap();
+
+    assert!(out.contains("\"pkg-caret\": \"^1.0.0\""));
+    assert!(out.contains("\"pkg-tilde\": \"~1.2.0\""));
+    assert!(out.contains("\"pkg-x\": \"1.x\""));
+    assert!(out.contains("\"pkg-hyphen\": \"1.0.0 - 2.0.0\""));
+    assert!(out.contains("\"pkg-gte\": \">=1.0.0\""));
+    assert!(out.contains("\"pkg-or\": \"^1.0.0 || ^2.0.0\""));
+    assert!(applied.is_empty());
+}
+
+#[test]
 fn validate_package_name_accepts_scoped_packages() {
     super::validate_package_name("@scope/pkg-name").unwrap();
 }

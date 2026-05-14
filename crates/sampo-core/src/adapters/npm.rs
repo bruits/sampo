@@ -1193,6 +1193,14 @@ fn compute_dependency_specifier(old_spec: &str, new_version: &str) -> Option<Str
         }
     }
 
+    // Leave already-satisfied non-pinned ranges untouched (issue #175).
+    if !is_pinned_version(trimmed)
+        && !constraint_contains_prerelease(trimmed)
+        && let Some(true) = npm_version_satisfies(trimmed, new_version)
+    {
+        return None;
+    }
+
     if let Some(rest) = trimmed.strip_prefix('^') {
         if rest == new_version {
             return None;

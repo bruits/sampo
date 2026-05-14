@@ -34,6 +34,16 @@ fn compute_dependency_constraint_skips_complex() {
     // Complex constraints with logical operators should not be modified
     assert_eq!(compute_dependency_constraint(">=1.0 <2.0", "2.0.0"), None);
     assert_eq!(compute_dependency_constraint("^1.0 || ^2.0", "3.0.0"), None);
+    // Regression: precedence bug previously collapsed leading-caret ANDs to `^<new>`.
+    assert_eq!(compute_dependency_constraint("^1.0 ^2.0", "2.5.0"), None);
+    assert_eq!(compute_dependency_constraint("^1.0,^2.0", "2.5.0"), None);
+}
+
+#[test]
+fn compute_dependency_constraint_preserves_satisfied_range() {
+    // Issue #175.
+    assert_eq!(compute_dependency_constraint("^1.0.0", "1.5.0"), None);
+    assert_eq!(compute_dependency_constraint("~1.2.0", "1.2.5"), None);
 }
 
 #[test]
