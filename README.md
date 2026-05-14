@@ -20,6 +20,14 @@ Sampo is a monorepo that contains the following crates (Rust packages):
 | `sampo-github-bot`    | GitHub App to inspect PRs and request changesets              | <a href="https://crates.io/crates/sampo-github-bot"><img alt="Sampo GitHub Bot Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-bot"></a>          | [README](./crates/sampo-github-bot/README.md)    |
 | `sampo-github-action` | GitHub Action to automate the release and publishing process. | <a href="https://crates.io/crates/sampo-github-action"><img alt="Sampo GitHub Action Crates.io Version" src="https://img.shields.io/crates/v/sampo-github-action"></a> | [README](./crates/sampo-github-action/README.md) |
 
+## Packages
+
+The `sampo` CLI is also distributed on npm so it can be installed via `pnpm`/`npm`/`yarn`/`bun` without a Cargo toolchain:
+
+| Name    | Description                                              | Registry                                                                                                                 | README                              |
+| ------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `sampo` | CLI to manage changesets, versioning, and publishing | <a href="https://www.npmjs.com/package/sampo"><img alt="Sampo npm Version" src="https://img.shields.io/npm/v/sampo"></a> | [README](./packages/sampo/README.md) |
+
 ## Acknowledgements
 
 Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), but made with Rust and designed for multi-ecosystems monorepos. Read more about Sampo's [alternatives](./crates/sampo/README.md#alternatives).

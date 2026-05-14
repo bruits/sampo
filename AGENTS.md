@@ -13,7 +13,7 @@ cargo test --all                      # test
 ## Useful Resources
 
 - In [CONTRIBUTING.md](./CONTRIBUTING.md) : [Quality Guidelines](./CONTRIBUTING.md#quality-guidelines) applies to agents and humans equally, [Getting Started](./CONTRIBUTING.md#getting-started) helps you understand the project structure, and [Philosophy](./CONTRIBUTING.md#philosophy) is the project’s north star.
-- The [README](./README.md) lists all crates, and per-crate READMEs (e.g. [sampo-core](./crates/sampo-core/README.md)) contain public API documentation, it should stay concise and user-facing.
+- The [README](./README.md) lists all crates, while per-crate READMEs (e.g. [sampo-core](./crates/sampo-core/README.md)) contain public API documentation (should stay concise and user-facing).
 - [GitHub](https://github.com/bruits/sampo) Issues and PRs are the best place for implementation details, design discussions, and technical decisions.
 
 ## Agent Guardrails

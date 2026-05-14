@@ -15,7 +15,7 @@
     "bin/sampo.js"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "optionalDependencies": {
     "sampo-linux-x64": "0.17.4",
