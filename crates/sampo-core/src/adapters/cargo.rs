@@ -1,7 +1,7 @@
 /// Cargo ecosystem adapter for all Cargo operations.
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind, Workspace};
-use cargo_metadata::{DependencyKind, MetadataCommand};
+use cargo_metadata::MetadataCommand;
 use rustc_hash::FxHashSet;
 use semver::{Version, VersionReq};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -382,7 +382,6 @@ fn format_command_display(program: &std::ffi::OsStr, args: std::process::Command
 pub struct ManifestMetadata {
     packages: Vec<MetadataPackage>,
     by_manifest: HashMap<PathBuf, usize>,
-    by_name: HashMap<String, usize>,
 }
 
 struct MetadataPackage {
@@ -392,8 +391,6 @@ struct MetadataPackage {
 struct MetadataDependency {
     manifest_key: String,
     package_name: String,
-    kind: DependencyKind,
-    target: Option<String>,
     version_req: String,
 }
 
@@ -415,7 +412,6 @@ impl ManifestMetadata {
 
         let mut packages = Vec::new();
         let mut by_manifest = HashMap::new();
-        let mut by_name = HashMap::new();
 
         for package in metadata.packages {
             if !workspace_ids.contains(&package.id) {
@@ -429,22 +425,18 @@ impl ManifestMetadata {
                 .map(|dep| MetadataDependency {
                     manifest_key: dep.rename.clone().unwrap_or_else(|| dep.name.clone()),
                     package_name: dep.name.clone(),
-                    kind: dep.kind,
-                    target: dep.target.as_ref().map(|platform| platform.to_string()),
                     version_req: dep.req.to_string(),
                 })
                 .collect();
 
             let idx = packages.len();
             by_manifest.insert(manifest_path.clone(), idx);
-            by_name.insert(package.name.clone(), idx);
             packages.push(MetadataPackage { dependencies });
         }
 
         Ok(Self {
             packages,
             by_manifest,
-            by_name,
         })
     }
 
@@ -452,10 +444,6 @@ impl ManifestMetadata {
         self.by_manifest
             .get(manifest_path)
             .and_then(|idx| self.packages.get(*idx))
-    }
-
-    fn is_workspace_package(&self, name: &str) -> bool {
-        self.by_name.contains_key(name)
     }
 
     /// Returns the version constraint for a dependency of a package, if found.
@@ -808,14 +796,6 @@ fn raw_dep_version<'a>(parent: &'a Table, section: &str, dep_name: &str) -> Opti
             .and_then(Item::as_value)
             .and_then(Value::as_str),
         _ => None,
-    }
-}
-
-fn dependency_section_name(kind: DependencyKind) -> &'static str {
-    match kind {
-        DependencyKind::Normal | DependencyKind::Unknown => "dependencies",
-        DependencyKind::Development => "dev-dependencies",
-        DependencyKind::Build => "build-dependencies",
     }
 }
 
