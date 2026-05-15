@@ -26,7 +26,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             crate: sampo
             binary: sampo
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             crate: sampo
             binary: sampo
@@ -60,9 +60,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --bin ${{ matrix.crate }}
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }} --bin ${{ matrix.crate }}
           mkdir -p dist/tmp
-          cp "target/release/${{ matrix.binary }}" "dist/tmp/${{ matrix.binary }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/tmp/${{ matrix.binary }}"
           tar -C dist/tmp -czf "dist/${{ matrix.crate }}-${{ matrix.target }}.tar.gz" "${{ matrix.binary }}"
           rm -rf dist/tmp
 
