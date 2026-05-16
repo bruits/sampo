@@ -5,7 +5,4 @@ version = 1
 tag_format = "{ecosystem}-{package_name}-v{version}"
 
 [packages]
-# The npm platform packages (sampo-linux-x64, …) are generated and published
-# from CI by scripts/publish-npm-platform-packages.sh; they are not workspace
-# members and therefore not listed here.
 fixed = [["cargo/sampo", "npm/sampo"]]
