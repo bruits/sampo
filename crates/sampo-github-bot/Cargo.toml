@@ -23,7 +23,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 http = "1"
 thiserror = "2"
-jsonwebtoken = { version = "10.3", default-features = false, features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "10.4", default-features = false, features = ["use_pem", "rust_crypto"] }
 base64 = "0.22"
 reqwest = { version = "0.13", features = ["json"] }
 sampo-core = { version = "0.13.3", path = "../sampo-core" }
