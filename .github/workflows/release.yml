@@ -89,9 +89,6 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Assemble npm platform binaries
-        run: bash scripts/assemble-npm-binaries.sh dist packages
-
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -107,6 +104,35 @@ jobs:
             exit 1
           fi
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+      # Publish platform packages before the shim so its optionalDependencies
+      # resolve. Idempotent: re-published (name, version) tuples are skipped,
+      # so release-PR-prep runs (unchanged version) are no-ops.
+      - name: Publish npm platform packages
+        run: bash scripts/publish-npm-platform-packages.sh dist
+
+      # Pin the shim's optionalDependencies to its own version before the
+      # Sampo action publishes the shim tarball. Done here rather than in
+      # source because the platform packages are not workspace members and
+      # Sampo cannot rewrite their pins itself.
+      - name: Sync shim optionalDependencies
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "packages/sampo/package.json";
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            const platforms = [
+              "sampo-linux-x64",
+              "sampo-linux-arm64",
+              "sampo-darwin-x64",
+              "sampo-darwin-arm64",
+              "sampo-win32-x64",
+            ];
+            pkg.optionalDependencies = pkg.optionalDependencies || {};
+            for (const name of platforms) pkg.optionalDependencies[name] = pkg.version;
+            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+            console.log("Synced optionalDependencies to", pkg.version);
+          '
 
       - name: Run Sampo to release & publish
         id: sampo
