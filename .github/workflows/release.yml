@@ -105,16 +105,12 @@ jobs:
           fi
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
 
-      # Publish platform packages before the shim so its optionalDependencies
-      # resolve. Idempotent: re-published (name, version) tuples are skipped,
-      # so release-PR-prep runs (unchanged version) are no-ops.
+      # Must run before the shim publish so its optionalDependencies resolve.
       - name: Publish npm platform packages
         run: bash scripts/publish-npm-platform-packages.sh dist
 
-      # Pin the shim's optionalDependencies to its own version before the
-      # Sampo action publishes the shim tarball. Done here rather than in
-      # source because the platform packages are not workspace members and
-      # Sampo cannot rewrite their pins itself.
+      # Sampo cannot rewrite these pins itself: the platform packages are not
+      # workspace members, so it doesn't know they need bumping.
       - name: Sync shim optionalDependencies
         run: |
           node -e '

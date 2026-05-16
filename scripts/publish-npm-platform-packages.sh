@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
-# Generate and publish the per-platform npm carrier packages for Sampo.
-#
-# These packages exist only to ship a pre-built CLI binary on each supported
-# platform via the main `sampo` package's `optionalDependencies`. They have no
-# source of truth in the repo: each release publishes a freshly templated
-# package.json paired with the binary built by the release workflow.
+# Generate and publish the per-platform npm carrier packages for the Sampo
+# CLI. Each carries a pre-built binary that the main `sampo` package pulls
+# via `optionalDependencies`; their package.json is templated at publish
+# time rather than committed.
 #
 # Usage: publish-npm-platform-packages.sh <artifacts-dir> [<version>]
 #   artifacts-dir: directory containing sampo-<rust-target>.tar.gz tarballs
-#   version:       shim version to publish at; defaults to the value in
-#                  packages/sampo/package.json
+#   version:       defaults to packages/sampo/package.json#version
 #
-# Environment:
-#   NPM_PUBLISH_DRY_RUN=1  -> pass --dry-run to `npm publish`; never hit the
-#                             registry. Use this for local smoke tests.
+# Set NPM_PUBLISH_DRY_RUN=1 to pass --dry-run and never hit the registry.
 #
-# Idempotent: a (name, version) tuple already on npm is skipped with a log
-# line. This lets the release workflow re-run safely.
+# Idempotent: an existing (name, version) on npm is skipped, so the release
+# workflow can be safely re-run.
 #
 # Requires: npm and node in PATH, tar.
 
