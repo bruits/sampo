@@ -5,12 +5,4 @@ version = 1
 tag_format = "{ecosystem}-{package_name}-v{version}"
 
 [packages]
-fixed = [[
-  "cargo/sampo",
-  "npm/sampo",
-  "npm/sampo-linux-x64",
-  "npm/sampo-linux-arm64",
-  "npm/sampo-darwin-x64",
-  "npm/sampo-darwin-arm64",
-  "npm/sampo-win32-x64",
-]]
+fixed = [["cargo/sampo", "npm/sampo"]]
