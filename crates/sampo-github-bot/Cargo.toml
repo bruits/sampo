@@ -14,7 +14,7 @@ categories = ["development-tools"]
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-octocrab = "0.49"
+octocrab = "0.51"
 hmac = "0.13"
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
