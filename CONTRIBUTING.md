@@ -27,7 +27,7 @@ We're also committed to fostering a welcoming and respectful community. Any issu
 - **Check Clippy warnings.** Run `cargo clippy --all --all-targets` to ensure your code adheres to Rust's best practices.
 - **Run formatting.** Run `cargo fmt --all` to ensure your code is properly formatted.
 - **Write and run tests.** If you're adding new functionality or fixing a bug, please include tests to cover it. Run `cargo test --all` to ensure all existing tests pass.
-- **Write a changeset.** That's the whole point of Sampo! Run `sampo add` to create a new changeset file describing your changes.
+- **Write a changeset.** That's the whole point of Sampo! Run `sampo add` to describe anything that affects user-facing behaviour, public APIs, configuration, or output. Skip it only for internal-only changes users won't notice.
 - Prefer small, focused PRs that address a single issue or feature. Larger PRs can be harder to review, and can often be broken down into smaller, more manageable pieces.
 - PRs don't need to be perfect. Submit your best effort, and we will gladly assist in polishing the work.
 
