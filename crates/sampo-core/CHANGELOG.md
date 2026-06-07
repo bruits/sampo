@@ -1,5 +1,14 @@
 # sampo-core
 
+## 0.14.0 — 2026-06-07
+
+### Minor changes
+
+- [2b1b37a](https://github.com/bruits/sampo/commit/2b1b37aa3415ac983d7dbecf1f7041673cda8f01) Made git tag format configurable via new `tag_format` and `short_tags_format` options under `[git]`. Templates accept `{ecosystem}`, `{package_name}`, and `{version}`.
+  
+  `sampo publish` now also detects cross-ecosystem tag conflicts: it errors when two packages would produce the same git tag for the release in flight, and warns when packages share a name across ecosystems with a template that doesn't include `{ecosystem}` (a future version bump would silently collide). Both diagnostics suggest setting `tag_format = "{ecosystem}-{package_name}-v{version}"` as the fix. — Thanks @goulvenclech!
+- [473ee7f](https://github.com/bruits/sampo/commit/473ee7f3f94dad4bcc7fcf1ca03775861246cf74) **⚠️ breaking change:** Sampo no longer overwrites range constraints for internal dependencies (or skips them silently in some cases). During release planning, if a planned version bump doesn't satisfy a range constraint (e.g. bumping `foo` to `2.0.0` when another package requires `foo = "^1.0"`), you'll get either an error (for packages in `fixed` or `linked` groups) or a warning, instead of silently skipping. Pinned versions (e.g. `foo = "1.2.3"`) are still bumped automatically. — Thanks @goulvenclech!
+
 ## 0.13.3 — 2026-04-15
 
 ### Patch changes
