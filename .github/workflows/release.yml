@@ -92,7 +92,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - name: Configure npm auth
         env:
@@ -104,6 +103,12 @@ jobs:
             exit 1
           fi
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm_user="$(npm whoami --registry https://registry.npmjs.org 2>/dev/null || true)"
+          if [ -z "${npm_user}" ]; then
+            echo "Error: NPM_TOKEN is not a valid npm credential — regenerate it on the sampo environment." >&2
+            exit 1
+          fi
+          echo "npm authenticated as ${npm_user}"
 
       # Must run before the shim publish so its optionalDependencies resolve.
       - name: Publish npm platform packages
@@ -118,11 +123,11 @@ jobs:
             const path = "packages/sampo/package.json";
             const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
             const platforms = [
-              "sampo-linux-x64",
-              "sampo-linux-arm64",
-              "sampo-darwin-x64",
-              "sampo-darwin-arm64",
-              "sampo-win32-x64",
+              "@bruits/sampo-linux-x64",
+              "@bruits/sampo-linux-arm64",
+              "@bruits/sampo-darwin-x64",
+              "@bruits/sampo-darwin-arm64",
+              "@bruits/sampo-win32-x64",
             ];
             pkg.optionalDependencies = pkg.optionalDependencies || {};
             for (const name of platforms) pkg.optionalDependencies[name] = pkg.version;

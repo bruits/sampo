@@ -40,11 +40,11 @@ fi
 
 # rust-target : npm-package-name : os : cpu : binary
 mappings=(
-  "x86_64-unknown-linux-gnu:sampo-linux-x64:linux:x64:sampo"
-  "aarch64-unknown-linux-gnu:sampo-linux-arm64:linux:arm64:sampo"
-  "x86_64-apple-darwin:sampo-darwin-x64:darwin:x64:sampo"
-  "aarch64-apple-darwin:sampo-darwin-arm64:darwin:arm64:sampo"
-  "x86_64-pc-windows-msvc:sampo-win32-x64:win32:x64:sampo.exe"
+  "x86_64-unknown-linux-gnu:@bruits/sampo-linux-x64:linux:x64:sampo"
+  "aarch64-unknown-linux-gnu:@bruits/sampo-linux-arm64:linux:arm64:sampo"
+  "x86_64-apple-darwin:@bruits/sampo-darwin-x64:darwin:x64:sampo"
+  "aarch64-apple-darwin:@bruits/sampo-darwin-arm64:darwin:arm64:sampo"
+  "x86_64-pc-windows-msvc:@bruits/sampo-win32-x64:win32:x64:sampo.exe"
 )
 
 dry_run_flag=()
@@ -74,7 +74,8 @@ for entry in "${mappings[@]}"; do
     continue
   fi
 
-  pkg_dir="${work_root}/${name}"
+  # Strip the npm scope so the temp dir stays flat, not nested.
+  pkg_dir="${work_root}/${name##*/}"
   mkdir -p "${pkg_dir}/bin"
 
   tar -xzf "$archive" -C "${pkg_dir}/bin" "$binary"
@@ -124,7 +125,12 @@ for entry in "${mappings[@]}"; do
 EOF
 
   echo "publishing ${name}@${version} (${target})"
-  ( cd "$pkg_dir" && npm publish "${dry_run_flag[@]}" )
+  # `[@]+` avoids aborting on an empty array under `set -u` (bash < 4.4, e.g. macOS).
+  if ! ( cd "$pkg_dir" && npm publish ${dry_run_flag[@]+"${dry_run_flag[@]}"} ); then
+    echo "error: failed to publish ${name}@${version} (see npm error above)" >&2
+    echo "A first publish needs a token allowed to create new packages (e.g. a classic Automation token)." >&2
+    exit 1
+  fi
 done
 
 echo "platform package publish step complete (version ${version})"
