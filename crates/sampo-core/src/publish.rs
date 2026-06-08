@@ -608,6 +608,24 @@ mod tests {
         sync::{Mutex, MutexGuard, OnceLock},
     };
 
+    /// Initialise a git repo with a first commit so HEAD exists.
+    fn init_git_repo_for_test(path: &Path) {
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test User"],
+            vec!["add", "-A"],
+            vec!["commit", "-m", "Initial commit"],
+        ] {
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(path)
+                .status()
+                .expect("git command failed to run");
+            assert!(status.success(), "git {args:?} failed");
+        }
+    }
+
     fn make_package(kind: PackageKind, name: &str, version: &str) -> PackageInfo {
         PackageInfo {
             name: name.to_string(),
@@ -1634,44 +1652,6 @@ edition = "2021"
 
     #[test]
     fn tags_each_package_only_once() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("publishable-crate", "1.0.0")
@@ -1730,44 +1710,6 @@ edition = "2021"
 
     #[test]
     fn private_packages_not_tagged_without_publish() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("publishable-crate", "1.0.0")
@@ -1825,44 +1767,6 @@ edition = "2021"
 
     #[test]
     fn private_only_workspace_creates_tags() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         let mut workspace = TestWorkspace::new();
         // Create workspace with ONLY private packages
         workspace
@@ -1914,44 +1818,6 @@ edition = "2021"
 
     #[test]
     fn mixed_workspace_after_publish_creates_all_tags() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("publishable-crate", "1.0.0")
@@ -2003,43 +1869,6 @@ edition = "2021"
     fn private_versionless_npm_member_is_not_tagged() {
         // A versionless package would render a malformed tag like "npm-internal-v";
         // the private versioned root is still tagged.
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         let workspace = TestWorkspace::new();
         let root = &workspace.root;
 
@@ -2096,23 +1925,6 @@ edition = "2021"
         // Two versionless members with a tag_format omitting {package_name} both
         // render "npm-v", which would make check_tag_conflicts abort the whole
         // publish even though neither is ever tagged.
-        fn init_git_repo_for_test(path: &Path) {
-            for args in [
-                vec!["init"],
-                vec!["config", "user.email", "test@example.com"],
-                vec!["config", "user.name", "Test User"],
-                vec!["add", "-A"],
-                vec!["commit", "-m", "Initial commit"],
-            ] {
-                let status = Command::new("git")
-                    .args(&args)
-                    .current_dir(path)
-                    .status()
-                    .expect("git command failed to run");
-                assert!(status.success(), "git {args:?} failed");
-            }
-        }
-
         let workspace = TestWorkspace::new();
         let root = &workspace.root;
 
@@ -2143,48 +1955,29 @@ edition = "2021"
         workspace
             .run_publish(false)
             .expect("publish must not abort on a spurious versionless tag conflict");
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+
+        assert!(
+            tag_lines.contains(&"npm-v1.0.0"),
+            "private versioned root should still be tagged, got: {tag_lines:?}"
+        );
+        assert!(
+            !tag_lines.contains(&"npm-v"),
+            "versionless members must not produce a malformed 'npm-v' tag, got: {tag_lines:?}"
+        );
     }
 
     #[test]
     fn private_package_tagged_in_mixed_workspace() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         // Regression test for the bug identified in review:
         // "In a mixed workspace where a release affects only private crates (e.g., publish = false
         // internal services) while other publishable crates exist but had no version bump,
@@ -2236,44 +2029,6 @@ edition = "2021"
 
     #[test]
     fn no_tags_created_when_run_publish_without_new_versions() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         // CRITICAL REGRESSION TEST: Verify that run_publish called without any new releases
         // does NOT create tags. This simulates the "auto" mode workflow where run_publish
         // is called on every push to main, even when there are no changesets.
@@ -2356,44 +2111,6 @@ edition = "2021"
 
     #[test]
     fn private_package_tagged_when_bumped_in_mixed_workspace() {
-        fn init_git_repo_for_test(path: &Path) {
-            let status = Command::new("git")
-                .arg("init")
-                .current_dir(path)
-                .status()
-                .expect("failed to run git init");
-            assert!(status.success(), "git init failed");
-
-            let email_status = Command::new("git")
-                .args(["config", "user.email", "test@example.com"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user email");
-            assert!(email_status.success(), "git config user.email failed");
-
-            let name_status = Command::new("git")
-                .args(["config", "user.name", "Test User"])
-                .current_dir(path)
-                .status()
-                .expect("failed to configure git user name");
-            assert!(name_status.success(), "git config user.name failed");
-
-            // Create initial commit so HEAD exists
-            let add_status = Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git add");
-            assert!(add_status.success(), "git add failed");
-
-            let commit_status = Command::new("git")
-                .args(["commit", "-m", "Initial commit"])
-                .current_dir(path)
-                .status()
-                .expect("failed to run git commit");
-            assert!(commit_status.success(), "git commit failed");
-        }
-
         // Regression test for the exact scenario from the review:
         // "In a mixed workspace where a release affects only private crates (e.g., publish = false
         // internal services) while other publishable crates exist but had no version bump,

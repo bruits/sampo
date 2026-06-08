@@ -118,13 +118,10 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
                 );
                 continue;
             }
-            None => {
-                return Err(WorkspaceError::InvalidManifest(format!(
-                    "missing a project.version field in {}; add a static `version` \
-                     or declare it in `[project].dynamic`",
-                    manifest_path.display()
-                )));
-            }
+            // Keep versionless packages discoverable so the rest of the
+            // workspace stays usable; publish and tagging handle the empty
+            // version on their own.
+            None => String::new(),
         };
         let deps = collect_dependencies(&text);
 

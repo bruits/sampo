@@ -77,22 +77,39 @@ dependencies = []
 }
 
 #[test]
-fn discover_errors_on_missing_version() {
+fn discover_keeps_versionless_package() {
+    // A package missing its version must not abort discovery of the workspace.
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write_file(
         &root.join("pyproject.toml"),
         r#"
 [project]
-name = "broken-pkg"
+name = "workspace-root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+    write_file(
+        &root.join("packages/versionless-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "versionless-pkg"
 dependencies = []
 "#,
     );
 
-    let err = discover(root).expect_err("missing version should fail discovery");
+    let packages = discover(root).expect("versionless package must not abort discovery");
+    let versionless = packages
+        .iter()
+        .find(|p| p.name == "versionless-pkg")
+        .expect("versionless package should still be discovered");
+    assert_eq!(versionless.version, "", "version should be kept empty");
     assert!(
-        format!("{err}").contains("missing a project.version field"),
-        "unexpected error: {err}"
+        packages.iter().any(|p| p.name == "workspace-root"),
+        "sibling versioned package must remain discoverable"
     );
 }
 
