@@ -283,31 +283,23 @@ fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
     let value: toml::Value = toml::from_str(&text).map_err(|e| {
         SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
     })?;
+    Ok(manifest_allows_crates_io(&value))
+}
 
-    let pkg = match value.get("package").and_then(|v| v.as_table()) {
-        Some(p) => p,
-        None => return Ok(false),
+/// Whether a parsed Cargo manifest may be published to crates.io, per its
+/// `[package].publish` field.
+fn manifest_allows_crates_io(value: &toml::Value) -> bool {
+    let Some(pkg) = value.get("package").and_then(|v| v.as_table()) else {
+        return false;
     };
-
-    // If publish = false => skip
-    if let Some(val) = pkg.get("publish") {
-        match val {
-            toml::Value::Boolean(false) => return Ok(false),
-            toml::Value::Array(arr) => {
-                // Only publish if the array contains "crates-io"
-                // (Cargo uses this to whitelist registries.)
-                let allowed: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect();
-                return Ok(allowed.iter().any(|s| s == "crates-io"));
-            }
-            _ => {}
-        }
+    match pkg.get("publish") {
+        Some(toml::Value::Boolean(false)) => false,
+        Some(toml::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|s| s == "crates-io"),
+        _ => true,
     }
-
-    // Default case: publishable
-    Ok(true)
 }
 
 /// Query crates.io API to check if a specific version already exists.
@@ -1267,6 +1259,10 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
             })?
             .to_string();
         let version = resolve_package_version(pkg, &workspace_version, &manifest_path)?;
+        // A non-publishable, versionless crate is not a release target.
+        if version.is_empty() && !manifest_allows_crates_io(&value) {
+            continue;
+        }
         name_to_path.insert(name.clone(), member_dir.clone());
         crates.push((name, version, member_dir.clone(), value));
     }

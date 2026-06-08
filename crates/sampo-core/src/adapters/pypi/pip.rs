@@ -98,13 +98,31 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
             WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
         })?;
         let meta = parse_project_metadata(&text);
+        let dynamic_version = meta.dynamic_version;
         let name = meta.name.ok_or_else(|| {
             WorkspaceError::InvalidManifest(format!(
                 "missing project.name in {}",
                 manifest_path.display()
             ))
         })?;
-        let version = meta.version.unwrap_or_default();
+        let version = match meta.version {
+            Some(version) => version,
+            // Sampo owns the version in the manifest and cannot bump a
+            // build-time dynamic version, so it cannot manage this package.
+            None if dynamic_version => {
+                eprintln!(
+                    "Warning: skipping '{}' ({}): its version is dynamic (PEP 621 `dynamic`); \
+                     pin a static `[project].version` for Sampo to manage it",
+                    name,
+                    manifest_path.display()
+                );
+                continue;
+            }
+            // Keep versionless packages discoverable so the rest of the
+            // workspace stays usable; publish and tagging handle the empty
+            // version on their own.
+            None => String::new(),
+        };
         let deps = collect_dependencies(&text);
 
         let normalized = normalize_package_name(&name);
@@ -203,7 +221,7 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
 
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let ProjectMetadata { name, version } = parse_project_metadata(&text);
+    let ProjectMetadata { name, version, .. } = parse_project_metadata(&text);
     let package = name.ok_or_else(|| {
         SampoError::Publish(format!(
             "Manifest {} is missing a project.name field",
@@ -403,6 +421,8 @@ pub(super) fn update_manifest_versions(
 struct ProjectMetadata {
     name: Option<String>,
     version: Option<String>,
+    /// Whether `version` is declared in PEP 621 `dynamic` rather than set statically.
+    dynamic_version: bool,
 }
 
 /// Parse PEP 621 [project] table metadata from pyproject.toml
@@ -421,6 +441,11 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
         if let Some(version) = project.get("version").and_then(Item::as_str) {
             metadata.version = Some(version.to_string());
         }
+        metadata.dynamic_version = project
+            .get("dynamic")
+            .and_then(Item::as_array)
+            .map(|arr| arr.iter().any(|v| v.as_str() == Some("version")))
+            .unwrap_or(false);
     }
 
     metadata

@@ -93,6 +93,86 @@ fn cargo_discoverer_discovers_packages() {
 }
 
 #[test]
+fn cargo_discover_skips_non_publishable_versionless_crate() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("container")).unwrap();
+    fs::create_dir_all(crates_dir.join("real")).unwrap();
+    fs::write(
+        crates_dir.join("container/Cargo.toml"),
+        "[package]\nname = \"container\"\npublish = false\n",
+    )
+    .unwrap();
+    fs::write(
+        crates_dir.join("real/Cargo.toml"),
+        "[package]\nname = \"real\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        !names.contains(&"container"),
+        "non-publishable versionless crate should be skipped: {names:?}"
+    );
+    assert!(names.contains(&"real"));
+}
+
+#[test]
+fn cargo_discover_keeps_non_publishable_versioned_crate() {
+    // A versioned `publish = false` crate is still tracked and tagged, just not published.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("private-app")).unwrap();
+    fs::write(
+        crates_dir.join("private-app/Cargo.toml"),
+        "[package]\nname = \"private-app\"\nversion = \"1.0.0\"\npublish = false\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let pkg = packages
+        .iter()
+        .find(|p| p.name == "private-app")
+        .expect("versioned non-publishable crate should still be discovered");
+    assert_eq!(pkg.version, "1.0.0");
+}
+
+#[test]
+fn cargo_discover_keeps_publishable_versionless_crate() {
+    // Kept discovered so publish errors loudly rather than silently dropping it.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("no-version")).unwrap();
+    fs::write(
+        crates_dir.join("no-version/Cargo.toml"),
+        "[package]\nname = \"no-version\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    assert!(packages.iter().any(|p| p.name == "no-version"));
+}
+
+#[test]
 fn cargo_discoverer_discovers_single_package() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

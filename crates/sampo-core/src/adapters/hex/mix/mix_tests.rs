@@ -44,6 +44,123 @@ end
 }
 
 #[test]
+fn discover_skips_non_publishable_versionless_app() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("mix.exs"),
+        r#"
+defmodule Umbrella.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      apps_path: "apps",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    write_file(
+        &root.join("apps/container/mix.exs"),
+        r#"
+defmodule Container.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :container,
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    write_file(
+        &root.join("apps/real/mix.exs"),
+        r#"
+defmodule Real.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :real,
+      version: "0.1.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        !names.contains(&"container"),
+        "non-publishable versionless app should be skipped: {names:?}"
+    );
+    assert!(names.contains(&"real"));
+}
+
+#[test]
+fn discover_keeps_publishable_versionless_app() {
+    // An app with `package/0` but no version is misconfigured, not a container:
+    // kept discovered so publish errors loudly rather than silently dropping it.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("mix.exs"),
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      package: package(),
+      deps: deps()
+    ]
+  end
+
+  defp package do
+    [
+      description: "A test package",
+      licenses: ["MIT"]
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let pkg = packages
+        .iter()
+        .find(|p| p.name == "example")
+        .expect("publishable app without a version should still be discovered");
+    assert_eq!(pkg.version, "");
+}
+
+#[test]
 fn discover_umbrella_projects_with_internal_path_deps() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

@@ -33,6 +33,87 @@ dependencies = []
 }
 
 #[test]
+fn discover_skips_dynamic_version_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+    write_file(
+        &root.join("packages/dynamic-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "dynamic-pkg"
+dynamic = ["version"]
+dependencies = []
+"#,
+    );
+    write_file(
+        &root.join("packages/static-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "static-pkg"
+version = "0.1.0"
+dependencies = []
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        !names.contains(&"dynamic-pkg"),
+        "dynamic-version package should be skipped: {names:?}"
+    );
+    assert!(names.contains(&"workspace-root"));
+    assert!(names.contains(&"static-pkg"));
+}
+
+#[test]
+fn discover_keeps_versionless_package() {
+    // A package missing its version must not abort discovery of the workspace.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+    write_file(
+        &root.join("packages/versionless-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "versionless-pkg"
+dependencies = []
+"#,
+    );
+
+    let packages = discover(root).expect("versionless package must not abort discovery");
+    let versionless = packages
+        .iter()
+        .find(|p| p.name == "versionless-pkg")
+        .expect("versionless package should still be discovered");
+    assert_eq!(versionless.version, "", "version should be kept empty");
+    assert!(
+        packages.iter().any(|p| p.name == "workspace-root"),
+        "sibling versioned package must remain discoverable"
+    );
+}
+
+#[test]
 fn discover_uv_workspace_packages() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

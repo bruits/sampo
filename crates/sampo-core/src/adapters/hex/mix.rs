@@ -60,6 +60,7 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
             WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
         })?;
         let meta = parse_project_metadata(&text);
+        let has_package_config = meta.has_package_config;
         let app = meta.app.ok_or_else(|| {
             WorkspaceError::InvalidManifest(format!(
                 "missing app name in {}",
@@ -67,6 +68,11 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
             ))
         })?;
         let version = meta.version.unwrap_or_default();
+        // A non-publishable (no `package/0`), versionless app is a workspace
+        // container, not a release target.
+        if version.is_empty() && !has_package_config {
+            continue;
+        }
         let deps = collect_dependencies(&text, &dir);
 
         name_to_path.insert(app.clone(), dir.clone());
