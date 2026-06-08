@@ -1258,14 +1258,27 @@ fn discover_npm(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceE
         }
     }
 
-    if let Some(manifest) = &root_manifest
-        && manifest
+    if let Some(manifest) = &root_manifest {
+        let has_name = manifest
             .get("name")
             .and_then(JsonValue::as_str)
             .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
-    {
-        package_dirs.insert(root.to_path_buf());
+            .unwrap_or(false);
+        let is_private = manifest
+            .get("private")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        let has_version = manifest
+            .get("version")
+            .and_then(JsonValue::as_str)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+
+        // A private, versionless root is a workspace container, not a release target.
+        let is_private_versionless_container = is_private && !has_version;
+        if has_name && !is_private_versionless_container {
+            package_dirs.insert(root.to_path_buf());
+        }
     }
 
     let mut manifests: Vec<(String, String, PathBuf, JsonValue)> = Vec::new();

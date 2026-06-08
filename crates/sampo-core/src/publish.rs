@@ -131,7 +131,14 @@ pub fn run_publish(
         });
     }
 
-    for warning in check_tag_conflicts(&config, &all_non_ignored)? {
+    // Versionless packages are never tagged, so skip them in conflict detection
+    // to avoid a spurious abort.
+    let taggable: Vec<&PackageInfo> = all_non_ignored
+        .iter()
+        .copied()
+        .filter(|p| !p.version.trim().is_empty())
+        .collect();
+    for warning in check_tag_conflicts(&config, &taggable)? {
         eprintln!("Warning: {warning}");
     }
 
@@ -247,6 +254,7 @@ pub fn run_publish(
         adapter.publish(manifest.as_path(), dry_run, &args)?;
         any_published = true;
 
+        // Publishable packages always carry a version, so the tag is well-formed.
         let tag = config.build_tag_name(package.kind, &package.name, &package.version);
 
         // Tag immediately after successful publish to ensure partial failures still tag what succeeded
@@ -284,6 +292,14 @@ pub fn run_publish(
     let mut private_packages_to_tag: Vec<&PackageInfo> = Vec::new();
     for package in &all_non_ignored {
         if publishable.contains(package.canonical_identifier()) {
+            continue;
+        }
+        // Never tag a versionless package; it would render a malformed tag like "npm-foo-v".
+        if package.version.trim().is_empty() {
+            eprintln!(
+                "Warning: skipping tag for '{}' because it has no version",
+                package.canonical_identifier()
+            );
             continue;
         }
         if !package_tag_exists(
@@ -1981,6 +1997,152 @@ edition = "2021"
             tag_lines.contains(&"private-crate-v1.0.0"),
             "Private tag should have been created because publishable package was published"
         );
+    }
+
+    #[test]
+    fn private_versionless_npm_member_is_not_tagged() {
+        // A versionless package would render a malformed tag like "npm-internal-v";
+        // the private versioned root is still tagged.
+        fn init_git_repo_for_test(path: &Path) {
+            let status = Command::new("git")
+                .arg("init")
+                .current_dir(path)
+                .status()
+                .expect("failed to run git init");
+            assert!(status.success(), "git init failed");
+
+            let email_status = Command::new("git")
+                .args(["config", "user.email", "test@example.com"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user email");
+            assert!(email_status.success(), "git config user.email failed");
+
+            let name_status = Command::new("git")
+                .args(["config", "user.name", "Test User"])
+                .current_dir(path)
+                .status()
+                .expect("failed to configure git user name");
+            assert!(name_status.success(), "git config user.name failed");
+
+            let add_status = Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git add");
+            assert!(add_status.success(), "git add failed");
+
+            let commit_status = Command::new("git")
+                .args(["commit", "-m", "Initial commit"])
+                .current_dir(path)
+                .status()
+                .expect("failed to run git commit");
+            assert!(commit_status.success(), "git commit failed");
+        }
+
+        let workspace = TestWorkspace::new();
+        let root = &workspace.root;
+
+        // Private + versioned: not published, but still tagged.
+        fs::write(
+            root.join("package.json"),
+            r#"{ "name": "root-app", "version": "1.0.0", "private": true, "workspaces": ["packages/*"] }"#,
+        )
+        .unwrap();
+
+        // Private, versionless member: discovered with an empty version, must be skipped.
+        let member = root.join("packages/internal");
+        fs::create_dir_all(&member).unwrap();
+        fs::write(
+            member.join("package.json"),
+            r#"{ "name": "internal", "private": true }"#,
+        )
+        .unwrap();
+
+        // Ecosystem-prefixed format: a versionless tag would render "npm-internal-v".
+        workspace.set_config(
+            "[git]\nrelease_branches = [\"main\"]\ntag_format = \"{ecosystem}-{package_name}-v{version}\"\n",
+        );
+
+        init_git_repo_for_test(root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("tag")
+            .arg("--list")
+            .output()
+            .expect("git tag list should succeed");
+        let tags = String::from_utf8_lossy(&output.stdout);
+        let tag_lines: Vec<&str> = tags.lines().collect();
+
+        assert!(
+            tag_lines.contains(&"npm-root-app-v1.0.0"),
+            "private versioned root should still be tagged, got: {tag_lines:?}"
+        );
+        assert!(
+            !tag_lines.iter().any(|t| t.ends_with("-v")),
+            "versionless private member must not be tagged, got: {tag_lines:?}"
+        );
+    }
+
+    #[test]
+    fn two_versionless_members_no_spurious_conflict() {
+        // Two versionless members with a tag_format omitting {package_name} both
+        // render "npm-v", which would make check_tag_conflicts abort the whole
+        // publish even though neither is ever tagged.
+        fn init_git_repo_for_test(path: &Path) {
+            for args in [
+                vec!["init"],
+                vec!["config", "user.email", "test@example.com"],
+                vec!["config", "user.name", "Test User"],
+                vec!["add", "-A"],
+                vec!["commit", "-m", "Initial commit"],
+            ] {
+                let status = Command::new("git")
+                    .args(&args)
+                    .current_dir(path)
+                    .status()
+                    .expect("git command failed to run");
+                assert!(status.success(), "git {args:?} failed");
+            }
+        }
+
+        let workspace = TestWorkspace::new();
+        let root = &workspace.root;
+
+        // Private versioned root so the run is a valid no-op publish.
+        fs::write(
+            root.join("package.json"),
+            r#"{ "name": "root-app", "version": "1.0.0", "private": true, "workspaces": ["packages/*"] }"#,
+        )
+        .unwrap();
+
+        for member_name in ["internal-a", "internal-b"] {
+            let member = root.join("packages").join(member_name);
+            fs::create_dir_all(&member).unwrap();
+            fs::write(
+                member.join("package.json"),
+                format!(r#"{{ "name": "{member_name}", "private": true }}"#),
+            )
+            .unwrap();
+        }
+
+        workspace.set_config(
+            "[git]\nrelease_branches = [\"main\"]\ntag_format = \"{ecosystem}-v{version}\"\n",
+        );
+
+        init_git_repo_for_test(root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        workspace
+            .run_publish(false)
+            .expect("publish must not abort on a spurious versionless tag conflict");
     }
 
     #[test]

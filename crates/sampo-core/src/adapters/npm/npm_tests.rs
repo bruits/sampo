@@ -394,6 +394,122 @@ fn npm_adapter_discovers_workspace_members_and_internal_deps() {
 }
 
 #[test]
+fn npm_discover_excludes_private_versionless_root() {
+    // A discovered container would render a malformed versionless tag like
+    // "npm-root-monorepo-v" and get released.
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "root-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+"#,
+    )
+    .unwrap();
+
+    let packages_dir = root.join("packages");
+    fs::create_dir_all(packages_dir.join("pkg-a")).unwrap();
+    fs::write(
+        packages_dir.join("pkg-a/package.json"),
+        r#"{
+  "name": "pkg-a",
+  "version": "1.0.0"
+}
+"#,
+    )
+    .unwrap();
+
+    let packages = NpmAdapter.discover(root).unwrap();
+
+    assert!(
+        !packages.iter().any(|p| p.name == "root-monorepo"),
+        "private versionless root must be excluded from discovery"
+    );
+    assert!(
+        packages.iter().any(|p| p.name == "pkg-a"),
+        "real workspace members must still be discovered"
+    );
+}
+
+#[test]
+fn npm_discover_includes_private_versioned_root() {
+    // A private versioned root is still tagged even though it is never published.
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "root-monorepo",
+  "version": "2.0.0",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+"#,
+    )
+    .unwrap();
+
+    let packages_dir = root.join("packages");
+    fs::create_dir_all(packages_dir.join("pkg-a")).unwrap();
+    fs::write(
+        packages_dir.join("pkg-a/package.json"),
+        r#"{
+  "name": "pkg-a",
+  "version": "1.0.0"
+}
+"#,
+    )
+    .unwrap();
+
+    let packages = NpmAdapter.discover(root).unwrap();
+    let root_pkg = packages
+        .iter()
+        .find(|p| p.name == "root-monorepo")
+        .expect("private versioned root must still be discovered");
+    assert_eq!(root_pkg.version, "2.0.0");
+}
+
+#[test]
+fn npm_discover_includes_public_versionless_root() {
+    // A public versionless root stays discovered so publish still errors on the
+    // missing version rather than silently dropping it.
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "root-monorepo",
+  "workspaces": ["packages/*"]
+}
+"#,
+    )
+    .unwrap();
+
+    let packages_dir = root.join("packages");
+    fs::create_dir_all(packages_dir.join("pkg-a")).unwrap();
+    fs::write(
+        packages_dir.join("pkg-a/package.json"),
+        r#"{
+  "name": "pkg-a",
+  "version": "1.0.0"
+}
+"#,
+    )
+    .unwrap();
+
+    let packages = NpmAdapter.discover(root).unwrap();
+    assert!(
+        packages.iter().any(|p| p.name == "root-monorepo"),
+        "public versionless root must still be discovered"
+    );
+}
+
+#[test]
 fn updates_package_json_versions_preserving_formatting() {
     let input = r#"{
   "name": "app",

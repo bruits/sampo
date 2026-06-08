@@ -33,6 +33,70 @@ dependencies = []
 }
 
 #[test]
+fn discover_skips_dynamic_version_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+    );
+    write_file(
+        &root.join("packages/dynamic-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "dynamic-pkg"
+dynamic = ["version"]
+dependencies = []
+"#,
+    );
+    write_file(
+        &root.join("packages/static-pkg/pyproject.toml"),
+        r#"
+[project]
+name = "static-pkg"
+version = "0.1.0"
+dependencies = []
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert!(
+        !names.contains(&"dynamic-pkg"),
+        "dynamic-version package should be skipped: {names:?}"
+    );
+    assert!(names.contains(&"workspace-root"));
+    assert!(names.contains(&"static-pkg"));
+}
+
+#[test]
+fn discover_errors_on_missing_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "broken-pkg"
+dependencies = []
+"#,
+    );
+
+    let err = discover(root).expect_err("missing version should fail discovery");
+    assert!(
+        format!("{err}").contains("missing a project.version field"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn discover_uv_workspace_packages() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

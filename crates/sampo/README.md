@@ -216,6 +216,9 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 
 `ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust crates or `"private": true` in a workspace `package.json` for npm packages. By default, Sampo still tracks versioning and changelogs for those packages, but will not attempt to publish them to their registries.
 
+> [!NOTE]
+> This tracking still requires a declared `version`. A package that is both not publishable **and** has no `version` (typically a workspace root used as a container) is skipped entirely, so it never gets a version tag or release.
+
 `ignore`: A list of glob-like patterns to ignore packages by canonical identifier, plain name, or relative path. `*` matches any sequence. Examples:
 
 - `cargo/internal-*`: ignores Cargo packages with names like `internal-tool`.
