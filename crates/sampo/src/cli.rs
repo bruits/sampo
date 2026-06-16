@@ -28,6 +28,7 @@ pub enum Commands {
     Pre(PreArgs),
 
     /// Update Sampo CLI to the latest version
+    #[cfg(feature = "self-update")]
     Update(UpdateArgs),
 }
 
@@ -122,6 +123,7 @@ pub struct PreExitArgs {
     pub package: Vec<String>,
 }
 
+#[cfg(feature = "self-update")]
 #[derive(Debug, Args, Default)]
 pub struct UpdateArgs {
     /// Skip confirmation prompt
@@ -329,51 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_update() {
-        let cli = Cli::try_parse_from(["sampo", "update"]).unwrap();
-        match cli.command {
-            Commands::Update(args) => assert!(!args.yes),
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn parses_update_with_yes() {
-        let cli = Cli::try_parse_from(["sampo", "update", "--yes"]).unwrap();
-        match cli.command {
-            Commands::Update(args) => {
-                assert!(args.yes);
-                assert!(!args.pre);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn parses_update_with_pre() {
-        let cli = Cli::try_parse_from(["sampo", "update", "--pre"]).unwrap();
-        match cli.command {
-            Commands::Update(args) => {
-                assert!(!args.yes);
-                assert!(args.pre);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn parses_update_with_yes_and_pre() {
-        let cli = Cli::try_parse_from(["sampo", "update", "--yes", "--pre"]).unwrap();
-        match cli.command {
-            Commands::Update(args) => {
-                assert!(args.yes);
-                assert!(args.pre);
-            }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
     fn parses_publish_cargo_args_with_hyphen_values() {
         let cli = Cli::try_parse_from([
             "sampo",
@@ -440,6 +397,56 @@ mod tests {
                 );
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[cfg(feature = "self-update")]
+    mod update {
+        use super::*;
+
+        #[test]
+        fn parses_update() {
+            let cli = Cli::try_parse_from(["sampo", "update"]).unwrap();
+            match cli.command {
+                Commands::Update(args) => assert!(!args.yes),
+                _ => panic!("wrong variant"),
+            }
+        }
+
+        #[test]
+        fn parses_update_with_yes() {
+            let cli = Cli::try_parse_from(["sampo", "update", "--yes"]).unwrap();
+            match cli.command {
+                Commands::Update(args) => {
+                    assert!(args.yes);
+                    assert!(!args.pre);
+                }
+                _ => panic!("wrong variant"),
+            }
+        }
+
+        #[test]
+        fn parses_update_with_pre() {
+            let cli = Cli::try_parse_from(["sampo", "update", "--pre"]).unwrap();
+            match cli.command {
+                Commands::Update(args) => {
+                    assert!(!args.yes);
+                    assert!(args.pre);
+                }
+                _ => panic!("wrong variant"),
+            }
+        }
+
+        #[test]
+        fn parses_update_with_yes_and_pre() {
+            let cli = Cli::try_parse_from(["sampo", "update", "--yes", "--pre"]).unwrap();
+            match cli.command {
+                Commands::Update(args) => {
+                    assert!(args.yes);
+                    assert!(args.pre);
+                }
+                _ => panic!("wrong variant"),
+            }
         }
     }
 }
