@@ -9,12 +9,15 @@ use sampo_core::{
 };
 use std::io;
 
+// Only consumed by the self-update flow (see `update.rs`)
+#[cfg(feature = "self-update")]
 pub const INFO_PREFIX: &str = "→";
 pub const SUCCESS_PREFIX: &str = "✔";
 pub const WARNING_PREFIX: &str = "⚠";
 pub const HINT_PREFIX: &str = "💡";
 const EMPTY_SELECTION_PLACEHOLDER: &str = "(none)";
 
+#[cfg(feature = "self-update")]
 pub fn log_info(message: &str) {
     let prefix = style(INFO_PREFIX.to_string());
     let message_style = Style::new();
