@@ -6,6 +6,7 @@ mod prerelease;
 mod publish;
 mod release;
 mod ui;
+#[cfg(feature = "self-update")]
 mod update;
 mod version_check;
 
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
                 return exit::ERROR;
             }
         },
+        #[cfg(feature = "self-update")]
         Commands::Update(args) => match update::run(&args) {
             Ok(true) => {}
             Ok(false) => return exit::no_changes(),
@@ -117,7 +119,11 @@ fn check_and_notify_update() {
         version_check::check_for_updates()
     {
         ui::log_hint(&format!(
-            "A new version of Sampo is available: {current} → {latest}. Run `sampo update` to update."
+            "A new version of Sampo is available: {current} → {latest}."
         ));
+
+        if cfg!(feature = "self-update") {
+            ui::log_hint("Run `sampo update` to update.");
+        }
     }
 }

@@ -26,7 +26,7 @@ sampo-core = { version = "0.14.0", path = "../sampo-core" }
 clap = { version = "4.6", features = ["derive"] }
 dialoguer = { version = "0.12", default-features = true }
 dirs = "6.0.0"
-self_update = { version = "0.44", default-features = false, features = [
+self_update = { version = "0.44", optional = true, default-features = false, features = [
     "archive-tar",
     "compression-flate2",
     "reqwest",
@@ -35,6 +35,10 @@ self_update = { version = "0.44", default-features = false, features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = ["self-update"]
+self-update = ["dep:self_update"]
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/cargo-{ name }-v{ version }/{ name }-{ version }-{ target }{ archive-suffix }"

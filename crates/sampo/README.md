@@ -245,15 +245,15 @@ Sampo detects packages within the same repository that depend on each other and 
 
 All commands should be run from the root of the repository:
 
-| Command         | Description                                                               |
-| --------------- | ------------------------------------------------------------------------- |
-| `sampo help`    | Show commands or the help of the given subcommand(s)                      |
-| `sampo init`    | Initialize Sampo in the current repository                                |
-| `sampo add`     | Create a new changeset                                                    |
-| `sampo pre`     | Manage pre-release versions (enter or exit pre-release mode)              |
-| `sampo release` | Consume changesets, and prepare release(s) (bump versions and changelogs) |
-| `sampo publish` | Publish packages to registries and tag current versions                   |
-| `sampo update`  | Update Sampo CLI to the latest version                                    |
+| Command         | Description                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| `sampo help`    | Show commands or the help of the given subcommand(s)                                           |
+| `sampo init`    | Initialize Sampo in the current repository                                                     |
+| `sampo add`     | Create a new changeset                                                                         |
+| `sampo pre`     | Manage pre-release versions (enter or exit pre-release mode)                                   |
+| `sampo release` | Consume changesets, and prepare release(s) (bump versions and changelogs)                      |
+| `sampo publish` | Publish packages to registries and tag current versions                                        |
+| `sampo update`  | Update Sampo CLI to the latest version. Optional: can be disabled with `--no-default-features` |
 
 For detailed command options, use `sampo help <command>` or `sampo <command> --help`.
 
