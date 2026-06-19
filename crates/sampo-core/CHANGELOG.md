@@ -1,5 +1,11 @@
 # sampo-core
 
+## 0.14.1 — 2026-06-19
+
+### Patch changes
+
+- [1ee9aa2](https://github.com/bruits/sampo/commit/1ee9aa26729c5333599fe55d1945cadda2433cd7) Fixed `sampo publish` creating a spurious git tag and GitHub release for non-publishable, versionless packages (workspace containers and other packages marked as non-publishable without a declared version). Non-publishable but versioned packages are still tagged as before. — Thanks @goulvenclech!
+
 ## 0.14.0 — 2026-06-07
 
 ### Minor changes
