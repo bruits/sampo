@@ -13,7 +13,7 @@
 
 ### Patch changes
 
-- [042f263](https://github.com/bruits/sampo/commit/042f26354212981f462597d8355c63b90aad433c) In JavaScript (npm) projects, added support for Bun's new plaintext `bun.lock` lockfile format. — Thanks @davidroeca for your first contribution 🎉!
+- [042f263](https://github.com/bruits/sampo/commit/042f26354212981f462597d8355c63b90aad433c) In JavaScript/TypeScript (npm) projects, added support for Bun's new plaintext `bun.lock` lockfile format. — Thanks @davidroeca for your first contribution 🎉!
 - [914328a](https://github.com/bruits/sampo/commit/914328a066311c92015409b1a18ac23295aef7be) In Cargo projects, fixed unnecessarily adding versions to path-only dev dependencies, which caused publish failures when the dev dependency was also bumped in the same release. — Thanks @Princesseuh!
 
 ## 0.13.2 — 2026-04-10
@@ -238,4 +238,3 @@
 ### Minor changes
 
 - [78515cc](https://github.com/bruits/sampo/commit/78515ccfbf53dcd952dc7f7e7716c0f0a5fc82b6) Initial release of `sampo-core`, a foundational crate providing core logic, common types, and internal utilities shared across all Sampo crates. — Thanks Goulven Clec'h!
-

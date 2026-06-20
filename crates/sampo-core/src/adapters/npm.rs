@@ -773,8 +773,10 @@ fn version_exists_on_registry(
         .build()
         .map_err(|err| SampoError::Publish(format!("failed to build HTTP client: {}", err)))?;
 
-    let response = client
-        .get(url.clone())
+    // Private registries may require auth even for reads; this direct HTTP call
+    // can't rely on the package manager's .npmrc.
+    let token = npm_auth_token();
+    let response = version_check_request(&client, url.clone(), token.as_deref())
         .send()
         .map_err(|err| SampoError::Publish(format!("HTTP request to {} failed: {}", url, err)))?;
 
@@ -798,6 +800,18 @@ fn version_exists_on_registry(
         Ok(versions.contains_key(version))
     } else if status == StatusCode::NOT_FOUND {
         Ok(false)
+    } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        let hint = if token.is_some() {
+            "the provided NPM_TOKEN/NODE_AUTH_TOKEN was rejected"
+        } else {
+            "set NPM_TOKEN or NODE_AUTH_TOKEN to authenticate reads against a private registry"
+        };
+        let body = response.text().unwrap_or_default();
+        let snippet: String = body.trim().chars().take(400).collect();
+        Err(SampoError::Publish(format!(
+            "Registry {} returned {} ({}): {}",
+            url, status, hint, snippet
+        )))
     } else if status == StatusCode::TOO_MANY_REQUESTS {
         let retry_after = response
             .headers()
@@ -817,6 +831,32 @@ fn version_exists_on_registry(
             "Registry {} returned {}: {}",
             url, status, snippet
         )))
+    }
+}
+
+/// `NPM_TOKEN` takes precedence over `NODE_AUTH_TOKEN`; `None` when neither is set.
+fn npm_auth_token() -> Option<String> {
+    resolve_npm_auth_token(|key| std::env::var(key).ok())
+}
+
+fn resolve_npm_auth_token(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    ["NPM_TOKEN", "NODE_AUTH_TOKEN"]
+        .into_iter()
+        .find_map(|key| {
+            let trimmed = lookup(key)?.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+}
+
+fn version_check_request(
+    client: &reqwest::blocking::Client,
+    url: reqwest::Url,
+    token: Option<&str>,
+) -> reqwest::blocking::RequestBuilder {
+    let request = client.get(url);
+    match token {
+        Some(token) => request.bearer_auth(token),
+        None => request,
     }
 }
 
