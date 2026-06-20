@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 /// Determines whether a package should be ignored based on configuration.
 ///
 /// Rules:
-/// - When `ignore_unpublished` is true, skip packages that are not publishable to crates.io
+/// - When `ignore_unpublished` is true, skip packages that are not publishable to any registry
 /// - When `ignore` contains patterns, skip packages matching by name or workspace-relative path
 pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -> Result<bool> {
     // 1) ignore_unpublished

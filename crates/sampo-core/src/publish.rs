@@ -1505,14 +1505,23 @@ fn main() {
         .unwrap();
         assert!(!adapter.is_publishable(&manifest_false).unwrap());
 
-        // Test publish = ["custom-registry"] (not crates-io)
+        // Test publish = ["custom-registry"] (alternative registry)
         let manifest_custom = temp_dir.path().join("custom.toml");
         fs::write(
             &manifest_custom,
             "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = [\"custom-registry\"]\n",
         )
         .unwrap();
-        assert!(!adapter.is_publishable(&manifest_custom).unwrap());
+        assert!(adapter.is_publishable(&manifest_custom).unwrap());
+
+        // Test publish = [] (empty list)
+        let manifest_empty = temp_dir.path().join("empty.toml");
+        fs::write(
+            &manifest_empty,
+            "[package]\nname=\"test\"\nversion=\"0.1.0\"\npublish = []\n",
+        )
+        .unwrap();
+        assert!(!adapter.is_publishable(&manifest_empty).unwrap());
 
         // Test publish = ["crates-io"] (explicitly allowed)
         let manifest_allowed = temp_dir.path().join("allowed.toml");
