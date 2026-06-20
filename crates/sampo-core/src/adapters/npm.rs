@@ -81,9 +81,10 @@ impl NpmAdapter {
                     package_name,
                     version,
                     info.publish_config.registry.as_deref(),
+                    path.parent(),
                 )
             }
-            None => version_exists_on_registry(package_name, version, None),
+            None => version_exists_on_registry(package_name, version, None, None),
         }
     }
 
@@ -757,6 +758,7 @@ fn version_exists_on_registry(
     package_name: &str,
     version: &str,
     registry_override: Option<&str>,
+    manifest_dir: Option<&Path>,
 ) -> Result<bool> {
     enforce_registry_rate_limit();
 
@@ -801,16 +803,14 @@ fn version_exists_on_registry(
     } else if status == StatusCode::NOT_FOUND {
         Ok(false)
     } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        let hint = if token.is_some() {
-            "the provided NPM_TOKEN/NODE_AUTH_TOKEN was rejected"
-        } else {
-            "set NPM_TOKEN or NODE_AUTH_TOKEN to authenticate reads against a private registry"
-        };
+        if should_fall_back_to_npmrc(token.is_some()) {
+            return version_exists_via_npm(package_name, version, registry_override, manifest_dir);
+        }
         let body = response.text().unwrap_or_default();
         let snippet: String = body.trim().chars().take(400).collect();
         Err(SampoError::Publish(format!(
-            "Registry {} returned {} ({}): {}",
-            url, status, hint, snippet
+            "Registry {} returned {} (the provided NPM_TOKEN/NODE_AUTH_TOKEN was rejected): {}",
+            url, status, snippet
         )))
     } else if status == StatusCode::TOO_MANY_REQUESTS {
         let retry_after = response
@@ -857,6 +857,71 @@ fn version_check_request(
     match token {
         Some(token) => request.bearer_auth(token),
         None => request,
+    }
+}
+
+/// Fall back to `.npmrc` only when no env token was set; a rejected token
+/// surfaces the error instead of silently retrying through another mechanism.
+fn should_fall_back_to_npmrc(token_present: bool) -> bool {
+    !token_present
+}
+
+/// Delegate the existence check to `npm`, reusing its `.npmrc` resolution instead
+/// of reimplementing it. Runs in the package directory so a project `.npmrc` is
+/// picked up; `npm` is used regardless of workspace manager since pnpm, bun, and
+/// Yarn Classic also read `.npmrc`.
+fn version_exists_via_npm(
+    package_name: &str,
+    version: &str,
+    registry_override: Option<&str>,
+    manifest_dir: Option<&Path>,
+) -> Result<bool> {
+    let spec = format!("{package_name}@{version}");
+    let mut cmd = command("npm");
+    cmd.args(npm_view_args(&spec, registry_override));
+    if let Some(dir) = manifest_dir {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            SampoError::Publish(format!(
+                "npm not found in PATH; it is needed to read .npmrc when checking '{spec}' against a private registry. Set NPM_TOKEN/NODE_AUTH_TOKEN or install npm."
+            ))
+        } else {
+            SampoError::Io(err)
+        }
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    interpret_npm_view(
+        output.status.success(),
+        stdout.as_ref(),
+        stderr.as_ref(),
+        &spec,
+    )
+}
+
+fn npm_view_args(spec: &str, registry_override: Option<&str>) -> Vec<String> {
+    let mut args = vec!["view".to_string(), spec.to_string(), "version".to_string()];
+    if let Some(registry) = registry_override.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--registry".to_string());
+        args.push(registry.to_string());
+    }
+    args
+}
+
+/// Map `npm view` output to existence: a matching version prints it (exit 0), a
+/// missing one exits with `E404`, and any other failure is surfaced as an error.
+fn interpret_npm_view(success: bool, stdout: &str, stderr: &str, spec: &str) -> Result<bool> {
+    if success {
+        Ok(!stdout.trim().is_empty())
+    } else if stderr.contains("E404") {
+        Ok(false)
+    } else {
+        let snippet: String = stderr.trim().chars().take(400).collect();
+        Err(SampoError::Publish(format!(
+            "npm view failed for '{spec}': {snippet}"
+        )))
     }
 }
 
