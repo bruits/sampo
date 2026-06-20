@@ -1,5 +1,13 @@
 # sampo
 
+## 0.18.1 — 2026-06-19
+
+### Patch changes
+
+- [1ee9aa2](https://github.com/bruits/sampo/commit/1ee9aa26729c5333599fe55d1945cadda2433cd7) Fixed `sampo publish` creating a spurious git tag and GitHub release for non-publishable, versionless packages (workspace containers and other packages marked as non-publishable without a declared version). Non-publishable but versioned packages are still tagged as before. — Thanks @goulvenclech!
+- [9584dc7](https://github.com/bruits/sampo/commit/9584dc7b8cb6c567b593c0cf0d0ca2660273ae83) Changed `sampo update` to an optional `self-update` Cargo feature (enabled by default) so Sampo can be packaged for more package managers that handle updates themselves. Disable it with `--no-default-features`. — Thanks @nartsisss for your first contribution 🎉!
+- Updated dependencies: sampo-core (Cargo)@0.14.1
+
 ## 0.18.0 — 2026-06-07
 
 ### Minor changes
