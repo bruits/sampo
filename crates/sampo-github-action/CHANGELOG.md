@@ -24,7 +24,7 @@
 
 ### Patch changes
 
-- [042f263](https://github.com/bruits/sampo/commit/042f26354212981f462597d8355c63b90aad433c) In JavaScript (npm) projects, added support for Bun's new plaintext `bun.lock` lockfile format. — Thanks @davidroeca for your first contribution 🎉!
+- [042f263](https://github.com/bruits/sampo/commit/042f26354212981f462597d8355c63b90aad433c) In JavaScript/TypeScript (npm) projects, added support for Bun's new plaintext `bun.lock` lockfile format. — Thanks @davidroeca for your first contribution 🎉!
 - [914328a](https://github.com/bruits/sampo/commit/914328a066311c92015409b1a18ac23295aef7be) In Cargo projects, fixed unnecessarily adding versions to path-only dev dependencies, which caused publish failures when the dev dependency was also bumped in the same release. — Thanks @Princesseuh!
 - Updated dependencies: sampo-core@0.13.3
 
@@ -357,4 +357,3 @@
 
 - [`d0d7244`](https://github.com/bruits/sampo/commit/d0d7244a43d76a0d7b377cf5f328a1fe244282b4) Changelog messages are now enriched with commit hash links and author thank-you notes, especially for first-time contributors. Added `[changelog]` configuration section with `show_commit_hash` and `show_acknowledgments` options (both default to true). — Thanks @goulvenclech!
 - [`c7f252e`](https://github.com/bruits/sampo/commit/c7f252ef8c2671c3d35a3a69ab878591f024bf4a) Initial release of Sampo's GitHub Action, to help you automate release workflows in CI/CD pipelines. Supports multiple operation modes: `prepare-pr` (creates/updates Release PRs), `post-merge-publish` (publishes and tags after merge), and traditional `release`/`publish` commands. — Thanks @goulvenclech!
-

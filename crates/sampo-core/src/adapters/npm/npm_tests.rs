@@ -799,6 +799,132 @@ fn detect_workspace_package_manager_prioritizes_lockfile_over_field() {
 }
 
 #[test]
+fn resolve_npm_auth_token_prefers_npm_token() {
+    let token = super::resolve_npm_auth_token(|key| match key {
+        "NPM_TOKEN" => Some("primary".to_string()),
+        "NODE_AUTH_TOKEN" => Some("secondary".to_string()),
+        _ => None,
+    });
+    assert_eq!(token.as_deref(), Some("primary"));
+}
+
+#[test]
+fn resolve_npm_auth_token_falls_back_to_node_auth_token() {
+    let token = super::resolve_npm_auth_token(|key| match key {
+        "NODE_AUTH_TOKEN" => Some("secondary".to_string()),
+        _ => None,
+    });
+    assert_eq!(token.as_deref(), Some("secondary"));
+}
+
+#[test]
+fn resolve_npm_auth_token_ignores_blank_values() {
+    // A blank NPM_TOKEN must not mask a real NODE_AUTH_TOKEN (common when an
+    // unset CI secret expands to an empty string).
+    let token = super::resolve_npm_auth_token(|key| match key {
+        "NPM_TOKEN" => Some("   ".to_string()),
+        "NODE_AUTH_TOKEN" => Some("real".to_string()),
+        _ => None,
+    });
+    assert_eq!(token.as_deref(), Some("real"));
+}
+
+#[test]
+fn resolve_npm_auth_token_none_when_unset() {
+    assert!(super::resolve_npm_auth_token(|_| None).is_none());
+}
+
+#[test]
+fn version_check_request_attaches_bearer_token() {
+    let client = reqwest::blocking::Client::new();
+    let url = reqwest::Url::parse("https://registry.example.com/pkg").unwrap();
+    let request = super::version_check_request(&client, url, Some("secret-token"))
+        .build()
+        .unwrap();
+    assert_eq!(
+        request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .unwrap(),
+        "Bearer secret-token"
+    );
+}
+
+#[test]
+fn version_check_request_omits_auth_without_token() {
+    let client = reqwest::blocking::Client::new();
+    let url = reqwest::Url::parse("https://registry.npmjs.org/pkg").unwrap();
+    let request = super::version_check_request(&client, url, None)
+        .build()
+        .unwrap();
+    assert!(
+        request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none()
+    );
+}
+
+#[test]
+fn falls_back_to_npmrc_only_without_env_token() {
+    assert!(super::should_fall_back_to_npmrc(false));
+    assert!(!super::should_fall_back_to_npmrc(true));
+}
+
+#[test]
+fn npm_view_args_includes_registry_override() {
+    let args = super::npm_view_args("pkg@1.2.3", Some("https://registry.example.com/"));
+    assert_eq!(
+        args,
+        [
+            "view",
+            "pkg@1.2.3",
+            "version",
+            "--registry",
+            "https://registry.example.com/"
+        ]
+    );
+}
+
+#[test]
+fn npm_view_args_omits_registry_when_absent_or_blank() {
+    assert_eq!(
+        super::npm_view_args("pkg@1.2.3", None),
+        ["view", "pkg@1.2.3", "version"]
+    );
+    assert_eq!(
+        super::npm_view_args("pkg@1.2.3", Some("   ")),
+        ["view", "pkg@1.2.3", "version"]
+    );
+}
+
+#[test]
+fn interpret_npm_view_reports_existing_version() {
+    assert!(super::interpret_npm_view(true, "1.2.3\n", "", "pkg@1.2.3").unwrap());
+}
+
+#[test]
+fn interpret_npm_view_treats_empty_success_as_absent() {
+    assert!(!super::interpret_npm_view(true, "  \n", "", "pkg@9.9.9").unwrap());
+}
+
+#[test]
+fn interpret_npm_view_treats_e404_as_absent() {
+    assert!(
+        !super::interpret_npm_view(false, "", "npm error code E404\nnpm error 404", "pkg@9.9.9")
+            .unwrap()
+    );
+}
+
+#[test]
+fn interpret_npm_view_surfaces_other_failures() {
+    let err =
+        super::interpret_npm_view(false, "", "npm error code E401\nUnauthorized", "pkg@1.0.0")
+            .unwrap_err();
+    assert!(err.to_string().contains("npm view failed"));
+}
+
+#[test]
 fn detect_workspace_package_manager_fails_when_no_indicators() {
     let temp = tempdir().unwrap();
     let root = temp.path();

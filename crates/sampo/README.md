@@ -4,7 +4,7 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
-If you’ve ever struggled with keeping user-facing changelogs updated, coordinating version bumps across dependent packages, or automating your publishing process... Sampo might be the tool you were looking for!
+If you've ever struggled with keeping user-facing changelogs updated, coordinating version bumps across dependent packages, or automating your publishing process... Sampo might be the tool you were looking for!
 
 ## Getting Started
 
@@ -229,7 +229,7 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 > [!NOTE]
 > Canonical identifiers follow the `<ecosystem>/<name>` format (e.g., `cargo/my-crate` for a Rust package, `npm/web-app` for a JavaScript package, `packagist/vendor/package` for a PHP package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
 
-Sampo detects packages within the same repository that depend on each other and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
+Sampo detects packages within the same monorepo (even one mixing ecosystems) that depend on each other, and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. The cascade is transitive, so indirect dependents are bumped too. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
 
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages and can mix ecosystems. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo/a", "cargo/b"], ["cargo/c", "cargo/d"]]` and `cargo/a` is updated to `2.0.0` (major), then `cargo/b` will also be bumped to `2.0.0`, but `cargo/c` and `cargo/d` remain unchanged.
 
