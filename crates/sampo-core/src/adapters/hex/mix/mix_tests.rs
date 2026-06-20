@@ -44,6 +44,121 @@ end
 }
 
 #[test]
+fn read_organization_extracts_org_from_package_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("mix.exs");
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0",
+      package: package()
+    ]
+  end
+
+  defp package do
+    [
+      organization: "acme",
+      licenses: ["Apache-2.0"]
+    ]
+  end
+end
+"#,
+    );
+
+    assert_eq!(read_organization(&manifest).as_deref(), Some("acme"));
+}
+
+#[test]
+fn read_organization_none_when_package_has_no_organization() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("mix.exs");
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0",
+      package: package()
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["Apache-2.0"]
+    ]
+  end
+end
+"#,
+    );
+
+    assert_eq!(read_organization(&manifest), None);
+}
+
+#[test]
+fn read_organization_none_for_blank_organization() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("mix.exs");
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0",
+      package: package()
+    ]
+  end
+
+  defp package do
+    [
+      organization: "  ",
+      licenses: ["Apache-2.0"]
+    ]
+  end
+end
+"#,
+    );
+
+    assert_eq!(read_organization(&manifest), None);
+}
+
+#[test]
+fn read_organization_none_without_package_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("mix.exs");
+    write_file(
+        &manifest,
+        r#"
+defmodule Example.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :example,
+      version: "0.1.0"
+    ]
+  end
+end
+"#,
+    );
+
+    assert_eq!(read_organization(&manifest), None);
+}
+
+#[test]
 fn discover_skips_non_publishable_versionless_app() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

@@ -7,6 +7,76 @@ fn version_exists_rejects_empty_name() {
     assert!(format!("{}", err).contains("Package name cannot be empty"));
 }
 
+#[test]
+fn registry_url_uses_repos_path_for_organization() {
+    let url = registry_url(Some("acme"), "example", "1.0.0");
+    assert_eq!(
+        url,
+        "https://hex.pm/api/repos/acme/packages/example/releases/1.0.0"
+    );
+}
+
+#[test]
+fn registry_url_uses_public_path_without_organization() {
+    let url = registry_url(None, "example", "1.0.0");
+    assert_eq!(url, "https://hex.pm/api/packages/example/releases/1.0.0");
+}
+
+#[test]
+fn resolve_hex_api_key_returns_trimmed_value() {
+    let key =
+        resolve_hex_api_key(|name| (name == "HEX_API_KEY").then(|| "  secret-key  ".to_string()));
+    assert_eq!(key.as_deref(), Some("secret-key"));
+}
+
+#[test]
+fn resolve_hex_api_key_none_when_blank() {
+    let key = resolve_hex_api_key(|_| Some("   ".to_string()));
+    assert_eq!(key, None);
+}
+
+#[test]
+fn resolve_hex_api_key_none_when_unset() {
+    let key = resolve_hex_api_key(|_| None);
+    assert_eq!(key, None);
+}
+
+#[test]
+fn version_check_request_attaches_raw_api_key() {
+    let client = Client::new();
+    let request = version_check_request(
+        &client,
+        "https://hex.pm/api/repos/acme/packages/example/releases/1.0.0",
+        Some("secret-key"),
+    )
+    .build()
+    .expect("request should build");
+    let auth = request
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .expect("authorization header present");
+    assert_eq!(auth.to_str().unwrap(), "secret-key");
+}
+
+#[test]
+fn version_check_request_omits_auth_without_key() {
+    let client = Client::new();
+    let request = version_check_request(
+        &client,
+        "https://hex.pm/api/packages/example/releases/1.0.0",
+        None,
+    )
+    .build()
+    .expect("request should build");
+    assert!(
+        request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none(),
+        "expected no authorization header"
+    );
+}
+
 mod constraint_validation {
     use super::*;
     use crate::types::ConstraintCheckResult;
