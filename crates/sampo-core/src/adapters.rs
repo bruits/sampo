@@ -85,7 +85,7 @@ impl PackageAdapter {
         manifest_path: Option<&Path>,
     ) -> Result<bool> {
         match self {
-            Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version),
+            Self::Cargo => cargo::CargoAdapter.version_exists(package_name, version, manifest_path),
             Self::Npm => npm::NpmAdapter.version_exists(package_name, version, manifest_path),
             Self::Hex => hex::HexAdapter.version_exists(package_name, version, manifest_path),
             Self::PyPI => pypi::PyPIAdapter.version_exists(package_name, version, manifest_path),

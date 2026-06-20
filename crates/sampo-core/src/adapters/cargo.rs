@@ -33,11 +33,16 @@ impl CargoAdapter {
     }
 
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
-        is_publishable_to_crates_io(manifest_path)
+        read_manifest_publishable(manifest_path)
     }
 
-    pub(super) fn version_exists(&self, package_name: &str, version: &str) -> Result<bool> {
-        version_exists_on_crates_io(package_name, version)
+    pub(super) fn version_exists(
+        &self,
+        package_name: &str,
+        version: &str,
+        manifest_path: Option<&Path>,
+    ) -> Result<bool> {
+        cargo_version_exists(package_name, version, manifest_path)
     }
 
     pub(super) fn publish(
@@ -276,30 +281,120 @@ fn run_cargo_dry_run(
         })
 }
 
-/// Check Cargo.toml `publish` field per Cargo rules (false, array of registries, or default true).
-fn is_publishable_to_crates_io(manifest_path: &Path) -> Result<bool> {
+fn read_manifest_publishable(manifest_path: &Path) -> Result<bool> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
     let value: toml::Value = toml::from_str(&text).map_err(|e| {
         SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
     })?;
-    Ok(manifest_allows_crates_io(&value))
+    Ok(manifest_allows_publish(&value))
 }
 
-/// Whether a parsed Cargo manifest may be published to crates.io, per its
-/// `[package].publish` field.
-fn manifest_allows_crates_io(value: &toml::Value) -> bool {
+/// Per `[package].publish`, Cargo forbids publishing only when the field is `false`
+/// or an empty list; a single alternative registry stays publishable.
+fn manifest_allows_publish(value: &toml::Value) -> bool {
     let Some(pkg) = value.get("package").and_then(|v| v.as_table()) else {
         return false;
     };
     match pkg.get("publish") {
         Some(toml::Value::Boolean(false)) => false,
-        Some(toml::Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str())
-            .any(|s| s == "crates-io"),
+        Some(toml::Value::Array(arr)) => !arr.is_empty(),
         _ => true,
     }
+}
+
+/// The single alternative registry a crate publishes to, if any.
+///
+/// Mirrors Cargo's auto-selection: a lone non-crates.io entry is the target; an absent
+/// field, multiple registries, or an explicit `crates-io` all default to crates.io
+/// (`None`).
+fn manifest_publish_target(value: &toml::Value) -> Option<String> {
+    let arr = value
+        .get("package")
+        .and_then(|v| v.as_table())?
+        .get("publish")?
+        .as_array()?;
+    let [only] = arr.as_slice() else {
+        return None;
+    };
+    let name = only.as_str()?;
+    (name != "crates-io").then(|| name.to_string())
+}
+
+/// Alternative registries go through `cargo info` to reuse Cargo's config resolution
+/// and stored credentials; crates.io uses its HTTP API directly.
+fn cargo_version_exists(
+    crate_name: &str,
+    version: &str,
+    manifest_path: Option<&Path>,
+) -> Result<bool> {
+    if let Some(path) = manifest_path
+        && let Some(registry) = publish_target_registry(path)
+    {
+        return version_exists_via_cargo_info(crate_name, version, &registry, path);
+    }
+    version_exists_on_crates_io(crate_name, version)
+}
+
+fn publish_target_registry(manifest_path: &Path) -> Option<String> {
+    let text = fs::read_to_string(manifest_path).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    manifest_publish_target(&value)
+}
+
+/// Runs from the manifest directory so Cargo's config discovery walks up to the
+/// `.cargo/config.toml` that defines the registry.
+fn version_exists_via_cargo_info(
+    crate_name: &str,
+    version: &str,
+    registry: &str,
+    manifest_path: &Path,
+) -> Result<bool> {
+    let spec = format!("{}@{}", crate_name, version);
+    let mut cmd = Command::new("cargo");
+    cmd.args(cargo_info_args(&spec, registry));
+    if let Some(dir) = manifest_path.parent() {
+        cmd.current_dir(dir);
+    }
+
+    let output = cmd.output().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            SampoError::Publish(
+                "cargo not found in PATH; it is needed to check existing versions on alternative registries"
+                    .to_string(),
+            )
+        } else {
+            SampoError::Io(err)
+        }
+    })?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    interpret_cargo_info(output.status.success(), stderr.as_ref(), &spec, registry)
+}
+
+fn cargo_info_args(spec: &str, registry: &str) -> Vec<String> {
+    vec![
+        "info".to_string(),
+        spec.to_string(),
+        "--registry".to_string(),
+        registry.to_string(),
+    ]
+}
+
+/// Only a "could not find ... in registry" failure means absent; any other failure
+/// (auth, network) is surfaced as an error rather than mistaken for a missing version.
+fn interpret_cargo_info(success: bool, stderr: &str, spec: &str, registry: &str) -> Result<bool> {
+    if success {
+        return Ok(true);
+    }
+    if stderr.contains("could not find") && stderr.contains("in registry") {
+        return Ok(false);
+    }
+    let snippet: String = stderr.trim().chars().take(400).collect();
+    Err(SampoError::Publish(format!(
+        "cargo info failed for '{}' on registry '{}': {}",
+        spec, registry, snippet
+    )))
 }
 
 /// Query crates.io API to check if a specific version already exists.
@@ -1260,7 +1355,7 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
             .to_string();
         let version = resolve_package_version(pkg, &workspace_version, &manifest_path)?;
         // A non-publishable, versionless crate is not a release target.
-        if version.is_empty() && !manifest_allows_crates_io(&value) {
+        if version.is_empty() && !manifest_allows_publish(&value) {
             continue;
         }
         name_to_path.insert(name.clone(), member_dir.clone());

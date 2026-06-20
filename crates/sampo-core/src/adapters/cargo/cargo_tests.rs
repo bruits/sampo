@@ -1009,3 +1009,124 @@ mod range_constraint_preservation {
         );
     }
 }
+
+mod private_registries {
+    use super::*;
+
+    fn manifest(toml_src: &str) -> toml::Value {
+        toml::from_str(toml_src).unwrap()
+    }
+
+    #[test]
+    fn allows_publish_for_absent_field_and_true() {
+        assert!(manifest_allows_publish(&manifest(
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\n"
+        )));
+        assert!(manifest_allows_publish(&manifest(
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = true\n"
+        )));
+    }
+
+    #[test]
+    fn allows_publish_for_any_non_empty_registry_list() {
+        for publish in ["[\"crates-io\"]", "[\"my-registry\"]", "[\"a\", \"b\"]"] {
+            let src = format!("[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = {publish}\n");
+            assert!(
+                manifest_allows_publish(&manifest(&src)),
+                "publish = {publish}"
+            );
+        }
+    }
+
+    #[test]
+    fn forbids_publish_for_false_or_empty_list() {
+        assert!(!manifest_allows_publish(&manifest(
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = false\n"
+        )));
+        assert!(!manifest_allows_publish(&manifest(
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = []\n"
+        )));
+    }
+
+    #[test]
+    fn forbids_publish_without_package_section() {
+        assert!(!manifest_allows_publish(&manifest(
+            "[dependencies]\nserde = \"1\"\n"
+        )));
+    }
+
+    #[test]
+    fn publish_target_is_single_alternative_registry() {
+        assert_eq!(
+            manifest_publish_target(&manifest(
+                "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = [\"my-registry\"]\n"
+            )),
+            Some("my-registry".to_string())
+        );
+    }
+
+    #[test]
+    fn publish_target_none_when_resolving_to_crates_io() {
+        for src in [
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = [\"crates-io\"]\n",
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = [\"my-registry\", \"crates-io\"]\n",
+            "[package]\nname=\"a\"\nversion=\"0.1.0\"\n",
+        ] {
+            assert_eq!(
+                manifest_publish_target(&manifest(src)),
+                None,
+                "src = {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_info_args_include_spec_and_registry() {
+        assert_eq!(
+            cargo_info_args("my-crate@1.2.3", "my-registry"),
+            ["info", "my-crate@1.2.3", "--registry", "my-registry"]
+        );
+    }
+
+    #[test]
+    fn interpret_cargo_info_reports_existing_version() {
+        assert!(interpret_cargo_info(true, "", "my-crate@1.2.3", "my-registry").unwrap());
+    }
+
+    #[test]
+    fn interpret_cargo_info_treats_missing_version_as_absent() {
+        let stderr = "error: could not find `my-crate@1.2.3` in registry `my-registry`";
+        assert!(!interpret_cargo_info(false, stderr, "my-crate@1.2.3", "my-registry").unwrap());
+    }
+
+    #[test]
+    fn interpret_cargo_info_surfaces_other_failures() {
+        // An auth/network failure must not be mistaken for "version absent".
+        let stderr = "error: failed to authenticate to registry `my-registry`";
+        let err = interpret_cargo_info(false, stderr, "my-crate@1.2.3", "my-registry")
+            .expect_err("auth failure should surface as an error");
+        assert!(format!("{err}").contains("cargo info failed"));
+    }
+
+    #[test]
+    fn discover_keeps_versionless_private_registry_crate() {
+        // A versionless private-registry crate is a release target, not dropped.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        let crates_dir = root.join("crates");
+        fs::create_dir_all(crates_dir.join("private-lib")).unwrap();
+        fs::write(
+            crates_dir.join("private-lib/Cargo.toml"),
+            "[package]\nname = \"private-lib\"\npublish = [\"my-registry\"]\n",
+        )
+        .unwrap();
+
+        let packages = discover_cargo(root).unwrap();
+        assert!(packages.iter().any(|p| p.name == "private-lib"));
+    }
+}
