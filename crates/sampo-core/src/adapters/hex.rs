@@ -86,6 +86,16 @@ impl HexAdapter {
                     "Hex returned 404 for private organisation '{org}'; set HEX_API_KEY to \
                      check whether '{name}@{version}' is already published"
                 ))),
+                // A 404 with a key set is still ambiguous (the key may lack org access),
+                // but proceed as absent since publishing enforces access anyway.
+                (Some(org), Some(_)) => {
+                    eprintln!(
+                        "Warning: Hex returned 404 for '{name}@{version}' in private \
+                         organisation '{org}'; the version may be unpublished, or HEX_API_KEY \
+                         may lack access to the organisation."
+                    );
+                    Ok(false)
+                }
                 _ => Ok(false),
             },
             StatusCode::TOO_MANY_REQUESTS => {
@@ -101,14 +111,16 @@ impl HexAdapter {
                 )))
             }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                let hint = if api_key.is_none() {
-                    "; set HEX_API_KEY to authenticate"
+                // With a key present the request was authenticated and still rejected, so the
+                // key — not its absence — is the likely cause.
+                let detail = if api_key.is_some() {
+                    "HEX_API_KEY may be invalid or lack the required access"
                 } else {
-                    ""
+                    "authentication may be required; set HEX_API_KEY to authenticate"
                 };
                 Err(SampoError::Publish(format!(
-                    "Hex registry returned {} for '{}@{}'; authentication may be required{}",
-                    status_code, name, version, hint
+                    "Hex registry returned {} for '{}@{}'; {}",
+                    status_code, name, version, detail
                 )))
             }
             other => {
