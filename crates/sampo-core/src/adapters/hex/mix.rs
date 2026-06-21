@@ -360,6 +360,7 @@ struct ProjectMetadata {
     version: Option<String>,
     apps_path: Option<PathBuf>,
     has_package_config: bool,
+    organization: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +435,7 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
     }
 
     metadata.has_package_config = has_package_function(source_bytes, &tree);
+    metadata.organization = parse_package_organization(source, &tree);
 
     metadata
 }
@@ -441,6 +443,37 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
 fn has_package_function(source_bytes: &[u8], tree: &Tree) -> bool {
     let calls = find_function_calls(tree, source_bytes, "package");
     !calls.is_empty()
+}
+
+/// Private Hex packages are published under an `organization:` in the `package/0` list.
+fn parse_package_organization(source: &str, tree: &Tree) -> Option<String> {
+    let source_bytes = source.as_bytes();
+    let function = find_function_call(tree, source_bytes, "package")?;
+    let keywords = function_body_keywords(function)?;
+    let mut cursor = keywords.walk();
+    for pair in keywords.named_children(&mut cursor) {
+        if pair.kind() != "pair" {
+            continue;
+        }
+        let Some((key_node, value_node)) = pair_key_value(pair) else {
+            continue;
+        };
+        if keyword_name(source_bytes, key_node).as_deref() != Some("organization") {
+            continue;
+        }
+        if let Some(literal) = parse_string_literal_node(source, value_node) {
+            let value = literal.value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub(super) fn read_organization(manifest_path: &Path) -> Option<String> {
+    let text = fs::read_to_string(manifest_path).ok()?;
+    parse_project_metadata(&text).organization
 }
 
 /// Checks if a node is a module attribute reference like `@version` (not a definition).

@@ -43,7 +43,7 @@ impl HexAdapter {
         &self,
         package_name: &str,
         version: &str,
-        _manifest_path: Option<&Path>,
+        manifest_path: Option<&Path>,
     ) -> Result<bool> {
         let name = package_name.trim();
         if name.is_empty() {
@@ -51,6 +51,11 @@ impl HexAdapter {
                 "Package name cannot be empty when checking Hex registry".into(),
             ));
         }
+
+        // Private packages live under an organisation and require authentication; the
+        // public path needs neither.
+        let organization = manifest_path.and_then(mix::read_organization);
+        let api_key = hex_api_key();
 
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
@@ -60,19 +65,39 @@ impl HexAdapter {
                 SampoError::Publish(format!("failed to build HTTP client for Hex: {}", e))
             })?;
 
-        let url = format!("{HEX_API_BASE}/packages/{}/releases/{}", name, version);
+        let url = registry_url(organization.as_deref(), name, version);
         enforce_hex_rate_limit();
-        let response = client.get(&url).send().map_err(|e| {
-            SampoError::Publish(format!(
-                "failed to query Hex registry for '{}': {}",
-                name, e
-            ))
-        })?;
+        let response = version_check_request(&client, &url, api_key.as_deref())
+            .send()
+            .map_err(|e| {
+                SampoError::Publish(format!(
+                    "failed to query Hex registry for '{}': {}",
+                    name, e
+                ))
+            })?;
 
         let status_code = response.status();
         match status_code {
             StatusCode::OK => Ok(true),
-            StatusCode::NOT_FOUND => Ok(false),
+            // Hex hides private packages behind 404, so an unauthenticated 404 for an
+            // organisation is ambiguous: error out rather than assert the version is absent.
+            StatusCode::NOT_FOUND => match (&organization, &api_key) {
+                (Some(org), None) => Err(SampoError::Publish(format!(
+                    "Hex returned 404 for private organisation '{org}'; set HEX_API_KEY to \
+                     check whether '{name}@{version}' is already published"
+                ))),
+                // A 404 with a key set is still ambiguous (the key may lack org access),
+                // but proceed as absent since publishing enforces access anyway.
+                (Some(org), Some(_)) => {
+                    eprintln!(
+                        "Warning: Hex returned 404 for '{name}@{version}' in private \
+                         organisation '{org}'; the version may be unpublished, or HEX_API_KEY \
+                         may lack access to the organisation."
+                    );
+                    Ok(false)
+                }
+                _ => Ok(false),
+            },
             StatusCode::TOO_MANY_REQUESTS => {
                 let retry_after = response
                     .headers()
@@ -85,10 +110,19 @@ impl HexAdapter {
                     name, version, retry_after
                 )))
             }
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(SampoError::Publish(format!(
-                "Hex registry returned {} for '{}@{}'; authentication may be required",
-                status_code, name, version
-            ))),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                // With a key present the request was authenticated and still rejected, so the
+                // key — not its absence — is the likely cause.
+                let detail = if api_key.is_some() {
+                    "HEX_API_KEY may be invalid or lack the required access"
+                } else {
+                    "authentication may be required; set HEX_API_KEY to authenticate"
+                };
+                Err(SampoError::Publish(format!(
+                    "Hex registry returned {} for '{}@{}'; {}",
+                    status_code, name, version, detail
+                )))
+            }
             other => {
                 let body = response.text().unwrap_or_default();
                 let snippet: String = body.trim().chars().take(300).collect();
@@ -117,6 +151,36 @@ impl HexAdapter {
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         mix::regenerate_lockfile(workspace_root)
+    }
+}
+
+fn registry_url(organization: Option<&str>, name: &str, version: &str) -> String {
+    match organization {
+        Some(org) => format!("{HEX_API_BASE}/repos/{org}/packages/{name}/releases/{version}"),
+        None => format!("{HEX_API_BASE}/packages/{name}/releases/{version}"),
+    }
+}
+
+fn hex_api_key() -> Option<String> {
+    resolve_hex_api_key(|key| std::env::var(key).ok())
+}
+
+fn resolve_hex_api_key(lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let trimmed = lookup("HEX_API_KEY")?.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+/// Hex expects the raw key in `Authorization`, with no `Bearer` prefix.
+/// See https://github.com/hexpm/specifications.
+fn version_check_request(
+    client: &Client,
+    url: &str,
+    api_key: Option<&str>,
+) -> reqwest::blocking::RequestBuilder {
+    let request = client.get(url);
+    match api_key {
+        Some(key) => request.header(reqwest::header::AUTHORIZATION, key),
+        None => request,
     }
 }
 
