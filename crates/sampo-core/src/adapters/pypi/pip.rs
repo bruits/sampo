@@ -242,6 +242,10 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
         )));
     }
 
+    // Resolve before building so an ambiguous manifest fails fast rather than
+    // after wasting a build.
+    let publish_index = resolve_publish_index(&text, manifest_path, extra_args)?;
+
     // Clean previous build artifacts
     let dist_dir = manifest_dir.join("dist");
     if dist_dir.exists() {
@@ -281,6 +285,12 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
     // Actual upload using uv publish
     let mut publish_cmd = Command::new("uv");
     publish_cmd.arg("publish").current_dir(manifest_dir);
+
+    // uv resolves the upload URL, check-url, and credentials from its own
+    // configuration; Sampo handles no secrets.
+    if let Some(index) = &publish_index {
+        publish_cmd.arg("--index").arg(index);
+    }
 
     if !extra_args.is_empty() {
         publish_cmd.args(extra_args);
@@ -496,6 +506,153 @@ fn parse_uv_workspace_config(source: &str) -> UvWorkspaceConfig {
         .filter(|v: &Vec<String>| !v.is_empty());
 
     UvWorkspaceConfig { members, exclude }
+}
+
+/// Which uv index `sampo publish` should target, derived from `[[tool.uv.index]]`
+/// entries that declare a `publish-url`.
+#[derive(Debug, PartialEq, Eq)]
+enum PublishIndex {
+    /// No publish target; publish to the default registry (PyPI).
+    Default,
+    Named(String),
+    /// Several publish targets; the user must disambiguate.
+    Ambiguous(Vec<String>),
+    /// Publish target without a `name`, so it cannot be addressed.
+    Unnamed,
+}
+
+/// Classify an index entry: `None` when it has no (non-blank) `publish-url`,
+/// `Some(None)` for a publish target without an addressable name, and
+/// `Some(Some(name))` otherwise.
+fn publish_target_name(name: Option<&str>, publish_url: Option<&str>) -> Option<Option<String>> {
+    if publish_url.is_none_or(|url| url.trim().is_empty()) {
+        return None;
+    }
+    Some(
+        name.map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string),
+    )
+}
+
+/// Parse the uv index declarations and select the publish target.
+///
+/// uv never picks a publish index on its own. Both the `[[tool.uv.index]]` block
+/// form and the inline-table array (`index = [{ ... }]`) are accepted; missing
+/// either would let a private package fall through to public PyPI, which is not
+/// recoverable. An unnamed or ambiguous target is refused rather than guessed.
+fn parse_publish_index(source: &str) -> PublishIndex {
+    let Ok(doc) = source.parse::<DocumentMut>() else {
+        return PublishIndex::Default;
+    };
+
+    let Some(index_item) = doc
+        .get("tool")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("uv"))
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("index"))
+    else {
+        return PublishIndex::Default;
+    };
+
+    let mut targets: Vec<Option<String>> = Vec::new();
+    if let Some(tables) = index_item.as_array_of_tables() {
+        for table in tables {
+            if let Some(target) = publish_target_name(
+                table.get("name").and_then(Item::as_str),
+                table.get("publish-url").and_then(Item::as_str),
+            ) {
+                targets.push(target);
+            }
+        }
+    } else if let Some(array) = index_item.as_array() {
+        for value in array.iter() {
+            if let Some(inline) = value.as_inline_table()
+                && let Some(target) = publish_target_name(
+                    inline.get("name").and_then(Value::as_str),
+                    inline.get("publish-url").and_then(Value::as_str),
+                )
+            {
+                targets.push(target);
+            }
+        }
+    }
+
+    match targets.len() {
+        0 => PublishIndex::Default,
+        1 => match targets.into_iter().next().flatten() {
+            Some(name) => PublishIndex::Named(name),
+            None => PublishIndex::Unnamed,
+        },
+        // Surface unnamed candidates too, so the error reflects the real conflict.
+        _ => PublishIndex::Ambiguous(
+            targets
+                .into_iter()
+                .map(|name| name.unwrap_or_else(|| "<unnamed>".to_string()))
+                .collect(),
+        ),
+    }
+}
+
+/// Resolve the `--index` to inject into `uv publish`. A destination chosen via
+/// `extra_args` takes precedence: Sampo yields `None` and does not second-guess
+/// an otherwise ambiguous manifest.
+fn resolve_publish_index(
+    source: &str,
+    manifest_path: &Path,
+    extra_args: &[String],
+) -> Result<Option<String>> {
+    if extra_args_select_index(extra_args) {
+        return Ok(None);
+    }
+    publish_index_arg(source, manifest_path)
+}
+
+/// Resolve the `--index` value to forward to `uv publish`, or `None` for the
+/// default registry. Errors when the publish target cannot be picked safely.
+fn publish_index_arg(source: &str, manifest_path: &Path) -> Result<Option<String>> {
+    match parse_publish_index(source) {
+        PublishIndex::Default => Ok(None),
+        PublishIndex::Named(name) => Ok(Some(name)),
+        PublishIndex::Unnamed => Err(SampoError::Publish(format!(
+            "Manifest {} declares a uv index with a publish-url but no name; \
+             add a `name` so Sampo can target it with `uv publish --index`",
+            manifest_path.display()
+        ))),
+        PublishIndex::Ambiguous(mut names) => {
+            names.sort();
+            Err(SampoError::Publish(format!(
+                "Manifest {} declares multiple uv indexes with a publish-url ({}); \
+                 Sampo cannot choose which to publish to. Select one explicitly, \
+                 e.g. `sampo publish --pypi-args --index <name>`",
+                manifest_path.display(),
+                names.join(", ")
+            )))
+        }
+    }
+}
+
+/// Whether the user already selected a publish destination through `extra_args`.
+///
+/// `--index` is mutually exclusive with `--publish-url`/`--check-url` in uv, so
+/// Sampo must not inject its own when any of them is present.
+fn extra_args_select_index(extra_args: &[String]) -> bool {
+    const INDEX_FLAGS: [&str; 3] = ["--index", "--publish-url", "--check-url"];
+    extra_args.iter().any(|arg| {
+        INDEX_FLAGS
+            .iter()
+            .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+    })
+}
+
+/// Whether the manifest routes publishing to a private uv index. An ambiguous
+/// manifest counts as private: it is not destined for public PyPI.
+pub(super) fn has_private_publish_index(manifest_path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    !matches!(parse_publish_index(&text), PublishIndex::Default)
 }
 
 /// Expand a member pattern (plain path or glob) into concrete paths containing pyproject.toml

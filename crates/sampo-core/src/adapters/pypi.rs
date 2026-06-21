@@ -46,13 +46,22 @@ impl PyPIAdapter {
         &self,
         package_name: &str,
         version: &str,
-        _manifest_path: Option<&Path>,
+        manifest_path: Option<&Path>,
     ) -> Result<bool> {
         let name = package_name.trim();
         if name.is_empty() {
             return Err(SampoError::Publish(
                 "Package name cannot be empty when checking PyPI registry".into(),
             ));
+        }
+
+        // A package routed to a private uv index isn't on public PyPI; querying
+        // there risks a false positive from a same-named public package. Let
+        // `uv publish --index` own the idempotent re-run.
+        if let Some(path) = manifest_path
+            && pip::has_private_publish_index(path)
+        {
+            return Ok(false);
         }
 
         let client = Client::builder()
