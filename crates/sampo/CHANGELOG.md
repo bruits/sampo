@@ -1,5 +1,19 @@
 # sampo
 
+## 0.19.0 — 2026-06-28
+
+### Minor changes
+
+- [10f39d5](https://github.com/bruits/sampo/commit/10f39d5dfe64c5476a59419f37f11716d3e216d4) In PHP (Packagist) projects, added support for private registries. Packages resolved through a private or alternative Composer registry (a `type: "composer"` repository in `composer.json`, or `packagist.org` disabled) no longer have their already-published check run against public Packagist. As private Composer registries (Private Packagist, Satis) stay VCS-based, `sampo publish` defers to the git-tag push that drives the registry update. — Thanks @goulvenclech!
+- [2f56c94](https://github.com/bruits/sampo/commit/2f56c94aa91e4089a388b9079f8c0c79c527c0f5) In JavaScript/TypeScript (npm) projects, added support for private registries. `sampo publish` now authenticates its check for already-published versions with `NPM_TOKEN` or `NODE_AUTH_TOKEN`, falling back to your `.npmrc` when neither is set. — Thanks @goulvenclech!
+- [55c5960](https://github.com/bruits/sampo/commit/55c5960f17bf985a489cf8a9d0df5b2ae81b5544) In Elixir (Hex) projects, added support for private organisations. For packages that declare an `organization` in their `mix.exs` package configuration, `sampo publish` now checks the organisation's repository for already-published versions and authenticates that check with `HEX_API_KEY`. — Thanks @goulvenclech!
+- [53aacb9](https://github.com/bruits/sampo/commit/53aacb9504f0b3a5d2622db55a4c27c56c6e5123) In Cargo (Rust) projects, added support for alternative and private registries, and fixed crates that publish solely to an alternative registry (`publish = ["my-registry"]`) being wrongly marked as non-publishable. `sampo publish` now checks whether a version already exists on the target registry using your Cargo registry configuration and credentials. — Thanks @goulvenclech!
+- [7239416](https://github.com/bruits/sampo/commit/72394160016868c694dff25dfa6c48e390c16371) In Python (PyPI) projects, added support for private indexes. For packages that declare a uv index with a `publish-url` in `pyproject.toml`, `sampo publish` now routes the upload to that index via `uv publish --index`, which resolves the upload URL, credentials, and already-published checks from your uv configuration. — Thanks @goulvenclech!
+
+### Patch changes
+
+- Updated dependencies: sampo-core (Cargo)@0.15.0
+
 ## 0.18.1 — 2026-06-19
 
 ### Patch changes
