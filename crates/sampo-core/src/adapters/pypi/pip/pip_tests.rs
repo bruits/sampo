@@ -1655,6 +1655,248 @@ version = "0.1.0"
     assert!(paths.iter().next().unwrap().ends_with("valid-pkg"));
 }
 
+#[test]
+fn parse_publish_index_default_when_no_index() {
+    let source = r#"
+[project]
+name = "pkg"
+version = "1.0.0"
+"#;
+    assert_eq!(parse_publish_index(source), PublishIndex::Default);
+}
+
+#[test]
+fn parse_publish_index_default_when_index_lacks_publish_url() {
+    let source = r#"
+[[tool.uv.index]]
+name = "internal"
+url = "https://example.com/simple/"
+"#;
+    assert_eq!(parse_publish_index(source), PublishIndex::Default);
+}
+
+#[test]
+fn parse_publish_index_named_for_single_publish_url() {
+    let source = r#"
+[[tool.uv.index]]
+name = "internal"
+url = "https://example.com/simple/"
+publish-url = "https://example.com/upload/"
+"#;
+    assert_eq!(
+        parse_publish_index(source),
+        PublishIndex::Named("internal".to_string())
+    );
+}
+
+#[test]
+fn parse_publish_index_named_ignores_resolution_only_siblings() {
+    let source = r#"
+[[tool.uv.index]]
+name = "mirror"
+url = "https://mirror.example.com/simple/"
+
+[[tool.uv.index]]
+name = "private"
+url = "https://private.example.com/simple/"
+publish-url = "https://private.example.com/upload/"
+"#;
+    assert_eq!(
+        parse_publish_index(source),
+        PublishIndex::Named("private".to_string())
+    );
+}
+
+#[test]
+fn parse_publish_index_ignores_blank_publish_url() {
+    let source = r#"
+[[tool.uv.index]]
+name = "internal"
+publish-url = "   "
+"#;
+    assert_eq!(parse_publish_index(source), PublishIndex::Default);
+}
+
+#[test]
+fn parse_publish_index_ambiguous_for_multiple_publish_urls() {
+    let source = r#"
+[[tool.uv.index]]
+name = "alpha"
+publish-url = "https://alpha.example.com/upload/"
+
+[[tool.uv.index]]
+name = "beta"
+publish-url = "https://beta.example.com/upload/"
+"#;
+    assert_eq!(
+        parse_publish_index(source),
+        PublishIndex::Ambiguous(vec!["alpha".to_string(), "beta".to_string()])
+    );
+}
+
+#[test]
+fn publish_index_arg_errors_when_ambiguous() {
+    let source = r#"
+[[tool.uv.index]]
+name = "alpha"
+publish-url = "https://alpha.example.com/upload/"
+
+[[tool.uv.index]]
+name = "beta"
+publish-url = "https://beta.example.com/upload/"
+"#;
+    let err = publish_index_arg(source, Path::new("/tmp/pyproject.toml"))
+        .expect_err("expected ambiguous indexes to error");
+    let message = err.to_string();
+    assert!(message.contains("multiple uv indexes"));
+    assert!(message.contains("alpha, beta"));
+}
+
+#[test]
+fn publish_index_arg_resolves_single_target() {
+    let source = r#"
+[[tool.uv.index]]
+name = "private"
+publish-url = "https://private.example.com/upload/"
+"#;
+    let resolved = publish_index_arg(source, Path::new("/tmp/pyproject.toml")).unwrap();
+    assert_eq!(resolved, Some("private".to_string()));
+}
+
+#[test]
+fn resolve_publish_index_yields_to_user_override() {
+    let source = r#"
+[[tool.uv.index]]
+name = "alpha"
+publish-url = "https://alpha.example.com/upload/"
+
+[[tool.uv.index]]
+name = "beta"
+publish-url = "https://beta.example.com/upload/"
+"#;
+    let extra = vec!["--index".to_string(), "alpha".to_string()];
+    let resolved = resolve_publish_index(source, Path::new("/tmp/pyproject.toml"), &extra).unwrap();
+    assert_eq!(resolved, None);
+}
+
+#[test]
+fn resolve_publish_index_resolves_named_without_override() {
+    let source = r#"
+[[tool.uv.index]]
+name = "private"
+publish-url = "https://private.example.com/upload/"
+"#;
+    let resolved = resolve_publish_index(source, Path::new("/tmp/pyproject.toml"), &[]).unwrap();
+    assert_eq!(resolved, Some("private".to_string()));
+}
+
+#[test]
+fn parse_publish_index_ambiguous_lists_unnamed_targets() {
+    let source = r#"
+[[tool.uv.index]]
+name = "alpha"
+publish-url = "https://alpha.example.com/upload/"
+
+[[tool.uv.index]]
+publish-url = "https://beta.example.com/upload/"
+"#;
+    assert_eq!(
+        parse_publish_index(source),
+        PublishIndex::Ambiguous(vec!["alpha".to_string(), "<unnamed>".to_string()])
+    );
+}
+
+#[test]
+fn parse_publish_index_handles_inline_table_form() {
+    let source = r#"
+[tool.uv]
+index = [
+    { name = "private", url = "https://private.example.com/simple/", publish-url = "https://private.example.com/upload/" },
+]
+"#;
+    assert_eq!(
+        parse_publish_index(source),
+        PublishIndex::Named("private".to_string())
+    );
+}
+
+#[test]
+fn parse_publish_index_unnamed_when_publish_url_lacks_name() {
+    let source = r#"
+[[tool.uv.index]]
+publish-url = "https://private.example.com/upload/"
+"#;
+    assert_eq!(parse_publish_index(source), PublishIndex::Unnamed);
+}
+
+#[test]
+fn publish_index_arg_errors_when_unnamed() {
+    let source = r#"
+[[tool.uv.index]]
+publish-url = "https://private.example.com/upload/"
+"#;
+    let err = publish_index_arg(source, Path::new("/tmp/pyproject.toml"))
+        .expect_err("a publish-url without a name cannot be targeted");
+    assert!(err.to_string().contains("no name"));
+}
+
+#[test]
+fn extra_args_select_index_detects_user_flags() {
+    assert!(extra_args_select_index(&[
+        "--index".to_string(),
+        "foo".to_string()
+    ]));
+    assert!(extra_args_select_index(&["--index=foo".to_string()]));
+    assert!(extra_args_select_index(&["--publish-url".to_string()]));
+    assert!(extra_args_select_index(&[
+        "--check-url=https://x/simple/".to_string()
+    ]));
+}
+
+#[test]
+fn extra_args_select_index_false_for_unrelated_flags() {
+    assert!(!extra_args_select_index(&[]));
+    assert!(!extra_args_select_index(&[
+        "--no-attestations".to_string(),
+        "--token".to_string(),
+        "secret".to_string(),
+    ]));
+}
+
+#[test]
+fn has_private_publish_index_true_for_publish_url_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pyproject.toml");
+    write_file(
+        &manifest,
+        r#"
+[project]
+name = "pkg"
+version = "1.0.0"
+
+[[tool.uv.index]]
+name = "private"
+publish-url = "https://private.example.com/upload/"
+"#,
+    );
+    assert!(has_private_publish_index(&manifest));
+}
+
+#[test]
+fn has_private_publish_index_false_for_public_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pyproject.toml");
+    write_file(
+        &manifest,
+        r#"
+[project]
+name = "pkg"
+version = "1.0.0"
+"#,
+    );
+    assert!(!has_private_publish_index(&manifest));
+}
+
 mod constraint_validation {
     use super::*;
     use crate::types::ConstraintCheckResult;
