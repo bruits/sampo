@@ -326,6 +326,129 @@ fn is_publishable_empty_version() {
     assert!(!result);
 }
 
+#[test]
+fn version_exists_skips_private_composer_registry() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = r#"{
+    "name": "vendor/package",
+    "version": "1.0.0",
+    "repositories": [
+        { "type": "composer", "url": "https://repo.packagist.com/acme/" }
+    ]
+}"#;
+    let path = temp.path().join("composer.json");
+    std::fs::write(&path, manifest).unwrap();
+
+    // Must short-circuit before any network call.
+    let exists = PackagistAdapter
+        .version_exists("vendor/package", "1.0.0", Some(path.as_path()))
+        .expect("private registry should defer without erroring");
+    assert!(!exists);
+}
+
+#[test]
+fn version_exists_skips_when_packagist_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = r#"{
+    "name": "vendor/package",
+    "version": "1.0.0",
+    "repositories": {
+        "packagist.org": false
+    }
+}"#;
+    let path = temp.path().join("composer.json");
+    std::fs::write(&path, manifest).unwrap();
+
+    let exists = PackagistAdapter
+        .version_exists("vendor/package", "1.0.0", Some(path.as_path()))
+        .expect("disabled packagist should defer without erroring");
+    assert!(!exists);
+}
+
+mod private_registry_detection {
+    use super::*;
+
+    fn detects(manifest: &str) -> bool {
+        let value = serde_json::from_str(manifest).unwrap();
+        manifest_uses_private_registry(&value)
+    }
+
+    #[test]
+    fn array_composer_repository_on_other_host() {
+        assert!(detects(
+            r#"{ "repositories": [{ "type": "composer", "url": "https://repo.packagist.com/acme/" }] }"#
+        ));
+    }
+
+    #[test]
+    fn named_object_composer_repository() {
+        assert!(detects(
+            r#"{ "repositories": { "acme": { "type": "composer", "url": "https://satis.acme.test/" } } }"#
+        ));
+    }
+
+    #[test]
+    fn packagist_disabled_in_array() {
+        assert!(detects(
+            r#"{ "repositories": [{ "packagist.org": false }] }"#
+        ));
+    }
+
+    #[test]
+    fn packagist_disabled_in_object() {
+        assert!(detects(r#"{ "repositories": { "packagist.org": false } }"#));
+    }
+
+    #[test]
+    fn legacy_packagist_key_disabled() {
+        // The pre-Composer-1.0 `"packagist"` toggle is still honored.
+        assert!(detects(r#"{ "repositories": { "packagist": false } }"#));
+    }
+
+    #[test]
+    fn lookalike_packagist_host_is_private() {
+        assert!(detects(
+            r#"{ "repositories": [{ "type": "composer", "url": "https://packagist.org.acme.test/" }] }"#
+        ));
+    }
+
+    #[test]
+    fn malformed_manifest_does_not_short_circuit() {
+        // A parse failure must not silently defer every publish.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("composer.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        assert!(!has_private_composer_repository(&path));
+    }
+
+    #[test]
+    fn composer_repository_on_public_packagist_is_not_private() {
+        assert!(!detects(
+            r#"{ "repositories": [{ "type": "composer", "url": "https://repo.packagist.org" }] }"#
+        ));
+    }
+
+    #[test]
+    fn vcs_repository_is_not_private() {
+        // A single dependency's source doesn't change this package's registry.
+        assert!(!detects(
+            r#"{ "repositories": [{ "type": "vcs", "url": "https://github.com/acme/fork" }] }"#
+        ));
+    }
+
+    #[test]
+    fn no_repositories_field() {
+        assert!(!detects(
+            r#"{ "name": "vendor/package", "version": "1.0.0" }"#
+        ));
+    }
+
+    #[test]
+    fn empty_repositories_array() {
+        assert!(!detects(r#"{ "repositories": [] }"#));
+    }
+}
+
 mod constraint_validation {
     use super::*;
     use crate::types::ConstraintCheckResult;

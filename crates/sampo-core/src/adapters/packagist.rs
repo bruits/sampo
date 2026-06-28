@@ -104,13 +104,22 @@ impl PackagistAdapter {
         &self,
         package_name: &str,
         version: &str,
-        _manifest_path: Option<&Path>,
+        manifest_path: Option<&Path>,
     ) -> Result<bool> {
         let name = package_name.trim();
         if name.is_empty() {
             return Err(SampoError::Publish(
                 "Package name cannot be empty when checking Packagist registry".into(),
             ));
+        }
+
+        // A package on a private/alternative registry isn't on public Packagist,
+        // so the public version check would be meaningless (or a false positive
+        // against a same-named public package). Defer to the git-tag push.
+        if let Some(path) = manifest_path
+            && has_private_composer_repository(path)
+        {
+            return Ok(false);
         }
 
         enforce_packagist_rate_limit();
@@ -410,6 +419,72 @@ pub(super) fn check_dependency_constraint(
             reason: format!("unparseable constraint '{}'", trimmed),
         }),
     }
+}
+
+/// Whether `composer.json` routes resolution through a private/alternative
+/// registry rather than public Packagist.
+///
+/// A `vcs` repository (a single dependency's source) is deliberately not
+/// treated as private: it doesn't change which registry holds this package's
+/// version metadata.
+pub(super) fn has_private_composer_repository(manifest_path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    serde_json::from_str::<JsonValue>(&text)
+        .map(|manifest| manifest_uses_private_registry(&manifest))
+        .unwrap_or(false)
+}
+
+/// Composer accepts `repositories` as either an array of definitions or an
+/// object keyed by repository name; both forms are handled here.
+fn manifest_uses_private_registry(manifest: &JsonValue) -> bool {
+    let Some(repositories) = manifest.get("repositories") else {
+        return false;
+    };
+    match repositories {
+        JsonValue::Array(items) => items.iter().any(is_private_repository_entry),
+        JsonValue::Object(map) => map.iter().any(|(key, value)| {
+            disables_packagist(key, value) || is_private_repository_entry(value)
+        }),
+        _ => false,
+    }
+}
+
+fn disables_packagist(key: &str, value: &JsonValue) -> bool {
+    matches!(key, "packagist" | "packagist.org") && value.as_bool() == Some(false)
+}
+
+fn is_private_repository_entry(entry: &JsonValue) -> bool {
+    let Some(obj) = entry.as_object() else {
+        return false;
+    };
+    if obj
+        .iter()
+        .any(|(key, value)| disables_packagist(key, value))
+    {
+        return true;
+    }
+    if obj.get("type").and_then(JsonValue::as_str) == Some("composer") {
+        return obj
+            .get("url")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|url| !is_packagist_url(url));
+    }
+    false
+}
+
+fn is_packagist_url(url: &str) -> bool {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    // Match the host exactly so a look-alike like `packagist.org.acme.test` is
+    // treated as private rather than public Packagist.
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    host == "packagist.org" || host == "repo.packagist.org"
 }
 
 fn enforce_packagist_rate_limit() {
