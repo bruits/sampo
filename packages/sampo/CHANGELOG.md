@@ -1,5 +1,11 @@
 # sampo
 
+## 0.19.0 — 2026-06-28
+
+### Minor changes
+
+- Bumped due to fixed dependency group policy
+
 ## 0.18.1 — 2026-06-19
 
 ### Patch changes
