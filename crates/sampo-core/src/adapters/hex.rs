@@ -3,14 +3,17 @@ use crate::types::PackageInfo;
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod gleam;
 mod mix;
 
 const HEX_API_BASE: &str = "https://hex.pm/api";
+const GLEAM_MANIFEST: &str = "gleam.toml";
 // Hex public docs specify 100 anonymous requests per minute -> https://hexpm.docs.apiary.io/#introduction/rate-limiting
 const HEX_RATE_LIMIT: Duration = Duration::from_millis(600);
 
@@ -21,22 +24,43 @@ pub(super) struct HexAdapter;
 
 impl HexAdapter {
     pub(super) fn can_discover(&self, root: &Path) -> bool {
-        mix::can_discover(root)
+        mix::can_discover(root) || gleam::can_discover(root)
     }
 
     pub(super) fn discover(
         &self,
         root: &Path,
     ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
-        mix::discover(root)
+        // Elixir and Gleam packages can live side by side in a BEAM monorepo; each
+        // build tool discovers its own members and they merge into one Hex workspace.
+        let mut packages = Vec::new();
+        if mix::can_discover(root) {
+            packages.extend(mix::discover(root)?);
+        }
+        if gleam::can_discover(root) {
+            packages.extend(gleam::discover(root)?);
+        }
+        Ok(packages)
     }
 
     pub(super) fn manifest_path(&self, package_dir: &Path) -> PathBuf {
-        mix::manifest_path(package_dir)
+        // Mix wins a directory that holds both manifests (mix_gleam interop), matching
+        // discovery; a Gleam-only directory resolves to gleam.toml. Default to mix.exs.
+        if package_dir.join("mix.exs").exists() {
+            mix::manifest_path(package_dir)
+        } else if package_dir.join(GLEAM_MANIFEST).exists() {
+            gleam::manifest_path(package_dir)
+        } else {
+            mix::manifest_path(package_dir)
+        }
     }
 
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
-        mix::is_publishable(manifest_path)
+        if is_gleam_manifest(manifest_path) {
+            gleam::is_publishable(manifest_path)
+        } else {
+            mix::is_publishable(manifest_path)
+        }
     }
 
     pub(super) fn version_exists(
@@ -53,8 +77,15 @@ impl HexAdapter {
         }
 
         // Private packages live under an organisation and require authentication; the
-        // public path needs neither.
-        let organization = manifest_path.and_then(mix::read_organization);
+        // public path needs neither. Gleam has no private-org concept, so its packages
+        // always resolve through the public endpoint.
+        let organization = manifest_path.and_then(|path| {
+            if is_gleam_manifest(path) {
+                None
+            } else {
+                mix::read_organization(path)
+            }
+        });
         let api_key = hex_api_key();
 
         let client = Client::builder()
@@ -146,12 +177,26 @@ impl HexAdapter {
         dry_run: bool,
         extra_args: &[String],
     ) -> Result<()> {
-        mix::publish(manifest_path, dry_run, extra_args)
+        if is_gleam_manifest(manifest_path) {
+            gleam::publish(manifest_path, dry_run, extra_args)
+        } else {
+            mix::publish(manifest_path, dry_run, extra_args)
+        }
     }
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
-        mix::regenerate_lockfile(workspace_root)
+        if workspace_root.join("mix.exs").exists() {
+            mix::regenerate_lockfile(workspace_root)?;
+        }
+        if gleam::can_discover(workspace_root) {
+            gleam::regenerate_lockfile(workspace_root)?;
+        }
+        Ok(())
     }
+}
+
+fn is_gleam_manifest(manifest_path: &Path) -> bool {
+    manifest_path.file_name().and_then(|n| n.to_str()) == Some(GLEAM_MANIFEST)
 }
 
 fn registry_url(organization: Option<&str>, name: &str, version: &str) -> String {
@@ -192,7 +237,12 @@ pub(super) fn check_dependency_constraint(
 ) -> Result<crate::types::ConstraintCheckResult> {
     use crate::types::ConstraintCheckResult;
 
-    let constraint = match mix::find_dependency_constraint_value(manifest_path, dep_name)? {
+    let dependency_value = if is_gleam_manifest(manifest_path) {
+        gleam::find_dependency_constraint_value(manifest_path, dep_name)?
+    } else {
+        mix::find_dependency_constraint_value(manifest_path, dep_name)?
+    };
+    let constraint = match dependency_value {
         Some(c) => c,
         None => {
             return Ok(ConstraintCheckResult::Skipped {
@@ -444,7 +494,102 @@ pub fn update_manifest_versions(
     new_pkg_version: Option<&str>,
     new_version_by_name: &BTreeMap<String, String>,
 ) -> Result<(String, Vec<(String, String)>)> {
-    mix::update_manifest_versions(manifest_path, input, new_pkg_version, new_version_by_name)
+    if is_gleam_manifest(manifest_path) {
+        gleam::update_manifest_versions(manifest_path, input, new_pkg_version, new_version_by_name)
+    } else {
+        mix::update_manifest_versions(manifest_path, input, new_pkg_version, new_version_by_name)
+    }
+}
+
+/// Recompute a Hex version requirement (`~> 1.2`, `>= 1.0`, or a bare pin) against a
+/// new dependency version. Returns `None` when the requirement should be left as-is
+/// (conjunctions, unparseable, or already current). The syntax is registry-level and
+/// identical for Elixir and Gleam.
+fn compute_requirement(old: &str, new_version: &str) -> Option<String> {
+    let trimmed = old.trim();
+    if trimmed == new_version {
+        return None;
+    }
+
+    if contains_requirement_conjunction(trimmed) {
+        return None;
+    }
+
+    const OPERATORS: [&str; 8] = ["~>", "==", "!=", ">=", "<=", ">", "<", "="];
+    for op in OPERATORS {
+        if let Some(rest) = trimmed.strip_prefix(op) {
+            let current = rest.trim_start();
+            if current.is_empty() {
+                return None;
+            }
+            if !is_single_version_token(current) {
+                return None;
+            }
+            if current == new_version {
+                return None;
+            }
+            return Some(format!("{} {}", op, new_version).trim().to_string());
+        }
+    }
+
+    if is_single_version_token(trimmed) {
+        return Some(new_version.to_string());
+    }
+
+    None
+}
+
+fn contains_requirement_conjunction(input: &str) -> bool {
+    let lowered = input.to_ascii_lowercase();
+    lowered.contains(" and ") || lowered.contains(" or ")
+}
+
+fn is_single_version_token(candidate: &str) -> bool {
+    !candidate.is_empty()
+        && !candidate.contains(char::is_whitespace)
+        && candidate
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+}
+
+/// Resolve `.` and `..` components without touching the filesystem, so package
+/// directories compare equal regardless of how their path was spelled.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    out.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    out.pop();
+                }
+            }
+            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => out.push(component),
+        }
+    }
+    out
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    let prefix = format!("{flag}=");
+    for arg in args {
+        if arg == flag || arg.starts_with(&prefix) {
+            return true;
+        }
+    }
+    false
+}
+
+fn format_command_display(cmd: &Command) -> String {
+    let mut text = cmd.get_program().to_string_lossy().into_owned();
+    for arg in cmd.get_args() {
+        text.push(' ');
+        text.push_str(&arg.to_string_lossy());
+    }
+    text
 }
 
 #[cfg(test)]
