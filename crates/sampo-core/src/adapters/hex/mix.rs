@@ -3,9 +3,10 @@ use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use super::{compute_requirement, format_command_display, has_flag, normalize_path};
 use tree_sitter::{Language, Node, Parser, Tree};
 
 const MIX_MANIFEST: &str = "mix.exs";
@@ -86,8 +87,8 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let mut internal = BTreeSet::new();
 
         for dep in deps {
-            if let Some(path) = dep.path {
-                let normalized = normalize_path(&path);
+            if let Some(path) = &dep.path {
+                let normalized = normalize_path(path);
                 if let Some(dep_name) = normalized_to_name.get(&normalized) {
                     internal.insert(PackageInfo::dependency_identifier(
                         PackageKind::Hex,
@@ -97,7 +98,10 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
                 }
             }
 
-            if name_to_path.contains_key(&dep.name) {
+            // A git dep sharing a member's name is not an internal link.
+            if (dep.requirement.is_some() || dep.path.is_some())
+                && name_to_path.contains_key(&dep.name)
+            {
                 internal.insert(PackageInfo::dependency_identifier(
                     PackageKind::Hex,
                     &dep.name,
@@ -594,91 +598,6 @@ fn collect_dependencies(source: &str, manifest_dir: &Path) -> Vec<ParsedDependen
     }
 
     deps
-}
-
-fn compute_requirement(old: &str, new_version: &str) -> Option<String> {
-    let trimmed = old.trim();
-    if trimmed == new_version {
-        return None;
-    }
-
-    if contains_requirement_conjunction(trimmed) {
-        return None;
-    }
-
-    const OPERATORS: [&str; 8] = ["~>", "==", "!=", ">=", "<=", ">", "<", "="];
-    for op in OPERATORS {
-        if let Some(rest) = trimmed.strip_prefix(op) {
-            let current = rest.trim_start();
-            if current.is_empty() {
-                return None;
-            }
-            if !is_single_version_token(current) {
-                return None;
-            }
-            if current == new_version {
-                return None;
-            }
-            return Some(format!("{} {}", op, new_version).trim().to_string());
-        }
-    }
-
-    if is_single_version_token(trimmed) {
-        return Some(new_version.to_string());
-    }
-
-    None
-}
-
-fn contains_requirement_conjunction(input: &str) -> bool {
-    let lowered = input.to_ascii_lowercase();
-    lowered.contains(" and ") || lowered.contains(" or ")
-}
-
-fn is_single_version_token(candidate: &str) -> bool {
-    !candidate.is_empty()
-        && !candidate.contains(char::is_whitespace)
-        && candidate
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !matches!(
-                    out.components().next_back(),
-                    Some(Component::RootDir | Component::Prefix(_))
-                ) {
-                    out.pop();
-                }
-            }
-            Component::Normal(_) | Component::RootDir | Component::Prefix(_) => out.push(component),
-        }
-    }
-    out
-}
-
-fn has_flag(args: &[String], flag: &str) -> bool {
-    let prefix = format!("{flag}=");
-    for arg in args {
-        if arg == flag || arg.starts_with(&prefix) {
-            return true;
-        }
-    }
-    false
-}
-
-fn format_command_display(cmd: &Command) -> String {
-    let mut text = cmd.get_program().to_string_lossy().into_owned();
-    for arg in cmd.get_args() {
-        text.push(' ');
-        text.push_str(&arg.to_string_lossy());
-    }
-    text
 }
 
 fn parse_mix_tree(source: &str) -> Option<Tree> {

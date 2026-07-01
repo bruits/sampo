@@ -1351,7 +1351,17 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
                     || workspace.root.join("bun.lock").exists()
                     || workspace.root.join("npm-shrinkwrap.json").exists()
             }
-            PackageKind::Hex => workspace.root.join("mix.lock").exists(),
+            PackageKind::Hex => {
+                // Elixir uses a root mix.lock; Gleam keeps a per-package manifest.toml,
+                // so also look for one next to any discovered Hex member (a Gleam
+                // monorepo has no root manifest).
+                workspace.root.join("mix.lock").exists()
+                    || workspace.root.join("manifest.toml").exists()
+                    || workspace.members.iter().any(|member| {
+                        member.kind == PackageKind::Hex
+                            && member.path.join("manifest.toml").exists()
+                    })
+            }
             PackageKind::PyPI => workspace.root.join("uv.lock").exists(),
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
         };
