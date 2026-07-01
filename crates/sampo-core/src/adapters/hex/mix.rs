@@ -87,8 +87,8 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let mut internal = BTreeSet::new();
 
         for dep in deps {
-            if let Some(path) = dep.path {
-                let normalized = normalize_path(&path);
+            if let Some(path) = &dep.path {
+                let normalized = normalize_path(path);
                 if let Some(dep_name) = normalized_to_name.get(&normalized) {
                     internal.insert(PackageInfo::dependency_identifier(
                         PackageKind::Hex,
@@ -98,7 +98,10 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
                 }
             }
 
-            if name_to_path.contains_key(&dep.name) {
+            // A git dep sharing a member's name is not an internal link.
+            if (dep.requirement.is_some() || dep.path.is_some())
+                && name_to_path.contains_key(&dep.name)
+            {
                 internal.insert(PackageInfo::dependency_identifier(
                     PackageKind::Hex,
                     &dep.name,
