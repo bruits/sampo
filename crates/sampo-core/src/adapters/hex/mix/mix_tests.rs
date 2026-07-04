@@ -356,6 +356,80 @@ end
 }
 
 #[test]
+fn discover_does_not_link_git_dependency_by_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_file(
+        &root.join("mix.exs"),
+        r#"
+defmodule Umbrella.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      apps_path: "apps",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    write_file(
+        &root.join("apps/foo/mix.exs"),
+        r#"
+defmodule Foo.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :foo,
+      version: "0.1.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    [
+      {:bar, git: "https://example.com/bar.git"}
+    ]
+  end
+end
+"#,
+    );
+
+    write_file(
+        &root.join("apps/bar/mix.exs"),
+        r#"
+defmodule Bar.MixProject do
+  use Mix.Project
+
+  def project do
+    [
+      app: :bar,
+      version: "0.2.0",
+      deps: deps()
+    ]
+  end
+
+  defp deps do
+    []
+  end
+end
+"#,
+    );
+
+    let packages = discover(root).unwrap();
+    let foo = packages.iter().find(|p| p.name == "foo").unwrap();
+    assert!(foo.internal_deps.is_empty());
+}
+
+#[test]
 fn update_manifest_versions_updates_version_and_dependency() {
     let manifest = r#"
 defmodule Foo.MixProject do

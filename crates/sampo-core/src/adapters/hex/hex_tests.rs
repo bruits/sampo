@@ -402,3 +402,50 @@ end
         assert_eq!(updated[0], ("test_dep".to_string(), "2.0.0".to_string()));
     }
 }
+
+/// A Gleam manifest routes through the shared Hex constraint/version machinery.
+mod gleam_dispatch {
+    use super::*;
+    use crate::types::ConstraintCheckResult;
+    use std::fs;
+
+    fn write_gleam_with_dep(dir: &Path, dep_constraint: &str) {
+        let content = format!(
+            "name = \"app\"\nversion = \"1.0.0\"\n\n[dependencies]\ntest_dep = {}\n",
+            dep_constraint
+        );
+        fs::write(dir.join("gleam.toml"), content).unwrap();
+    }
+
+    #[test]
+    fn constraint_satisfied_from_gleam_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        write_gleam_with_dep(temp.path(), r#"">= 1.0.0 and < 2.0.0""#);
+        let manifest = temp.path().join("gleam.toml");
+        let result = check_dependency_constraint(&manifest, "test_dep", "*", "1.5.0").unwrap();
+        assert!(matches!(result, ConstraintCheckResult::Satisfied));
+    }
+
+    #[test]
+    fn constraint_not_satisfied_from_gleam_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        write_gleam_with_dep(temp.path(), r#"">= 1.0.0 and < 2.0.0""#);
+        let manifest = temp.path().join("gleam.toml");
+        let result = check_dependency_constraint(&manifest, "test_dep", "*", "2.5.0").unwrap();
+        assert!(matches!(result, ConstraintCheckResult::NotSatisfied { .. }));
+    }
+
+    #[test]
+    fn update_bumps_gleam_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        write_gleam_with_dep(temp.path(), r#""~> 1.0""#);
+        let manifest = temp.path().join("gleam.toml");
+        let input = fs::read_to_string(&manifest).unwrap();
+        let mut new_versions = std::collections::BTreeMap::new();
+        new_versions.insert("test_dep".to_string(), "1.5.0".to_string());
+        let (output, updated) =
+            update_manifest_versions(&manifest, &input, None, &new_versions).unwrap();
+        assert!(output.contains("~> 1.5.0"), "got:\n{}", output);
+        assert_eq!(updated, vec![("test_dep".to_string(), "1.5.0".to_string())]);
+    }
+}
