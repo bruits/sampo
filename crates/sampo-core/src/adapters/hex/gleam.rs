@@ -319,6 +319,7 @@ pub(super) fn find_dependency_constraint_value(
     Ok(None)
 }
 
+// The hyphen form mirrors Gleam's own dev-dependencies alias, so any manifest Gleam accepts reads the same here.
 const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "dev_dependencies", "dev-dependencies"];
 
 struct ParsedDependency {

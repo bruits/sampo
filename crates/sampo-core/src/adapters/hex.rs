@@ -45,12 +45,13 @@ impl HexAdapter {
 
     pub(super) fn manifest_path(&self, package_dir: &Path) -> PathBuf {
         // Mix wins a directory that holds both manifests (mix_gleam interop), matching
-        // discovery; a Gleam-only directory resolves to gleam.toml. Default to mix.exs.
+        // discovery; a Gleam-only directory resolves to gleam.toml.
         if package_dir.join("mix.exs").exists() {
             mix::manifest_path(package_dir)
         } else if package_dir.join(GLEAM_MANIFEST).exists() {
             gleam::manifest_path(package_dir)
         } else {
+            // Discovered package dirs hold mix.exs or gleam.toml, so this should be unreachable.
             mix::manifest_path(package_dir)
         }
     }
