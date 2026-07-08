@@ -343,3 +343,81 @@ fn publish_errors_when_manifest_not_under_src() {
     let err = publish(Path::new("app.app.src"), false, &[]).unwrap_err();
     assert!(format!("{err}").contains("src"));
 }
+
+#[test]
+fn publish_args_selects_public_repo_and_confirms_by_default() {
+    assert_eq!(
+        publish_args(false, &[]),
+        ["hex", "publish", "--yes", "--repo", "hexpm"]
+    );
+}
+
+#[test]
+fn publish_args_dry_run_skips_confirmation() {
+    assert_eq!(
+        publish_args(true, &[]),
+        ["hex", "publish", "--dry-run", "--repo", "hexpm"]
+    );
+}
+
+#[test]
+fn publish_args_yields_to_a_user_supplied_repo() {
+    let long = vec!["--repo".to_string(), "hexpm:acme".to_string()];
+    assert_eq!(
+        publish_args(false, &long),
+        ["hex", "publish", "--yes", "--repo", "hexpm:acme"]
+    );
+    let short = vec!["-r".to_string(), "hexpm:acme".to_string()];
+    assert_eq!(
+        publish_args(false, &short),
+        ["hex", "publish", "--yes", "-r", "hexpm:acme"]
+    );
+}
+
+#[test]
+fn publish_args_does_not_duplicate_user_confirmation_or_dry_run() {
+    assert_eq!(
+        publish_args(false, &["--yes".to_string()]),
+        ["hex", "publish", "--repo", "hexpm", "--yes"]
+    );
+    assert_eq!(
+        publish_args(false, &["-y".to_string()]),
+        ["hex", "publish", "--repo", "hexpm", "-y"]
+    );
+    assert_eq!(
+        publish_args(true, &["--dry-run".to_string()]),
+        ["hex", "publish", "--repo", "hexpm", "--dry-run"]
+    );
+}
+
+#[test]
+fn discover_errors_on_malformed_app_src() {
+    // A malformed manifest hard-errors rather than being silently skipped, so a healthy
+    // sibling in the same workspace is not returned either.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp
+            .path()
+            .join("apps")
+            .join("ok")
+            .join("src")
+            .join("ok.app.src"),
+        &app_src("ok", "1.0.0"),
+    );
+    write_file(
+        &temp
+            .path()
+            .join("apps")
+            .join("bad")
+            .join("src")
+            .join("bad.app.src"),
+        "{not_application, whatever, []}.\n",
+    );
+
+    match discover(temp.path()) {
+        Err(WorkspaceError::InvalidManifest(msg)) => {
+            assert!(msg.contains("bad.app.src"), "unexpected message: {msg}");
+        }
+        other => panic!("expected InvalidManifest, got {other:?}"),
+    }
+}

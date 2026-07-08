@@ -1,3 +1,4 @@
+use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -8,7 +9,6 @@ use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1013,25 +1013,6 @@ fn parse_package_manager_field(field: &str) -> Option<PackageManager> {
         "bun" => Some(PackageManager::Bun),
         _ => None,
     }
-}
-
-fn has_flag(args: &[String], flag: &str) -> bool {
-    let prefix = format!("{flag}=");
-    for arg in args {
-        if arg == flag || arg.starts_with(&prefix) {
-            return true;
-        }
-    }
-    false
-}
-
-fn format_command_display(cmd: &Command) -> String {
-    let mut text = cmd.get_program().to_string_lossy().into_owned();
-    for arg in cmd.get_args() {
-        text.push(' ');
-        text.push_str(&arg.to_string_lossy());
-    }
-    text
 }
 
 /// Regenerate the lockfile for npm-ecosystem packages.

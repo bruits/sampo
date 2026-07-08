@@ -1,3 +1,4 @@
+use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -6,7 +7,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use super::{format_command_display, has_flag};
 use tree_sitter::{Language, Node, Parser, Tree};
 
 /// Holds `{deps, [...]}` at the application root; umbrella sub-apps may not carry a copy.
@@ -181,22 +181,7 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
 
     let mut cmd = command("rebar3");
     cmd.current_dir(app_root);
-    cmd.arg("hex").arg("publish");
-
-    if dry_run {
-        // rebar3_hex has a real dry run: it builds and validates the tarball but stops
-        // before uploading. Guard against a duplicate if the user also forwards it.
-        if !has_flag(extra_args, "--dry-run") {
-            cmd.arg("--dry-run");
-        }
-    } else if !has_flag(extra_args, "--yes") && !has_flag(extra_args, "-y") {
-        cmd.arg("--yes");
-    }
-
-    // rebar3_hex reads HEX_API_KEY straight from the environment; Sampo does not pass it.
-    if !extra_args.is_empty() {
-        cmd.args(extra_args);
-    }
+    cmd.args(publish_args(dry_run, extra_args));
 
     println!("Running: {}", format_command_display(&cmd));
 
@@ -221,6 +206,34 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
     }
 
     Ok(())
+}
+
+/// Builds the `rebar3 hex publish …` argument list.
+///
+/// `--repo hexpm` is injected because rebar3_hex only honors `HEX_API_KEY` when a
+/// repository is selected explicitly; otherwise it falls back to the interactive local
+/// write key, which stalls in CI. Each injected flag is skipped when the user forwards
+/// its own, so a private-org `--repo` or an explicit `--yes`/`--dry-run` still wins.
+fn publish_args(dry_run: bool, extra_args: &[String]) -> Vec<String> {
+    let mut args = vec!["hex".to_string(), "publish".to_string()];
+
+    if dry_run {
+        // rebar3_hex has a real dry run: it builds and validates the tarball but stops
+        // before uploading.
+        if !has_flag(extra_args, "--dry-run") {
+            args.push("--dry-run".to_string());
+        }
+    } else if !has_flag(extra_args, "--yes") && !has_flag(extra_args, "-y") {
+        args.push("--yes".to_string());
+    }
+
+    if !has_flag(extra_args, "--repo") && !has_flag(extra_args, "-r") {
+        args.push("--repo".to_string());
+        args.push("hexpm".to_string());
+    }
+
+    args.extend_from_slice(extra_args);
+    args
 }
 
 pub(super) fn update_manifest_versions(

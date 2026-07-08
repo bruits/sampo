@@ -9,6 +9,7 @@ use crate::errors::{Result, WorkspaceError};
 use crate::types::{ConstraintCheckResult, PackageInfo, PackageKind, Workspace};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::process::Command;
 
 /// Package ecosystem adapter (Cargo, npm, etc.).
 #[derive(Debug, Clone, Copy)]
@@ -256,5 +257,51 @@ impl PackageAdapter {
                 new_version,
             ),
         }
+    }
+}
+
+/// Returns whether `flag` is present in `args`.
+///
+/// Long `--flag` options also match their `--flag=value` form; short flags must
+/// match exactly, since `-y=x` is not valid short syntax.
+pub(crate) fn has_flag(args: &[String], flag: &str) -> bool {
+    let value_prefix = flag.starts_with("--").then(|| format!("{flag}="));
+    args.iter()
+        .any(|arg| arg == flag || value_prefix.as_deref().is_some_and(|p| arg.starts_with(p)))
+}
+
+/// Formats a command as a `program arg1 arg2` string for logging.
+pub(crate) fn format_command_display(cmd: &Command) -> String {
+    let mut text = cmd.get_program().to_string_lossy().into_owned();
+    for arg in cmd.get_args() {
+        text.push(' ');
+        text.push_str(&arg.to_string_lossy());
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_command_display, has_flag};
+    use std::process::Command;
+
+    #[test]
+    fn has_flag_matches_long_flags_with_optional_value() {
+        assert!(has_flag(&["--yes".to_string()], "--yes"));
+        assert!(has_flag(&["--registry=custom".to_string()], "--registry"));
+        assert!(!has_flag(&["--registry".to_string()], "--tag"));
+    }
+
+    #[test]
+    fn has_flag_requires_exact_match_for_short_flags() {
+        assert!(has_flag(&["-y".to_string()], "-y"));
+        assert!(!has_flag(&["-y=x".to_string()], "-y"));
+    }
+
+    #[test]
+    fn format_command_display_joins_program_and_args_with_spaces() {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("publish").arg("--dry-run");
+        assert_eq!(format_command_display(&cmd), "cargo publish --dry-run");
     }
 }
