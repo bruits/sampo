@@ -501,7 +501,7 @@ impl GitHubClient {
         let (repo_id, categories) = self.get_discussion_categories()?;
 
         let desired_slug = preferred_category
-            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
+            .filter(|&s| !s.trim().is_empty())
             .unwrap_or("announcements");
 
         // Find category by slug, with fallbacks
