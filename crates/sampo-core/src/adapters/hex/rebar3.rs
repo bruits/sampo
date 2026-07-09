@@ -212,18 +212,20 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
 ///
 /// `--repo hexpm` is injected because rebar3_hex only honors `HEX_API_KEY` when a
 /// repository is selected explicitly; otherwise it falls back to the interactive local
-/// write key, which stalls in CI. Each injected flag is skipped when the user forwards
+/// write key, which stalls in CI. `--yes` is injected even for a dry run: rebar3_hex
+/// asks "Proceed?" before it consults `--dry-run`, so a non-interactive dry run without
+/// it spins forever on that prompt. Each injected flag is skipped when the user forwards
 /// its own, so a private-org `--repo` or an explicit `--yes`/`--dry-run` still wins.
 fn publish_args(dry_run: bool, extra_args: &[String]) -> Vec<String> {
     let mut args = vec!["hex".to_string(), "publish".to_string()];
 
-    if dry_run {
-        // rebar3_hex has a real dry run: it builds and validates the tarball but stops
-        // before uploading.
-        if !has_flag(extra_args, "--dry-run") {
-            args.push("--dry-run".to_string());
-        }
-    } else if !has_flag(extra_args, "--yes") && !has_flag(extra_args, "-y") {
+    // rebar3_hex has a real dry run: it builds and validates the tarball but stops
+    // before uploading.
+    if dry_run && !has_flag(extra_args, "--dry-run") {
+        args.push("--dry-run".to_string());
+    }
+
+    if !has_flag(extra_args, "--yes") && !has_flag(extra_args, "-y") {
         args.push("--yes".to_string());
     }
 

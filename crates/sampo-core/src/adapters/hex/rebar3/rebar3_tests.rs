@@ -353,10 +353,10 @@ fn publish_args_selects_public_repo_and_confirms_by_default() {
 }
 
 #[test]
-fn publish_args_dry_run_skips_confirmation() {
+fn publish_args_dry_run_still_confirms() {
     assert_eq!(
         publish_args(true, &[]),
-        ["hex", "publish", "--dry-run", "--repo", "hexpm"]
+        ["hex", "publish", "--dry-run", "--yes", "--repo", "hexpm"]
     );
 }
 
@@ -386,7 +386,11 @@ fn publish_args_does_not_duplicate_user_confirmation_or_dry_run() {
     );
     assert_eq!(
         publish_args(true, &["--dry-run".to_string()]),
-        ["hex", "publish", "--repo", "hexpm", "--dry-run"]
+        ["hex", "publish", "--yes", "--repo", "hexpm", "--dry-run"]
+    );
+    assert_eq!(
+        publish_args(true, &["--yes".to_string()]),
+        ["hex", "publish", "--dry-run", "--repo", "hexpm", "--yes"]
     );
 }
 
