@@ -1,6 +1,6 @@
 {
   "name": "sampo",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Sampo CLI: automate changelogs, versioning, and publishing",
   "homepage": "https://github.com/bruits/sampo",
   "repository": {
@@ -18,11 +18,11 @@
     "node": ">=22"
   },
   "optionalDependencies": {
-    "@bruits/sampo-linux-x64": "0.18.1",
-    "@bruits/sampo-linux-arm64": "0.18.1",
-    "@bruits/sampo-darwin-x64": "0.18.1",
-    "@bruits/sampo-darwin-arm64": "0.18.1",
-    "@bruits/sampo-win32-x64": "0.18.1"
+    "@bruits/sampo-linux-x64": "0.19.0",
+    "@bruits/sampo-linux-arm64": "0.19.0",
+    "@bruits/sampo-darwin-x64": "0.19.0",
+    "@bruits/sampo-darwin-arm64": "0.19.0",
+    "@bruits/sampo-win32-x64": "0.19.0"
   },
   "publishConfig": {
     "access": "public"

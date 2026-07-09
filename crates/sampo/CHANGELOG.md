@@ -1,5 +1,16 @@
 # sampo
 
+## 0.20.0 — 2026-07-09
+
+### Minor changes
+
+- [57bb659](https://github.com/bruits/sampo/commit/57bb65924c678d311307e9d9fd5262f507dd9f57) **Gleam packages are now supported!** Sampo now automatically detects Gleam packages managed by `gleam.toml` (for publishing to Hex) and handles versioning, changelogs, and publishing—even in mixed workspaces. — Thanks @goulvenclech!
+- [91bbcc2](https://github.com/bruits/sampo/commit/91bbcc250a37178571054ef8399fac1b52d67740) **Erlang packages are now supported!** Sampo now automatically detects Erlang applications managed by rebar3 (via their `.app.src`, for publishing to Hex) and handles versioning, changelogs, and publishing—even in mixed BEAM workspaces. Applications whose version is derived dynamically (`{vsn, git}`, `{vsn, "%VSN%"}`, or a `.app.src.script`) are skipped with a warning. — Thanks @goulvenclech!
+
+### Patch changes
+
+- Updated dependencies: sampo-core (Cargo)@0.16.0
+
 ## 0.19.0 — 2026-06-28
 
 ### Minor changes
