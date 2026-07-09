@@ -1,3 +1,4 @@
+use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -6,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use super::{compute_requirement, format_command_display, has_flag, normalize_path};
+use super::{compute_requirement, normalize_path};
 use tree_sitter::{Language, Node, Parser, Tree};
 
 const MIX_MANIFEST: &str = "mix.exs";

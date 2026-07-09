@@ -1,3 +1,4 @@
+use crate::adapters::format_command_display;
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -902,15 +903,6 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     out
-}
-
-fn format_command_display(cmd: &Command) -> String {
-    let mut text = cmd.get_program().to_string_lossy().into_owned();
-    for arg in cmd.get_args() {
-        text.push(' ');
-        text.push_str(&arg.to_string_lossy());
-    }
-    text
 }
 
 pub(super) fn find_dependency_constraint(source: &str, dep_name: &str) -> Result<Option<String>> {

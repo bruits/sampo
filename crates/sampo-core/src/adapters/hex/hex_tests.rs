@@ -449,3 +449,77 @@ mod gleam_dispatch {
         assert_eq!(updated, vec![("test_dep".to_string(), "1.5.0".to_string())]);
     }
 }
+
+/// An Erlang `.app.src` manifest routes through the shared Hex dispatch, and Erlang
+/// packages coexist with Mix ones in a mixed BEAM workspace.
+mod rebar3_dispatch {
+    use super::*;
+    use crate::types::{ConstraintCheckResult, PackageKind};
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    fn write_erlang_app(root: &Path, name: &str, vsn: &str) -> std::path::PathBuf {
+        let manifest = root.join("src").join(format!("{name}.app.src"));
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(
+            &manifest,
+            format!("{{application, {name}, [{{vsn, \"{vsn}\"}}]}}.\n"),
+        )
+        .unwrap();
+        manifest
+    }
+
+    #[test]
+    fn is_rebar_manifest_only_matches_app_src() {
+        assert!(is_rebar_manifest(Path::new("src/app.app.src")));
+        assert!(!is_rebar_manifest(Path::new("gleam.toml")));
+        assert!(!is_rebar_manifest(Path::new("mix.exs")));
+        // The dynamic script variant is not the manifest we manage.
+        assert!(!is_rebar_manifest(Path::new("src/app.app.src.script")));
+    }
+
+    #[test]
+    fn constraint_checked_from_rebar_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_erlang_app(temp.path(), "app", "1.0.0");
+        fs::write(
+            temp.path().join("rebar.config"),
+            "{deps, [{test_dep, \"~> 1.0\"}]}.\n",
+        )
+        .unwrap();
+
+        let result = check_dependency_constraint(&manifest, "test_dep", "*", "1.5.0").unwrap();
+        assert!(matches!(result, ConstraintCheckResult::Satisfied));
+    }
+
+    #[test]
+    fn update_bumps_app_src_version_via_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_erlang_app(temp.path(), "app", "1.0.0");
+        let input = fs::read_to_string(&manifest).unwrap();
+        let (output, applied) =
+            update_manifest_versions(&manifest, &input, Some("2.0.0"), &BTreeMap::new()).unwrap();
+        assert!(output.contains("{vsn, \"2.0.0\"}"), "got:\n{output}");
+        assert!(applied.is_empty());
+    }
+
+    #[test]
+    fn discovers_mix_and_erlang_packages_together() {
+        let temp = tempfile::tempdir().unwrap();
+        // A Mix package at the root...
+        fs::write(
+            temp.path().join("mix.exs"),
+            "defmodule App.MixProject do\n  use Mix.Project\n  def project do\n    [app: :elixir_app, version: \"0.1.0\"]\n  end\nend\n",
+        )
+        .unwrap();
+        // ...and an Erlang application beside it.
+        write_erlang_app(&temp.path().join("apps").join("erl"), "erl", "3.0.0");
+
+        let mut packages = HexAdapter.discover(temp.path()).unwrap();
+        packages.sort_by(|l, r| l.name.cmp(&r.name));
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"elixir_app"), "got {names:?}");
+        assert!(names.contains(&"erl"), "got {names:?}");
+        assert!(packages.iter().all(|p| p.kind == PackageKind::Hex));
+    }
+}

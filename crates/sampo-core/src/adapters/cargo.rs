@@ -1,4 +1,5 @@
 /// Cargo ecosystem adapter for all Cargo operations.
+use crate::adapters::format_command_display;
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind, Workspace};
 use cargo_metadata::MetadataCommand;
@@ -62,10 +63,7 @@ impl CargoAdapter {
             cmd.args(extra_args);
         }
 
-        println!(
-            "Running: {}",
-            format_command_display(cmd.get_program(), cmd.get_args())
-        );
+        println!("Running: {}", format_command_display(&cmd));
 
         let status = cmd.status()?;
         if !status.success() {
@@ -175,10 +173,7 @@ pub fn workspace_publish_dry_run(
         cmd.args(extra_args);
     }
 
-    println!(
-        "Running: {}",
-        format_command_display(cmd.get_program(), cmd.get_args())
-    );
+    println!("Running: {}", format_command_display(&cmd));
 
     let status = cmd.status()?;
     if !status.success() {
@@ -452,17 +447,6 @@ fn regenerate_cargo_lockfile(root: &Path) -> Result<()> {
     }
     println!("Cargo.lock updated.");
     Ok(())
-}
-
-fn format_command_display(program: &std::ffi::OsStr, args: std::process::CommandArgs) -> String {
-    let prog = program.to_string_lossy();
-    let mut s = String::new();
-    s.push_str(&prog);
-    for a in args {
-        s.push(' ');
-        s.push_str(&a.to_string_lossy());
-    }
-    s
 }
 
 /// Metadata extracted from `cargo_metadata` for the workspace.

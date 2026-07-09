@@ -1,3 +1,4 @@
+use crate::adapters::format_command_display;
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -8,7 +9,6 @@ use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -963,15 +963,6 @@ fn discover_packagist(root: &Path) -> std::result::Result<Vec<PackageInfo>, Work
     }];
 
     Ok(packages)
-}
-
-fn format_command_display(cmd: &Command) -> String {
-    let mut text = cmd.get_program().to_string_lossy().into_owned();
-    for arg in cmd.get_args() {
-        text.push(' ');
-        text.push_str(&arg.to_string_lossy());
-    }
-    text
 }
 
 #[cfg(test)]

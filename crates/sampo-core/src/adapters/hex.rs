@@ -4,13 +4,13 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 mod gleam;
 mod mix;
+mod rebar3;
 
 const HEX_API_BASE: &str = "https://hex.pm/api";
 const GLEAM_MANIFEST: &str = "gleam.toml";
@@ -24,15 +24,15 @@ pub(super) struct HexAdapter;
 
 impl HexAdapter {
     pub(super) fn can_discover(&self, root: &Path) -> bool {
-        mix::can_discover(root) || gleam::can_discover(root)
+        mix::can_discover(root) || gleam::can_discover(root) || rebar3::can_discover(root)
     }
 
     pub(super) fn discover(
         &self,
         root: &Path,
     ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
-        // Elixir and Gleam packages can live side by side in a BEAM monorepo; each
-        // build tool discovers its own members and they merge into one Hex workspace.
+        // Elixir, Gleam, and Erlang packages can live side by side in a BEAM monorepo;
+        // each build tool discovers its own members and they merge into one Hex workspace.
         let mut packages = Vec::new();
         if mix::can_discover(root) {
             packages.extend(mix::discover(root)?);
@@ -40,18 +40,25 @@ impl HexAdapter {
         if gleam::can_discover(root) {
             packages.extend(gleam::discover(root)?);
         }
+        if rebar3::can_discover(root) {
+            packages.extend(rebar3::discover(root)?);
+        }
         Ok(packages)
     }
 
     pub(super) fn manifest_path(&self, package_dir: &Path) -> PathBuf {
         // Mix wins a directory that holds both manifests (mix_gleam interop), matching
-        // discovery; a Gleam-only directory resolves to gleam.toml.
+        // discovery; a Gleam-only directory resolves to gleam.toml, and an Erlang
+        // application root to its src/<name>.app.src.
         if package_dir.join("mix.exs").exists() {
             mix::manifest_path(package_dir)
         } else if package_dir.join(GLEAM_MANIFEST).exists() {
             gleam::manifest_path(package_dir)
+        } else if rebar3::has_app_src(package_dir) {
+            rebar3::manifest_path(package_dir)
         } else {
-            // Discovered package dirs hold mix.exs or gleam.toml, so this should be unreachable.
+            // Discovered dirs hold mix.exs, gleam.toml, or src/*.app.src, so this should
+            // be unreachable.
             mix::manifest_path(package_dir)
         }
     }
@@ -59,6 +66,8 @@ impl HexAdapter {
     pub(super) fn is_publishable(&self, manifest_path: &Path) -> Result<bool> {
         if is_gleam_manifest(manifest_path) {
             gleam::is_publishable(manifest_path)
+        } else if is_rebar_manifest(manifest_path) {
+            rebar3::is_publishable(manifest_path)
         } else {
             mix::is_publishable(manifest_path)
         }
@@ -78,10 +87,10 @@ impl HexAdapter {
         }
 
         // Private packages live under an organisation and require authentication; the
-        // public path needs neither. Gleam has no private-org concept, so its packages
-        // always resolve through the public endpoint.
+        // public path needs neither. Only Mix manifests express an organisation; the
+        // others always resolve through the public endpoint.
         let organization = manifest_path.and_then(|path| {
-            if is_gleam_manifest(path) {
+            if is_gleam_manifest(path) || is_rebar_manifest(path) {
                 None
             } else {
                 mix::read_organization(path)
@@ -180,6 +189,8 @@ impl HexAdapter {
     ) -> Result<()> {
         if is_gleam_manifest(manifest_path) {
             gleam::publish(manifest_path, dry_run, extra_args)
+        } else if is_rebar_manifest(manifest_path) {
+            rebar3::publish(manifest_path, dry_run, extra_args)
         } else {
             mix::publish(manifest_path, dry_run, extra_args)
         }
@@ -192,12 +203,22 @@ impl HexAdapter {
         if gleam::can_discover(workspace_root) {
             gleam::regenerate_lockfile(workspace_root)?;
         }
+        // No rebar3 step: `rebar.lock` pins dependency versions, not the package's own,
+        // so bumping a `vsn` never invalidates it, and internal deps are not version-locked.
         Ok(())
     }
 }
 
 fn is_gleam_manifest(manifest_path: &Path) -> bool {
     manifest_path.file_name().and_then(|n| n.to_str()) == Some(GLEAM_MANIFEST)
+}
+
+fn is_rebar_manifest(manifest_path: &Path) -> bool {
+    manifest_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(".app.src"))
+        .unwrap_or(false)
 }
 
 fn registry_url(organization: Option<&str>, name: &str, version: &str) -> String {
@@ -240,6 +261,8 @@ pub(super) fn check_dependency_constraint(
 
     let dependency_value = if is_gleam_manifest(manifest_path) {
         gleam::find_dependency_constraint_value(manifest_path, dep_name)?
+    } else if is_rebar_manifest(manifest_path) {
+        rebar3::find_dependency_constraint_value(manifest_path, dep_name)?
     } else {
         mix::find_dependency_constraint_value(manifest_path, dep_name)?
     };
@@ -488,7 +511,7 @@ fn enforce_hex_rate_limit() {
     *guard = Some(now);
 }
 
-/// Update a Mix manifest with a new package version and refreshed dependency requirements.
+/// Update a Hex manifest with a new package version and refreshed dependency requirements.
 pub fn update_manifest_versions(
     manifest_path: &Path,
     input: &str,
@@ -497,6 +520,8 @@ pub fn update_manifest_versions(
 ) -> Result<(String, Vec<(String, String)>)> {
     if is_gleam_manifest(manifest_path) {
         gleam::update_manifest_versions(manifest_path, input, new_pkg_version, new_version_by_name)
+    } else if is_rebar_manifest(manifest_path) {
+        rebar3::update_manifest_versions(manifest_path, input, new_pkg_version, new_version_by_name)
     } else {
         mix::update_manifest_versions(manifest_path, input, new_pkg_version, new_version_by_name)
     }
@@ -572,25 +597,6 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
     out
-}
-
-fn has_flag(args: &[String], flag: &str) -> bool {
-    let prefix = format!("{flag}=");
-    for arg in args {
-        if arg == flag || arg.starts_with(&prefix) {
-            return true;
-        }
-    }
-    false
-}
-
-fn format_command_display(cmd: &Command) -> String {
-    let mut text = cmd.get_program().to_string_lossy().into_owned();
-    for arg in cmd.get_args() {
-        text.push(' ');
-        text.push_str(&arg.to_string_lossy());
-    }
-    text
 }
 
 #[cfg(test)]
