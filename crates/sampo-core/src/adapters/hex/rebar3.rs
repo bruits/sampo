@@ -51,12 +51,17 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
 
         let text = fs::read_to_string(&app_src)
             .map_err(|e| WorkspaceError::Io(crate::errors::io_error_with_path(e, &app_src)))?;
-        let app = parse_app_src(&text).ok_or_else(|| {
-            WorkspaceError::InvalidManifest(format!(
-                "invalid application resource in {}",
+        // Skip with a warning rather than aborting: discovery is shared across ecosystems,
+        // so a hard error here would also drop healthy members of other ecosystems. (The I/O
+        // read above still hard-errors — an unreadable file is a real system fault.)
+        let Some(app) = parse_app_src(&text) else {
+            eprintln!(
+                "Warning: skipping {}: it is not a manageable `{{application, name, [...]}}` \
+                 resource with a non-empty literal atom name",
                 app_src.display()
-            ))
-        })?;
+            );
+            continue;
+        };
 
         // A `.app.src.script` recomputes the metadata at build time, so any static
         // version we might read (or write) is moot. Treat it like a dynamic version.
@@ -331,10 +336,15 @@ fn parse_erlang(source: &str) -> Option<Tree> {
     parser.parse(source, None)
 }
 
-/// The named children of `node` (skips anonymous tokens like `{`, `,`, `.`).
+/// The named children of `node`, minus comments and anonymous tokens (`{`, `,`, `.`).
+/// Comments are dropped to keep positional indexing stable: tree-sitter surfaces them as
+/// named `extra` nodes, so one wedged between elements would shift the real node out from
+/// under the index we read.
 fn named_children<'tree>(node: Node<'tree>) -> Vec<Node<'tree>> {
     let mut cursor = node.walk();
-    node.named_children(&mut cursor).collect()
+    node.named_children(&mut cursor)
+        .filter(|n| n.kind() != "comment")
+        .collect()
 }
 
 /// The top-level Erlang terms of a file: each `{...}.` form is a `tuple` that is a
@@ -387,7 +397,9 @@ fn parse_app_src(source: &str) -> Option<ParsedAppSrc> {
         if elems.len() < 3 || atom_text(elems[0], source).as_deref() != Some("application") {
             continue;
         }
-        let name = atom_text(elems[1], source)?;
+        // An empty application name carries no usable identity; treat it as unparseable so
+        // discovery skips it, as mix does for a missing name.
+        let name = atom_text(elems[1], source).filter(|n| !n.trim().is_empty())?;
 
         let mut version = AppVersion::Absent;
         let mut applications = Vec::new();
@@ -568,9 +580,11 @@ fn collect_app_srcs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         return;
     }
 
-    // A directory with `mix.exs` is a Mix project (which may also carry generated
-    // `.app.src` files); Mix owns its identity, so skip it here to avoid double-discovery.
+    // A directory with `mix.exs` (Mix) or `gleam.toml` (Gleam) may also carry a generated
+    // `.app.src`; those ecosystems own their identity, so skip it here to avoid
+    // double-discovery.
     if !dir.join("mix.exs").exists()
+        && !dir.join("gleam.toml").exists()
         && let Some(app_src) = find_app_src(dir)
     {
         out.push(app_src);

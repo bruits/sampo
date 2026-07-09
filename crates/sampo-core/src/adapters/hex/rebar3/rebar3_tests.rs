@@ -395,9 +395,9 @@ fn publish_args_does_not_duplicate_user_confirmation_or_dry_run() {
 }
 
 #[test]
-fn discover_errors_on_malformed_app_src() {
-    // A malformed manifest hard-errors rather than being silently skipped, so a healthy
-    // sibling in the same workspace is not returned either.
+fn discover_skips_unparseable_app_src() {
+    // Unparseable files are skipped with a warning, never hard-errored, so a healthy sibling
+    // in the same workspace still discovers.
     let temp = tempfile::tempdir().unwrap();
     write_file(
         &temp
@@ -418,10 +418,93 @@ fn discover_errors_on_malformed_app_src() {
         "{not_application, whatever, []}.\n",
     );
 
-    match discover(temp.path()) {
-        Err(WorkspaceError::InvalidManifest(msg)) => {
-            assert!(msg.contains("bad.app.src"), "unexpected message: {msg}");
-        }
-        other => panic!("expected InvalidManifest, got {other:?}"),
-    }
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "ok");
+}
+
+#[test]
+fn discover_skips_macro_named_application() {
+    // `{application, ?APP, ...}` is valid Erlang, but the macro name cannot be resolved
+    // statically, so the app is skipped rather than hard-errored.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp
+            .path()
+            .join("apps")
+            .join("macro")
+            .join("src")
+            .join("macro.app.src"),
+        "{application, ?APP, [{vsn, \"1.0.0\"}]}.\n",
+    );
+    write_file(
+        &temp
+            .path()
+            .join("apps")
+            .join("ok")
+            .join("src")
+            .join("ok.app.src"),
+        &app_src("ok", "1.0.0"),
+    );
+
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "ok");
+}
+
+#[test]
+fn discover_skips_empty_application_name() {
+    // A quoted empty atom is a name with no usable identity; discovery must not mint a
+    // package for it.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("src").join("blank.app.src"),
+        "{application, '', [{vsn, \"1.0.0\"}]}.\n",
+    );
+    assert!(discover(temp.path()).unwrap().is_empty());
+}
+
+#[test]
+fn discover_reads_name_preceded_by_comment() {
+    // A comment between `application` and the name must not shift the name out of view.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("src").join("commented.app.src"),
+        "{application, %% the app\n commented, [{vsn, \"1.0.0\"}]}.\n",
+    );
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "commented");
+}
+
+#[test]
+fn discover_reads_vsn_preceded_by_comment() {
+    // A comment between `vsn` and its value must not be mistaken for the value, which would
+    // wrongly classify the version as dynamic and skip the app.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("src").join("app.app.src"),
+        "{application, app, [{vsn, %% pin me\n \"1.2.3\"}]}.\n",
+    );
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].version, "1.2.3");
+}
+
+#[test]
+fn discover_skips_directory_with_gleam_manifest() {
+    // A Gleam package can also carry a checked-in `.app.src`, but Gleam owns its identity, so
+    // rebar3 must not claim it.
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("pkg");
+    write_file(
+        &dir.join("gleam.toml"),
+        "name = \"pkg\"\nversion = \"1.0.0\"\n",
+    );
+    write_file(
+        &dir.join("src").join("pkg.app.src"),
+        &app_src("pkg", "1.0.0"),
+    );
+
+    assert!(discover(temp.path()).unwrap().is_empty());
 }
