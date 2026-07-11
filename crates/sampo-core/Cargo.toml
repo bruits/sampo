@@ -31,6 +31,7 @@ chrono-tz = "0.10"
 tree-sitter = "0.26"
 tree-sitter-elixir = "0.3"
 tree-sitter-erlang = "0.19"
+tree-sitter-xml = "0.7"
 
 [dev-dependencies]
 tempfile = "3.13"

@@ -22,6 +22,7 @@ pub struct PublishExtraArgs {
     pub hex: Vec<String>,
     pub pypi: Vec<String>,
     pub packagist: Vec<String>,
+    pub maven: Vec<String>,
 }
 
 impl PublishExtraArgs {
@@ -33,6 +34,7 @@ impl PublishExtraArgs {
             PackageKind::Hex => &self.hex,
             PackageKind::PyPI => &self.pypi,
             PackageKind::Packagist => &self.packagist,
+            PackageKind::Maven => &self.maven,
         };
         let mut merged = self.universal.clone();
         merged.extend(ecosystem_args.iter().cloned());
@@ -111,6 +113,7 @@ pub fn run_publish(
             crate::types::PackageKind::Hex => PackageAdapter::Hex,
             crate::types::PackageKind::PyPI => PackageAdapter::PyPI,
             crate::types::PackageKind::Packagist => PackageAdapter::Packagist,
+            crate::types::PackageKind::Maven => PackageAdapter::Maven,
         };
 
         let manifest = adapter.manifest_path(&c.path);
@@ -603,9 +606,16 @@ mod tests {
     use std::{
         ffi::OsString,
         fs,
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
         path::PathBuf,
         process::Command,
-        sync::{Mutex, MutexGuard, OnceLock},
+        sync::{
+            Arc, Mutex, MutexGuard, OnceLock, PoisonError,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Duration,
     };
 
     /// Initialise a git repo with a first commit so HEAD exists.
@@ -817,7 +827,10 @@ mod tests {
 
     impl ScopedEnv {
         fn set(overrides: &[(&'static str, OsString)]) -> Self {
-            let lock = env_lock().lock().unwrap();
+            // A test that panics while holding the guard poisons the mutex; the env
+            // state it protects is restored by Drop regardless, so recover instead of
+            // cascading the failure into every later test.
+            let lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             let mut original = Vec::with_capacity(overrides.len());
             for (key, _) in overrides {
                 original.push((*key, std::env::var_os(key)));
@@ -886,14 +899,91 @@ fn main() {
 }
 "#;
 
+    /// Minimal local stand-in for the crates.io existence check: answers every request
+    /// with a fixed status. It keeps publish tests off the real network — crates.io
+    /// rate-limits busy IPs, which made these tests flaky.
+    struct FakeCratesIo {
+        base_url: String,
+        addr: std::net::SocketAddr,
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FakeCratesIo {
+        fn serve(status_line: &'static str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = Arc::clone(&stop);
+            let handle = thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if thread_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let Ok(mut stream) = stream else { continue };
+                    // Drain the request headers before answering (responding with
+                    // inbound data still pending can RST the connection before the
+                    // client reads the status); the path and body are irrelevant
+                    // since only the status code is under test.
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 1024];
+                    while !request.windows(4).any(|w| w == b"\r\n\r\n") && request.len() < 8192 {
+                        match stream.read(&mut buffer) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => request.extend_from_slice(&buffer[..n]),
+                        }
+                    }
+                    let response = format!(
+                        "HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            Self {
+                base_url: format!("http://{addr}"),
+                addr,
+                stop,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for FakeCratesIo {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            // Unblock the accept loop so the thread can observe the stop flag.
+            let _ = TcpStream::connect(self.addr);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
     struct FakeCargo {
         log_path: PathBuf,
         _env: ScopedEnv,
         _temp: tempfile::TempDir,
+        // The override guard drops before the server it points at.
+        _crates_io_base: crate::adapters::cargo::CratesIoApiBaseOverrideGuard,
+        _crates_io: FakeCratesIo,
     }
 
     impl FakeCargo {
+        /// Installs the stub cargo binary plus a local crates.io stand-in reporting
+        /// every version as unpublished (the common case for test fixtures).
         fn install(fail_dry_run: bool, fail_actual: bool, version: &str) -> Self {
+            Self::install_with_registry(fail_dry_run, fail_actual, version, false)
+        }
+
+        /// Like [`FakeCargo::install`], but the local registry reports every version
+        /// as already published when `already_published` is true.
+        fn install_with_registry(
+            fail_dry_run: bool,
+            fail_actual: bool,
+            version: &str,
+            already_published: bool,
+        ) -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
             let bin_dir = temp_dir.path().join("bin");
             fs::create_dir_all(&bin_dir).unwrap();
@@ -932,6 +1022,14 @@ fn main() {
                 path_override.push(&existing);
             }
 
+            let crates_io = FakeCratesIo::serve(if already_published {
+                "200 OK"
+            } else {
+                "404 Not Found"
+            });
+            let crates_io_base =
+                crate::adapters::cargo::override_crates_io_api_base_for_tests(&crates_io.base_url);
+
             let overrides = vec![
                 ("PATH", path_override),
                 ("SAMPO_FAKE_CARGO_LOG", log_path.clone().into_os_string()),
@@ -952,6 +1050,8 @@ fn main() {
                 log_path,
                 _env: env_guard,
                 _temp: temp_dir,
+                _crates_io_base: crates_io_base,
+                _crates_io: crates_io,
             }
         }
 
@@ -2198,41 +2298,36 @@ edition = "2021"
     /// Regression test: when all packages already exist on the registry,
     /// preflight dry-run validation should be skipped entirely.
     ///
-    /// This test uses `serde` version `1.0.0` which is known to exist on crates.io.
+    /// The local [`FakeCratesIo`] registry reports every version as published.
     /// The test verifies that:
     /// 1. `version_exists()` returns true for the package
     /// 2. No cargo publish commands are executed (FakeCargo log is empty)
     /// 3. The publish function completes successfully
-    ///
-    /// NOTE: This test requires network access to query crates.io.
     #[test]
     fn skips_preflight_when_all_packages_already_published() {
-        // Use a well-known crate that definitely exists on crates.io
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path().to_path_buf();
 
         // Create .sampo/ directory
         fs::create_dir_all(root.join(".sampo")).unwrap();
 
-        // Create workspace structure with a crate name matching an existing crates.io package
         fs::write(
             root.join("Cargo.toml"),
             "[workspace]\nmembers=[\"crates/*\"]\n",
         )
         .unwrap();
 
-        let crate_dir = root.join("crates").join("serde");
+        let crate_dir = root.join("crates").join("published-crate");
         fs::create_dir_all(crate_dir.join("src")).unwrap();
         fs::write(
             crate_dir.join("Cargo.toml"),
-            // Use a version that definitely exists on crates.io
-            "[package]\nname=\"serde\"\nversion=\"1.0.0\"\nedition=\"2021\"\n",
+            "[package]\nname=\"published-crate\"\nversion=\"1.0.0\"\nedition=\"2021\"\n",
         )
         .unwrap();
         fs::write(crate_dir.join("src/lib.rs"), "// test").unwrap();
 
-        // Install FakeCargo to intercept publish commands
-        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
+        // `true`: the local registry reports the version as already published.
+        let fake_cargo = FakeCargo::install_with_registry(false, false, "1.91.0", true);
 
         // Run publish (not dry-run)
         let _branch_guard = override_current_branch_for_tests("main");

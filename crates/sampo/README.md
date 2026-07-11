@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
@@ -118,10 +118,13 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 > [!WARNING]
-> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
+> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
 
 > [!TIP]
-> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, or `--packagist-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+
+> [!NOTE]
+> Maven packages publish through `mvn deploy`, run per package with `--non-recursive`. Your POM must carry the deploy configuration (e.g. the [central-publishing-maven-plugin](https://central.sonatype.org/publish/publish-portal-maven/) with GPG signing for Maven Central), and credentials come from `~/.m2/settings.xml` — in GitHub Actions, [`actions/setup-java`](https://github.com/actions/setup-java) writes it and imports the GPG key for you. In multi-module reactors, run `mvn install` before `sampo publish` so sibling artifacts resolve locally, and put modules that inherit their `<version>` from the parent POM in a [`fixed` group](#packages-section) with it so they always release to the same number. Packages whose version is a `-SNAPSHOT` or a build-time property (`${revision}`) are skipped with a warning: pin a static release `<version>` for Sampo to manage them.
 
 #### Pre-release versions
 
@@ -173,7 +176,7 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `tag_format`: Template used for git tags created by `sampo publish` (default: `"{package_name}-v{version}"`). Supported placeholders:
 
-- `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, or `packagist`.
+- `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, `packagist`, or `maven`.
 - `{package_name}` — the package's local name.
 - `{version}` — the released version (required).
 

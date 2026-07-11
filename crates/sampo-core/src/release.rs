@@ -190,6 +190,44 @@ fn resolve_config_groups(
     Ok(resolved)
 }
 
+/// The fixed groups Sampo enforces: the user's `packages.fixed` config plus any implicit
+/// groups an ecosystem derives from its structure (Maven parent-inherited versions).
+/// Overlapping groups are merged so no package lands in two.
+fn enforced_fixed_groups(workspace: &Workspace, config: &Config) -> Result<Vec<Vec<String>>> {
+    let mut groups =
+        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    groups.extend(PackageAdapter::implicit_fixed_groups(workspace));
+    Ok(merge_overlapping_groups(groups))
+}
+
+/// Merge any groups that share a member into one, so membership is unambiguous.
+pub(crate) fn merge_overlapping_groups(groups: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let mut sets: Vec<BTreeSet<String>> = groups
+        .into_iter()
+        .map(|group| group.into_iter().collect::<BTreeSet<String>>())
+        .filter(|set| !set.is_empty())
+        .collect();
+
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'scan: for i in 0..sets.len() {
+            for j in (i + 1)..sets.len() {
+                if sets[i].intersection(&sets[j]).next().is_some() {
+                    let other = sets.remove(j);
+                    sets[i].extend(other);
+                    merged = true;
+                    break 'scan;
+                }
+            }
+        }
+    }
+
+    sets.into_iter()
+        .map(|set| set.into_iter().collect())
+        .collect()
+}
+
 /// Create a changelog entry for dependency updates
 ///
 /// Returns a tuple of (message, bump_type) suitable for adding to changelog messages
@@ -350,8 +388,7 @@ pub fn detect_fixed_dependency_policy_packages(
         }
     }
 
-    let resolved_groups =
-        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    let resolved_groups = enforced_fixed_groups(workspace, config)?;
 
     // Build dependency graph (dependent -> set of dependencies) - only non-ignored packages
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -842,6 +879,14 @@ fn compute_plan_state(
         eprintln!("{}", warning);
     }
 
+    // Fail before any manifest is written when structural version coupling cannot hold,
+    // keeping releases atomic.
+    let new_version_by_id: BTreeMap<String, String> = releases
+        .iter()
+        .map(|(id, _, new_ver)| (id.clone(), new_ver.clone()))
+        .collect();
+    PackageAdapter::validate_release_plan(workspace, &new_version_by_id)?;
+
     let released_packages: Vec<ReleasedPackage> = releases
         .iter()
         .map(|(name, old_version, new_version)| {
@@ -886,8 +931,7 @@ fn validate_dependency_constraints(
         .map(|pkg| (pkg.canonical_identifier().to_string(), pkg))
         .collect();
 
-    let fixed_groups =
-        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    let fixed_groups = enforced_fixed_groups(workspace, config)?;
     let linked_groups =
         resolve_config_groups(workspace, &config.linked_dependencies, "packages.linked")?;
 
@@ -1339,6 +1383,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             PackageKind::Hex => PackageAdapter::Hex,
             PackageKind::PyPI => PackageAdapter::PyPI,
             PackageKind::Packagist => PackageAdapter::Packagist,
+            PackageKind::Maven => PackageAdapter::Maven,
         };
 
         let lockfile_exists = match kind {
@@ -1364,6 +1409,8 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             }
             PackageKind::PyPI => workspace.root.join("uv.lock").exists(),
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
+            // Maven has no lockfile; dependency versions live in the POMs themselves.
+            PackageKind::Maven => false,
         };
 
         if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
@@ -1500,8 +1547,7 @@ fn apply_dependency_cascade(
     cfg: &Config,
     ws: &Workspace,
 ) -> Result<()> {
-    let resolved_fixed_groups =
-        resolve_config_groups(ws, &cfg.fixed_dependencies, "packages.fixed")?;
+    let resolved_fixed_groups = enforced_fixed_groups(ws, cfg)?;
 
     // Helper function to find which fixed group a package belongs to, if any
     let find_fixed_group = |pkg_id: &str| -> Option<usize> {

@@ -364,6 +364,24 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_multi_part_package_names() {
+        // npm scopes and Maven `groupId/artifactId` names carry slashes and dots;
+        // the backtracking matcher must recover them from a rendered tag.
+        let t = template("{ecosystem}-{package_name}-v{version}");
+        for (kind, name) in [
+            (PackageKind::Npm, "@scope/foo"),
+            (PackageKind::Maven, "com.example/my-lib"),
+            (PackageKind::Maven, "com.example/my-view-lib"),
+        ] {
+            let tag = t.render(kind, name, "1.2.3");
+            let m = t.match_tag(&tag).unwrap();
+            assert_eq!(m.ecosystem, Some(kind));
+            assert_eq!(m.package_name.as_deref(), Some(name));
+            assert_eq!(m.version.as_deref(), Some("1.2.3"));
+        }
+    }
+
+    #[test]
     fn matches_legacy_template_with_v_in_prerelease() {
         let t = template("{package_name}-v{version}");
         let m = t.match_tag("my-pkg-v1.2.3-v1").unwrap();
