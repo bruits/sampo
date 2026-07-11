@@ -1,6 +1,7 @@
 /// Ecosystem-specific adapters (Cargo, npm, etc.) for all package operations.
 pub mod cargo;
 pub mod hex;
+pub mod maven;
 pub mod npm;
 pub mod packagist;
 pub mod pypi;
@@ -19,6 +20,7 @@ pub enum PackageAdapter {
     Hex,
     PyPI,
     Packagist,
+    Maven,
 }
 
 impl PackageAdapter {
@@ -31,6 +33,7 @@ impl PackageAdapter {
             PackageAdapter::Hex,
             PackageAdapter::PyPI,
             PackageAdapter::Packagist,
+            PackageAdapter::Maven,
         ]
     }
 
@@ -42,6 +45,7 @@ impl PackageAdapter {
             Self::Hex => hex::HexAdapter.can_discover(root),
             Self::PyPI => pypi::PyPIAdapter.can_discover(root),
             Self::Packagist => packagist::PackagistAdapter.can_discover(root),
+            Self::Maven => maven::MavenAdapter.can_discover(root),
         }
     }
 
@@ -53,6 +57,7 @@ impl PackageAdapter {
             Self::Hex => hex::HexAdapter.discover(root),
             Self::PyPI => pypi::PyPIAdapter.discover(root),
             Self::Packagist => packagist::PackagistAdapter.discover(root),
+            Self::Maven => maven::MavenAdapter.discover(root),
         }
     }
 
@@ -64,6 +69,7 @@ impl PackageAdapter {
             Self::Hex => hex::HexAdapter.manifest_path(package_dir),
             Self::PyPI => pypi::PyPIAdapter.manifest_path(package_dir),
             Self::Packagist => packagist::PackagistAdapter.manifest_path(package_dir),
+            Self::Maven => maven::MavenAdapter.manifest_path(package_dir),
         }
     }
 
@@ -75,6 +81,7 @@ impl PackageAdapter {
             Self::Hex => hex::HexAdapter.is_publishable(manifest_path),
             Self::PyPI => pypi::PyPIAdapter.is_publishable(manifest_path),
             Self::Packagist => packagist::PackagistAdapter.is_publishable(manifest_path),
+            Self::Maven => maven::MavenAdapter.is_publishable(manifest_path),
         }
     }
 
@@ -93,6 +100,7 @@ impl PackageAdapter {
             Self::Packagist => {
                 packagist::PackagistAdapter.version_exists(package_name, version, manifest_path)
             }
+            Self::Maven => maven::MavenAdapter.version_exists(package_name, version, manifest_path),
         }
     }
 
@@ -111,6 +119,7 @@ impl PackageAdapter {
             Self::Packagist => {
                 packagist::PackagistAdapter.publish(manifest_path, dry_run, extra_args)
             }
+            Self::Maven => maven::MavenAdapter.publish(manifest_path, dry_run, extra_args),
         }
     }
 
@@ -128,6 +137,7 @@ impl PackageAdapter {
             Self::Hex => hex::publish_dry_run(packages, extra_args),
             Self::PyPI => pypi::publish_dry_run(packages, extra_args),
             Self::Packagist => packagist::publish_dry_run(packages, extra_args),
+            Self::Maven => maven::publish_dry_run(packages, extra_args),
         }
     }
 
@@ -139,6 +149,7 @@ impl PackageAdapter {
             Self::Hex => hex::HexAdapter.regenerate_lockfile(workspace_root),
             Self::PyPI => pypi::PyPIAdapter.regenerate_lockfile(workspace_root),
             Self::Packagist => packagist::PackagistAdapter.regenerate_lockfile(workspace_root),
+            Self::Maven => maven::MavenAdapter.regenerate_lockfile(workspace_root),
         }
     }
 
@@ -181,6 +192,12 @@ impl PackageAdapter {
                 new_pkg_version,
                 new_version_by_name,
             ),
+            Self::Maven => maven::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+            ),
         }
     }
 
@@ -217,6 +234,7 @@ impl PackageAdapter {
             PackageKind::Hex => Self::Hex,
             PackageKind::PyPI => Self::PyPI,
             PackageKind::Packagist => Self::Packagist,
+            PackageKind::Maven => Self::Maven,
         }
     }
 
@@ -251,6 +269,12 @@ impl PackageAdapter {
                 new_version,
             ),
             Self::Packagist => packagist::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
+            Self::Maven => maven::check_dependency_constraint(
                 manifest_path,
                 dep_name,
                 current_constraint,

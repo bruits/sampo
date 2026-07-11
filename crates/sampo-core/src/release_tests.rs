@@ -5,7 +5,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
-        sync::{Mutex, MutexGuard, OnceLock},
+        sync::{Mutex, MutexGuard, OnceLock, PoisonError},
     };
 
     use crate::*;
@@ -31,7 +31,9 @@ mod tests {
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
-            let lock = env_lock().lock().unwrap();
+            // Recover from a poisoned mutex: the env state it protects is restored by
+            // Drop regardless, so one panicking test must not cascade into the rest.
+            let lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             let original = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);
@@ -62,7 +64,7 @@ mod tests {
             let root = temp_dir.path().to_path_buf();
 
             {
-                let _lock = env_lock().lock().unwrap();
+                let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
                 unsafe {
                     std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
                 }
@@ -1767,7 +1769,7 @@ tempfile = "3.0"
         let root = temp_dir.path().to_path_buf();
 
         {
-            let _lock = env_lock().lock().unwrap();
+            let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             unsafe {
                 std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
             }
@@ -2013,7 +2015,7 @@ bar = { version = "1.0.0", path = "crates/bar" }
         message: &str,
     ) {
         {
-            let _lock = env_lock().lock().unwrap();
+            let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             unsafe {
                 std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
             }

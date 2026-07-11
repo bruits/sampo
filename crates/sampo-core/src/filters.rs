@@ -20,6 +20,7 @@ pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -
             crate::types::PackageKind::Hex => PackageAdapter::Hex,
             crate::types::PackageKind::PyPI => PackageAdapter::PyPI,
             crate::types::PackageKind::Packagist => PackageAdapter::Packagist,
+            crate::types::PackageKind::Maven => PackageAdapter::Maven,
         };
         let manifest = adapter.manifest_path(&info.path);
         if !adapter.is_publishable(&manifest)? {

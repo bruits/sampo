@@ -5,6 +5,8 @@ use crate::types::{PackageInfo, PackageKind, Workspace};
 use cargo_metadata::MetadataCommand;
 use rustc_hash::FxHashSet;
 use semver::{Version, VersionReq};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -13,6 +15,44 @@ use std::time::Duration;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 const CARGO_MANIFEST: &str = "Cargo.toml";
+
+#[cfg(test)]
+thread_local! {
+    static CRATES_IO_API_BASE_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct CratesIoApiBaseOverrideGuard {
+    previous: Option<String>,
+}
+
+/// Point the crates.io existence check at a local stand-in for the duration of the
+/// guard: the real API rate-limits busy IPs, which made network-dependent tests flaky.
+#[cfg(test)]
+pub(crate) fn override_crates_io_api_base_for_tests(base: &str) -> CratesIoApiBaseOverrideGuard {
+    let previous =
+        CRATES_IO_API_BASE_OVERRIDE.with(|cell| cell.borrow_mut().replace(base.to_string()));
+    CratesIoApiBaseOverrideGuard { previous }
+}
+
+#[cfg(test)]
+impl Drop for CratesIoApiBaseOverrideGuard {
+    fn drop(&mut self) {
+        CRATES_IO_API_BASE_OVERRIDE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if let Some(prev) = self.previous.take() {
+                slot.replace(prev);
+            } else {
+                slot.take();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+fn crates_io_api_base_override() -> Option<String> {
+    CRATES_IO_API_BASE_OVERRIDE.with(|cell| cell.borrow().clone())
+}
 
 /// Stateless adapter for all Cargo operations (discovery, publish, registry, lockfile).
 pub(super) struct CargoAdapter;
@@ -395,7 +435,12 @@ fn interpret_cargo_info(success: bool, stderr: &str, spec: &str, registry: &str)
 /// Query crates.io API to check if a specific version already exists.
 fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> {
     // Query crates.io: https://crates.io/api/v1/crates/<name>/<version>
-    let url = format!("https://crates.io/api/v1/crates/{}/{}", crate_name, version);
+    #[cfg(test)]
+    let base =
+        crates_io_api_base_override().unwrap_or_else(|| "https://crates.io/api/v1".to_string());
+    #[cfg(not(test))]
+    let base = "https://crates.io/api/v1".to_string();
+    let url = format!("{}/crates/{}/{}", base, crate_name, version);
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))

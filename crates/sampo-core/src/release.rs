@@ -1339,6 +1339,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             PackageKind::Hex => PackageAdapter::Hex,
             PackageKind::PyPI => PackageAdapter::PyPI,
             PackageKind::Packagist => PackageAdapter::Packagist,
+            PackageKind::Maven => PackageAdapter::Maven,
         };
 
         let lockfile_exists = match kind {
@@ -1364,6 +1365,8 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             }
             PackageKind::PyPI => workspace.root.join("uv.lock").exists(),
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
+            // Maven has no lockfile; dependency versions live in the POMs themselves.
+            PackageKind::Maven => false,
         };
 
         if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
