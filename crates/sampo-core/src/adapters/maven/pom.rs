@@ -423,6 +423,29 @@ pub(super) fn find_dependency_constraint_value(
     Ok(None)
 }
 
+/// How a module's version relates to its parent POM.
+pub(super) struct VersionLink {
+    /// The module declares no own `<version>`, so its version is the parent's.
+    pub inherits: bool,
+    /// The `<parent>` block's `groupId/artifactId`, when both are literal.
+    pub parent_key: Option<String>,
+}
+
+/// Read the version-inheritance relationship of a POM, `None` if it cannot be parsed.
+pub(super) fn version_link(manifest_path: &Path) -> Option<VersionLink> {
+    let text = fs::read_to_string(manifest_path).ok()?;
+    let parsed = parse_pom(&text)?;
+    let own = parsed
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    Some(VersionLink {
+        inherits: own.is_none(),
+        parent_key: parsed.parent.as_ref().and_then(ParentRef::key),
+    })
+}
+
 /// The version a POM resolves to, before deciding whether Sampo can manage it.
 enum EffectiveVersion {
     /// A release literal Sampo can read and bump, e.g. `<version>1.2.3</version>`.

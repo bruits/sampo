@@ -226,6 +226,41 @@ impl PackageAdapter {
         Ok(())
     }
 
+    /// Version-coupling groups an ecosystem derives from its own structure. Maven modules
+    /// that inherit their version from a parent POM must release together.
+    pub fn implicit_fixed_groups(workspace: &Workspace) -> Vec<Vec<String>> {
+        let maven_members: Vec<&PackageInfo> = workspace
+            .members
+            .iter()
+            .filter(|pkg| pkg.kind == PackageKind::Maven)
+            .collect();
+
+        if maven_members.is_empty() {
+            Vec::new()
+        } else {
+            maven::implicit_fixed_groups(&maven_members)
+        }
+    }
+
+    /// Validate the release plan before any manifest is written. A Maven module inheriting
+    /// its version from a parent POM cannot be released unless the parent releases to the
+    /// same version in the same batch.
+    pub fn validate_release_plan(
+        workspace: &Workspace,
+        new_version_by_id: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        let has_maven = workspace
+            .members
+            .iter()
+            .any(|pkg| pkg.kind == PackageKind::Maven);
+
+        if has_maven {
+            maven::validate_release_plan(&workspace.members, new_version_by_id)?;
+        }
+
+        Ok(())
+    }
+
     /// Adapter helper for matching from a PackageKind.
     pub fn from_kind(kind: PackageKind) -> Self {
         match kind {

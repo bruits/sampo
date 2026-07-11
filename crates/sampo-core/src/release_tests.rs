@@ -2257,4 +2257,191 @@ end
             released
         );
     }
+
+    fn set_release_branch_main() {
+        let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
+        unsafe {
+            std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+        }
+    }
+
+    #[test]
+    fn merge_overlapping_groups_unions_shared_members() {
+        let merged = crate::release::merge_overlapping_groups(vec![
+            vec!["a".into(), "b".into()],
+            vec!["b".into(), "c".into()],
+            vec!["c".into(), "d".into()],
+            vec!["x".into(), "y".into()],
+        ]);
+        assert_eq!(merged.len(), 2);
+        let big = merged
+            .iter()
+            .find(|g| g.contains(&"a".to_string()))
+            .unwrap();
+        assert_eq!(big.len(), 4);
+        for m in ["a", "b", "c", "d"] {
+            assert!(big.contains(&m.to_string()));
+        }
+        assert!(
+            merged
+                .iter()
+                .any(|g| g.contains(&"x".to_string()) && g.len() == 2)
+        );
+    }
+
+    fn maven_child(parent_artifact: &str, artifact: &str, parent_version: &str) -> String {
+        format!(
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>{parent_artifact}</artifactId>\n    <version>{parent_version}</version>\n  </parent>\n  <artifactId>{artifact}</artifactId>\n</project>\n"
+        )
+    }
+
+    fn read_pom(path: &std::path::Path) -> String {
+        fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn maven_inherited_child_follows_parent_version() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            maven_child("parent", "core", "1.0.0"),
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/p.md"),
+            "---\nmaven/com.example/parent: minor\n---\n\nfeat: parent change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        // Both land on 1.1.0, never a divergent cascade patch.
+        assert!(read_pom(&root.join("pom.xml")).contains("<version>1.1.0</version>"));
+        let child = read_pom(&root.join("core/pom.xml"));
+        assert!(
+            child.contains("<version>1.1.0</version>"),
+            "child parent-version not bumped: {child}"
+        );
+        assert!(!child.contains("1.0.1"), "child diverged: {child}");
+    }
+
+    #[test]
+    fn maven_inheritance_chain_converges() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // grandparent -> parent -> leaf: a changeset on the leaf must pull the whole
+        // chain to one version.
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>grandparent</artifactId>\n  <version>2.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>parent</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("parent")).unwrap();
+        fs::write(
+            root.join("parent/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>grandparent</artifactId>\n    <version>2.0.0</version>\n  </parent>\n  <artifactId>parent</artifactId>\n  <packaging>pom</packaging>\n  <modules>\n    <module>leaf</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("parent/leaf")).unwrap();
+        fs::write(
+            root.join("parent/leaf/pom.xml"),
+            maven_child("parent", "leaf", "2.0.0"),
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/l.md"),
+            "---\nmaven/com.example/leaf: minor\n---\n\nfeat: leaf change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        assert!(read_pom(&root.join("pom.xml")).contains("<version>2.1.0</version>"));
+        assert!(read_pom(&root.join("parent/pom.xml")).contains("<version>2.1.0</version>"));
+        assert!(read_pom(&root.join("parent/leaf/pom.xml")).contains("<version>2.1.0</version>"));
+    }
+
+    #[test]
+    fn maven_inherited_child_of_external_parent_fails_before_writing() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // Module inherits its version from a parent outside the workspace, yet carries
+        // its own changeset.
+        let child = "<project>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.2.0</version>\n  </parent>\n  <groupId>com.example</groupId>\n  <artifactId>app</artifactId>\n</project>\n";
+        fs::write(root.join("pom.xml"), child).unwrap();
+        fs::write(
+            root.join(".sampo/changesets/a.md"),
+            "---\nmaven/com.example/app: minor\n---\n\nfeat: app change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("inheriting from external parent must fail");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("outside this workspace"),
+                    "unexpected error: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        // Atomic: the manifest was left byte-for-byte untouched.
+        assert_eq!(read_pom(&root.join("pom.xml")), child);
+    }
+
+    #[test]
+    fn maven_stale_parent_version_fails_atomically() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // The child's <parent> block points at an out-of-date parent version (1.0.0 vs
+        // the parent's actual 2.0.0), so same-level bumps yield divergent targets.
+        let parent = "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>2.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n";
+        fs::write(root.join("pom.xml"), parent).unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        let child = maven_child("parent", "core", "1.0.0");
+        fs::write(root.join("core/pom.xml"), &child).unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/p.md"),
+            "---\nmaven/com.example/parent: minor\n---\n\nfeat: parent change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("divergent inherited versions must fail");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("from 'com.example/parent'"),
+                    "expected preflight rejection, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        // Neither manifest was touched before the plan was rejected.
+        assert_eq!(read_pom(&root.join("pom.xml")), parent);
+        assert_eq!(read_pom(&root.join("core/pom.xml")), child);
+    }
 }

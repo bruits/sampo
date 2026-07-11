@@ -1,8 +1,8 @@
 use crate::errors::{Result, SampoError, WorkspaceError};
-use crate::types::PackageInfo;
+use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -233,6 +233,92 @@ pub(super) fn check_dependency_constraint(
     Ok(ConstraintCheckResult::Skipped {
         reason: reason.to_string(),
     })
+}
+
+/// Version-coupling groups derived from the POM tree: a module inheriting its `<version>`
+/// from a parent POM is locked to that parent's version, so the two must release together.
+/// Emitted as `[child, parent]` pairs for the caller to union into clusters.
+pub(super) fn implicit_fixed_groups(members: &[&PackageInfo]) -> Vec<Vec<String>> {
+    let member_names: BTreeSet<&str> = members.iter().map(|m| m.name.as_str()).collect();
+
+    let mut groups = Vec::new();
+    for member in members {
+        let manifest = pom::manifest_path(&member.path);
+        let Some(link) = pom::version_link(&manifest) else {
+            continue;
+        };
+        // A module with its own `<version>` is released independently, even with a parent.
+        if !link.inherits {
+            continue;
+        }
+        let Some(parent_key) = link.parent_key else {
+            continue;
+        };
+        if member_names.contains(parent_key.as_str()) {
+            let parent_id = PackageInfo::dependency_identifier(PackageKind::Maven, &parent_key);
+            groups.push(vec![member.identifier.clone(), parent_id]);
+        }
+    }
+    groups
+}
+
+/// Fail before any manifest is written when a version-inheriting module cannot be
+/// released consistently: its parent must be in the same batch at the same version.
+pub(super) fn validate_release_plan(
+    members: &[PackageInfo],
+    new_version_by_id: &BTreeMap<String, String>,
+) -> Result<()> {
+    let member_names: BTreeSet<&str> = members
+        .iter()
+        .filter(|m| m.kind == PackageKind::Maven)
+        .map(|m| m.name.as_str())
+        .collect();
+
+    for member in members.iter().filter(|m| m.kind == PackageKind::Maven) {
+        let Some(target) = new_version_by_id.get(&member.identifier) else {
+            continue;
+        };
+        let manifest = pom::manifest_path(&member.path);
+        let Some(link) = pom::version_link(&manifest) else {
+            continue;
+        };
+        if !link.inherits {
+            continue;
+        }
+
+        let parent_key = link
+            .parent_key
+            .as_deref()
+            .filter(|k| member_names.contains(k));
+        let Some(parent_key) = parent_key else {
+            return Err(SampoError::Release(format!(
+                "'{}' inherits its version from a parent POM outside this workspace; declare \
+                 an explicit <version> to release it independently",
+                member.name
+            )));
+        };
+        let parent_id = PackageInfo::dependency_identifier(PackageKind::Maven, parent_key);
+        match new_version_by_id.get(&parent_id) {
+            Some(parent_version) if parent_version == target => {}
+            Some(parent_version) => {
+                return Err(SampoError::Release(format!(
+                    "'{}' inherits its version from '{}', but is planned for {} while the \
+                     parent releases {}; align them (e.g. via a fixed group) or declare an \
+                     explicit <version>",
+                    member.name, parent_key, target, parent_version
+                )));
+            }
+            None => {
+                return Err(SampoError::Release(format!(
+                    "'{}' inherits its version from '{}', which is not part of this release \
+                     (unchanged or ignored); release the parent together with it or declare \
+                     an explicit <version>",
+                    member.name, parent_key
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
