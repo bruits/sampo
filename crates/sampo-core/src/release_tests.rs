@@ -2444,4 +2444,184 @@ end
         assert_eq!(read_pom(&root.join("pom.xml")), parent);
         assert_eq!(read_pom(&root.join("core/pom.xml")), child);
     }
+
+    #[test]
+    fn structurally_coupled_bump_does_not_cite_fixed_group_policy() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            maven_child("parent", "core", "1.0.0"),
+        )
+        .unwrap();
+
+        // No config at all: the parent is pulled up purely by the POM structure.
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\nmaven/com.example/core: minor\n---\n\nfeat: core change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        let parent_changelog = fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+        assert!(
+            !parent_changelog.contains("fixed dependency group policy"),
+            "structural coupling must not be attributed to a policy the user never \
+             declared: {parent_changelog}"
+        );
+        assert!(
+            parent_changelog
+                .contains("Bumped to stay aligned with the packages it shares a version with"),
+            "expected the structural coupling entry: {parent_changelog}"
+        );
+    }
+
+    #[test]
+    fn structurally_coupled_inheritor_gets_the_same_wording_as_its_parent() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n    <module>util</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        for module in ["core", "util"] {
+            fs::create_dir_all(root.join(module)).unwrap();
+            fs::write(
+                root.join(module).join("pom.xml"),
+                maven_child("parent", module, "1.0.0"),
+            )
+            .unwrap();
+        }
+
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\nmaven/com.example/core: minor\n---\n\nfeat: core change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        // `util` is pulled along as an inheritor, not as something others inherit from,
+        // so the wording has to hold in both directions of the coupling.
+        let util_changelog = fs::read_to_string(root.join("util/CHANGELOG.md")).unwrap();
+        assert!(
+            util_changelog
+                .contains("Bumped to stay aligned with the packages it shares a version with"),
+            "inheritor got no structural entry: {util_changelog}"
+        );
+        assert!(
+            !util_changelog.contains("fixed dependency group policy"),
+            "structural coupling must not be attributed to a policy the user never \
+             declared: {util_changelog}"
+        );
+    }
+
+    #[test]
+    fn a_dependency_declared_twice_is_listed_once() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>app</module>\n    <module>core</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>core</artifactId>\n  <version>1.0.0</version>\n</project>\n",
+        )
+        .unwrap();
+        // `core` is a normal dependency and pinned again inside a profile, so it lands in
+        // both the ordering and the rewrite-only sets.
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>core</artifactId>\n      <version>1.0.0</version>\n    </dependency>\n  </dependencies>\n  <profiles>\n    <profile>\n      <id>extras</id>\n      <dependencies>\n        <dependency>\n          <groupId>com.example</groupId>\n          <artifactId>core</artifactId>\n          <version>1.0.0</version>\n        </dependency>\n      </dependencies>\n    </profile>\n  </profiles>\n</project>\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\nmaven/com.example/core: minor\n---\n\nfeat: core change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        let app_changelog = fs::read_to_string(root.join("app/CHANGELOG.md")).unwrap();
+        assert_eq!(
+            app_changelog.matches("core@1.1.0").count(),
+            1,
+            "dependency listed more than once: {app_changelog}"
+        );
+    }
+
+    #[test]
+    fn declared_and_structural_groups_keep_their_own_wording() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>app</module>\n    <module>core</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            maven_child("parent", "core", "1.0.0"),
+        )
+        .unwrap();
+
+        // `app` and `parent` are coupled by user policy; `core` only by the POM tree.
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nfixed = [[\"maven/com.example/app\", \"maven/com.example/parent\"]]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/changesets/a.md"),
+            "---\nmaven/com.example/app: minor\n---\n\nfeat: app change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        let parent_changelog = fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+        assert!(
+            parent_changelog.contains("fixed dependency group policy"),
+            "a declared group member should cite the policy it opted into: {parent_changelog}"
+        );
+        let core_changelog = fs::read_to_string(root.join("core/CHANGELOG.md")).unwrap();
+        assert!(
+            core_changelog
+                .contains("Bumped to stay aligned with the packages it shares a version with"),
+            "a package outside the declared group must not cite it: {core_changelog}"
+        );
+    }
 }

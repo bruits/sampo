@@ -89,7 +89,16 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
             .filter(|(key, _)| key != &name)
             .collect();
 
-        member_keys.insert(name.clone());
+        // Duplicate coordinates are invalid Maven, but Sampo rewrites files: keeping both
+        // would silently bump only one of the two.
+        if !member_keys.insert(name.clone()) {
+            warn_skip(
+                &name,
+                &path,
+                "another module in this reactor already declares these coordinates",
+            );
+            continue;
+        }
         members.push(Member {
             name,
             version,
@@ -218,9 +227,21 @@ pub(super) fn has_private_deploy_repository(manifest_path: &Path) -> bool {
 /// (both under sonatype domains), and the repository hosts themselves.
 fn is_central_url(url: &str) -> bool {
     let url = url.trim();
-    url.contains("sonatype.")
-        || url.contains("repo.maven.apache.org")
-        || url.contains("repo1.maven.org")
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    // Match the host exactly so a self-hosted Nexus at `sonatype.acme.test`, or a repo
+    // path segment that merely spells a Central host, stays private.
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    host == "repo.maven.apache.org"
+        || host == "repo1.maven.org"
+        || host == "sonatype.org"
+        || host == "sonatype.com"
+        || host.ends_with(".sonatype.org")
+        || host.ends_with(".sonatype.com")
 }
 
 pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]) -> Result<()> {
@@ -809,11 +830,40 @@ fn parse_xml(source: &str) -> Option<Tree> {
 }
 
 /// The document's root element (`<project>` in a POM), skipping the prolog.
+///
+/// tree-sitter wraps what it cannot parse in an `ERROR` node, and recovery can swallow
+/// the document's real first element — splicing into the next one would then rewrite the
+/// wrong `<project>`. Refuse the file only when an `ERROR` actually ran over markup:
+/// tree-sitter-xml also emits a top-level `ERROR` for a processing instruction whose `?>`
+/// is not followed by a bare newline, and legal POMs on Maven Central ship that shape.
 fn root_element(tree: &Tree) -> Option<Node<'_>> {
-    let mut cursor = tree.root_node().walk();
-    tree.root_node()
-        .named_children(&mut cursor)
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    if root
+        .children(&mut cursor)
+        .any(|n| n.kind() == "ERROR" && swallowed_markup(n))
+    {
+        return None;
+    }
+    let mut cursor = root.walk();
+    root.named_children(&mut cursor)
         .find(|n| n.kind() == "element")
+}
+
+/// Whether an error-recovery node ran over an element, whole or shredded into tokens.
+/// The bare `<` is defensive: a start tag can survive recovery as loose tokens, and
+/// refusing one document too many is cheaper than splicing into the wrong `<project>`.
+fn swallowed_markup(error: Node<'_>) -> bool {
+    let mut cursor = error.walk();
+    let mut pending: Vec<Node<'_>> = error.children(&mut cursor).collect();
+    while let Some(node) = pending.pop() {
+        if matches!(node.kind(), "element" | "STag" | "EmptyElemTag" | "<") {
+            return true;
+        }
+        let mut child_cursor = node.walk();
+        pending.extend(node.children(&mut child_cursor));
+    }
+    false
 }
 
 /// The tag name of an element (from its `STag`, or `EmptyElemTag` for `<empty/>`).
@@ -946,17 +996,39 @@ fn parse_pom_node(project: Node<'_>, source: &str) -> Option<ParsedPom> {
     })
 }
 
-/// The `<dependency>` element nodes from `<dependencies>` and
-/// `<dependencyManagement><dependencies>`, flagging the managed ones.
-fn dependency_elements<'tree>(project: Node<'tree>, source: &str) -> Vec<(Node<'tree>, bool)> {
-    let mut lists = Vec::new();
-    if let Some(deps) = find_child(project, source, "dependencies") {
-        lists.push((deps, false));
+/// The `<dependencies>` and `<dependencyManagement><dependencies>` lists directly under
+/// `element`, flagged with whether they are exempt from constraining publish order.
+fn dependency_lists<'tree>(
+    element: Node<'tree>,
+    source: &str,
+    ordering_exempt: bool,
+    lists: &mut Vec<(Node<'tree>, bool)>,
+) {
+    if let Some(deps) = find_child(element, source, "dependencies") {
+        lists.push((deps, ordering_exempt));
     }
-    if let Some(management) = find_child(project, source, "dependencyManagement")
+    if let Some(management) = find_child(element, source, "dependencyManagement")
         && let Some(deps) = find_child(management, source, "dependencies")
     {
         lists.push((deps, true));
+    }
+}
+
+/// The `<dependency>` element nodes from `<dependencies>` and
+/// `<dependencyManagement><dependencies>`, at the project level and inside every
+/// `<profile>`, flagging the ones that must not constrain publish order.
+fn dependency_elements<'tree>(project: Node<'tree>, source: &str) -> Vec<(Node<'tree>, bool)> {
+    let mut lists = Vec::new();
+    dependency_lists(project, source, false, &mut lists);
+
+    // A profile is conditional, so its dependencies cannot constrain publish order — but
+    // Maven honors their pins verbatim once it activates, so they still need rewriting.
+    if let Some(profiles) = find_child(project, source, "profiles") {
+        for profile in child_elements(profiles) {
+            if element_name(profile, source) == Some("profile") {
+                dependency_lists(profile, source, true, &mut lists);
+            }
+        }
     }
 
     let mut out = Vec::new();

@@ -59,8 +59,9 @@ impl MavenAdapter {
         }
 
         // A package deployed to a private repository isn't on Central; querying there
-        // risks a false positive from a same-named public artifact. Let `mvn deploy`
-        // own the idempotent re-run.
+        // risks a false positive from a same-named public artifact, which would silently
+        // skip the deploy. Let `mvn deploy` answer instead — it fails loudly when the
+        // repository refuses a redeploy.
         if let Some(path) = manifest_path
             && pom::has_private_deploy_repository(path)
         {

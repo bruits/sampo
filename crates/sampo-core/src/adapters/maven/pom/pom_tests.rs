@@ -774,3 +774,242 @@ fn private_deploy_repository_inherits_from_parent() {
         &temp.path().join("child/pom.xml")
     ));
 }
+
+#[test]
+fn central_deploy_urls_are_matched_by_host() {
+    let pom_with_deploy_url = |url: &str| {
+        format!(
+            "<project>\n\
+             \x20 <groupId>com.example</groupId>\n\
+             \x20 <artifactId>lib</artifactId>\n\
+             \x20 <version>1.0.0</version>\n\
+             \x20 <distributionManagement>\n\
+             \x20   <repository>\n\
+             \x20     <id>releases</id>\n\
+             \x20     <url>{url}</url>\n\
+             \x20   </repository>\n\
+             \x20 </distributionManagement>\n\
+             </project>\n"
+        )
+    };
+
+    let cases = [
+        ("https://central.sonatype.com/", false),
+        (
+            "https://oss.sonatype.org/service/local/staging/deploy/maven2/",
+            false,
+        ),
+        ("https://repo1.maven.org/maven2", false),
+        (
+            "https://sonatype.acme.test/repository/maven-releases/",
+            true,
+        ),
+        ("https://nexus.acme.test/repository/sonatype.public/", true),
+        ("https://nexus.acme.test/repository/maven-releases/", true),
+    ];
+
+    for (url, expect_private) in cases {
+        let temp = tempfile::tempdir().unwrap();
+        write_file(&temp.path().join("pom.xml"), &pom_with_deploy_url(url));
+        assert_eq!(
+            has_private_deploy_repository(&temp.path().join("pom.xml")),
+            expect_private,
+            "wrong classification for {url}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_coordinates_keep_a_single_module() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("pom.xml"),
+        "<project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>parent</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         \x20 <packaging>pom</packaging>\n\
+         \x20 <modules>\n\
+         \x20   <module>first</module>\n\
+         \x20   <module>second</module>\n\
+         \x20 </modules>\n\
+         </project>\n",
+    );
+    for dir in ["first", "second"] {
+        write_file(
+            &temp.path().join(dir).join("pom.xml"),
+            "<project>\n\
+             \x20 <parent>\n\
+             \x20   <groupId>com.example</groupId>\n\
+             \x20   <artifactId>parent</artifactId>\n\
+             \x20   <version>1.0.0</version>\n\
+             \x20 </parent>\n\
+             \x20 <artifactId>dup</artifactId>\n\
+             </project>\n",
+        );
+    }
+
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(
+        packages
+            .iter()
+            .filter(|p| p.name == "com.example/dup")
+            .count(),
+        1,
+        "duplicate coordinates produced more than one package: {:?}",
+        packages.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn update_refuses_a_document_with_multiple_roots() {
+    let input = "<project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>lib</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         </project>\n\
+         <project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>other</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         </project>\n";
+
+    for source in [input.to_string(), input.replace('\n', "\r\n")] {
+        let result = update_manifest_versions(
+            Path::new("pom.xml"),
+            &source,
+            Some("2.0.0"),
+            &BTreeMap::new(),
+        );
+        assert!(
+            result.is_err(),
+            "a multi-root document must be refused, got: {:?}",
+            result.map(|(out, _)| out)
+        );
+    }
+}
+
+#[test]
+fn update_accepts_processing_instructions_error_recovery_trips_on() {
+    // These are well-formed XML and ship on Maven Central: refusing them drops real
+    // modules.
+    let cases = [
+        // Eclipse m2e instruction in a CRLF checkout.
+        "<?xml version=\"1.0\"?>\r\n<?m2e execute onConfiguration?>\r\n<project>\r\n  <groupId>com.example</groupId>\r\n  <artifactId>lib</artifactId>\r\n  <version>1.0.0</version>\r\n</project>\r\n",
+        // Trailing PI with no final newline — the same trigger without CRLF.
+        "<project>\n  <groupId>com.example</groupId>\n  <artifactId>lib</artifactId>\n  <version>1.0.0</version>\n</project>\n<?m2e execute?>",
+    ];
+
+    for source in cases {
+        let (output, _) = update_manifest_versions(
+            Path::new("pom.xml"),
+            source,
+            Some("2.0.0"),
+            &BTreeMap::new(),
+        )
+        .unwrap_or_else(|err| panic!("legal POM refused: {err}\n---\n{source}"));
+        assert!(
+            output.contains("<version>2.0.0</version>"),
+            "version not spliced: {output}"
+        );
+    }
+}
+
+#[test]
+fn discover_keeps_a_reactor_whose_root_pom_carries_a_processing_instruction() {
+    // A root POM Sampo cannot parse hides its <modules>, so a false rejection there costs
+    // the whole reactor, not one module.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("pom.xml"),
+        &"<?xml version=\"1.0\"?>\n<?m2e execute onConfiguration?>\n<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n"
+            .replace('\n', "\r\n"),
+    );
+    write_file(
+        &temp.path().join("core/pom.xml"),
+        &"<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>core</artifactId>\n</project>\n"
+            .replace('\n', "\r\n"),
+    );
+
+    let packages = discover(temp.path()).unwrap();
+    let mut names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["com.example/core", "com.example/parent"]);
+}
+
+#[test]
+fn profile_dependency_pins_are_rewritten_without_ordering_edges() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("pom.xml"),
+        "<project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>parent</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         \x20 <packaging>pom</packaging>\n\
+         \x20 <modules>\n\
+         \x20   <module>app</module>\n\
+         \x20   <module>core</module>\n\
+         \x20 </modules>\n\
+         </project>\n",
+    );
+    write_file(
+        &temp.path().join("core/pom.xml"),
+        "<project>\n\
+         \x20 <parent>\n\
+         \x20   <groupId>com.example</groupId>\n\
+         \x20   <artifactId>parent</artifactId>\n\
+         \x20   <version>1.0.0</version>\n\
+         \x20 </parent>\n\
+         \x20 <artifactId>core</artifactId>\n\
+         </project>\n",
+    );
+    let app = "<project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>app</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         \x20 <profiles>\n\
+         \x20   <profile>\n\
+         \x20     <id>with-core</id>\n\
+         \x20     <dependencies>\n\
+         \x20       <dependency>\n\
+         \x20         <groupId>com.example</groupId>\n\
+         \x20         <artifactId>core</artifactId>\n\
+         \x20         <version>1.0.0</version>\n\
+         \x20       </dependency>\n\
+         \x20     </dependencies>\n\
+         \x20   </profile>\n\
+         \x20 </profiles>\n\
+         </project>\n";
+    write_file(&temp.path().join("app/pom.xml"), app);
+
+    let packages = discover(temp.path()).unwrap();
+    let app_pkg = packages
+        .iter()
+        .find(|p| p.name == "com.example/app")
+        .unwrap();
+    assert!(
+        !app_pkg.internal_deps.contains("maven/com.example/core"),
+        "a conditional dependency must not constrain publish order (got {:?})",
+        app_pkg.internal_deps
+    );
+    assert!(
+        app_pkg.internal_dev_deps.contains("maven/com.example/core"),
+        "profile dependency not tracked for version rewrites (got {:?})",
+        app_pkg.internal_dev_deps
+    );
+
+    let mut versions = BTreeMap::new();
+    versions.insert("com.example/core".to_string(), "1.1.0".to_string());
+    let (output, applied) =
+        update_manifest_versions(&temp.path().join("app/pom.xml"), app, None, &versions).unwrap();
+
+    assert!(
+        output.contains("<version>1.1.0</version>"),
+        "profile pin not rewritten: {output}"
+    );
+    assert_eq!(
+        applied,
+        vec![("com.example/core".to_string(), "1.1.0".to_string())]
+    );
+}

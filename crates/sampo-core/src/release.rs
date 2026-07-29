@@ -245,6 +245,19 @@ pub fn create_fixed_dependency_policy_entry(bump: Bump) -> (String, Bump) {
     )
 }
 
+/// Create a changelog entry for a package an ecosystem couples structurally
+///
+/// Distinct from the fixed-group entry: this coupling is derived from the manifests, so
+/// citing a `packages.fixed` policy would name config the user never wrote.
+///
+/// Returns a tuple of (message, bump_type) suitable for adding to changelog messages
+pub fn create_structural_version_coupling_entry(bump: Bump) -> (String, Bump) {
+    (
+        "Bumped to stay aligned with the packages it shares a version with".to_string(),
+        bump,
+    )
+}
+
 /// Infer bump type from version changes
 ///
 /// This helper function determines the semantic version bump type based on
@@ -295,6 +308,19 @@ pub fn detect_all_dependency_explanations(
     let policy_packages =
         detect_fixed_dependency_policy_packages(changesets, workspace, config, &bumped_packages)?;
 
+    // A package pulled in only by structural coupling never opted into a `fixed` group,
+    // so it gets its own wording. Declared membership wins when a package is in both.
+    let declared: BTreeSet<String> =
+        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?
+            .into_iter()
+            .flatten()
+            .collect();
+    let structural: BTreeSet<String> = PackageAdapter::implicit_fixed_groups(workspace)
+        .into_iter()
+        .flatten()
+        .filter(|id| !declared.contains(id))
+        .collect();
+
     for (pkg_name, policy_bump) in policy_packages {
         // For accurate bump detection, infer from actual version changes
         let actual_bump = if let Some((old_ver, new_ver)) = releases.get(&pkg_name) {
@@ -303,7 +329,11 @@ pub fn detect_all_dependency_explanations(
             policy_bump
         };
 
-        let (msg, bump_type) = create_fixed_dependency_policy_entry(actual_bump);
+        let (msg, bump_type) = if structural.contains(&pkg_name) {
+            create_structural_version_coupling_entry(actual_bump)
+        } else {
+            create_fixed_dependency_policy_entry(actual_bump)
+        };
         messages_by_pkg
             .entry(pkg_name)
             .or_default()
@@ -332,10 +362,11 @@ pub fn detect_all_dependency_explanations(
         if let Some(crate_info) = by_id.get(crate_id) {
             // Find which internal dependencies were updated
             let mut updated_deps = Vec::new();
+            // A dependency can sit in both sets (a Cargo crate that is also a
+            // dev-dependency, a Maven pin repeated in a profile) and must be named once.
             for dep_name in crate_info
                 .internal_deps
-                .iter()
-                .chain(&crate_info.internal_dev_deps)
+                .union(&crate_info.internal_dev_deps)
             {
                 if let Some(new_version) = new_version_by_name.get(dep_name as &str) {
                     // This internal dependency was updated

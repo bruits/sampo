@@ -1,7 +1,10 @@
 use crate::adapters::PackageAdapter;
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
-use crate::release::{parse_version_string, regenerate_lockfile, restore_prerelease_changesets};
+use crate::release::{
+    merge_overlapping_groups, parse_version_string, regenerate_lockfile,
+    restore_prerelease_changesets,
+};
 use crate::types::{
     PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
 };
@@ -127,6 +130,22 @@ fn resolve_targets<'a>(
         }
     }
 
+    // A module whose version is inherited from another manifest cannot move on its own,
+    // so pull its whole coupling group in. Merging first keeps multi-level chains together.
+    let coupled: BTreeSet<String> =
+        merge_overlapping_groups(PackageAdapter::implicit_fixed_groups(workspace))
+            .into_iter()
+            .filter(|group| group.iter().any(|id| seen.contains(id)))
+            .flatten()
+            .collect();
+
+    for info in &workspace.members {
+        let identifier = info.canonical_identifier().to_string();
+        if coupled.contains(&identifier) && seen.insert(identifier) {
+            targets.push(info);
+        }
+    }
+
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(targets)
 }
@@ -229,10 +248,31 @@ fn plan_exit_updates(
     Ok((changes, new_versions))
 }
 
+/// `sampo pre` owns the whole run, so adapter failures surface under its own variant.
+fn to_prerelease(err: SampoError) -> SampoError {
+    match err {
+        SampoError::Release(msg) => SampoError::Prerelease(msg),
+        other => other,
+    }
+}
+
 fn apply_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
+    // Reject an unsatisfiable plan before writing anything: manifests are written one at
+    // a time, so failing mid-loop leaves earlier ones pinning a version never published.
+    let new_version_by_id: BTreeMap<String, String> = workspace
+        .members
+        .iter()
+        .filter_map(|member| {
+            new_versions
+                .get(&member.name)
+                .map(|version| (member.canonical_identifier().to_string(), version.clone()))
+        })
+        .collect();
+    PackageAdapter::validate_release_plan(workspace, &new_version_by_id).map_err(to_prerelease)?;
+
     // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
     let names_by_kind: BTreeMap<_, BTreeSet<&str>> =
         workspace
@@ -256,27 +296,23 @@ fn apply_version_updates(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let (updated, _deps) = adapter.update_manifest_versions(
-            &manifest_path,
-            &original,
-            new_pkg_version,
-            &filtered_versions,
-        )?;
+        let (updated, _deps) = adapter
+            .update_manifest_versions(
+                &manifest_path,
+                &original,
+                new_pkg_version,
+                &filtered_versions,
+            )
+            .map_err(to_prerelease)?;
 
         if updated != original {
             fs::write(&manifest_path, updated)?;
         }
     }
 
-    PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(|err| match err {
-        SampoError::Release(msg) => SampoError::Prerelease(msg),
-        other => other,
-    })?;
+    PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(to_prerelease)?;
 
-    regenerate_lockfile(workspace).map_err(|err| match err {
-        SampoError::Release(msg) => SampoError::Prerelease(msg),
-        other => other,
-    })?;
+    regenerate_lockfile(workspace).map_err(to_prerelease)?;
 
     Ok(())
 }
@@ -531,5 +567,122 @@ bar = { version = "1.0.0", path = "crates/bar" }
             ws_dep_foo_version, "1.0.0-alpha",
             "root workspace deps not updated: {root_manifest}"
         );
+    }
+
+    /// A reactor rooted at `parent`, with `core` inheriting its version and `api`
+    /// carrying its own while pinning `core`. `api` sorts first, so it is what a
+    /// mid-loop failure would corrupt.
+    fn init_maven_reactor() -> tempfile::TempDir {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>api</module>\n    <module>core</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>core</artifactId>\n</project>\n",
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("api")).unwrap();
+        fs::write(
+            root.join("api/pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>api</artifactId>\n  <version>1.0.0</version>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>core</artifactId>\n      <version>1.0.0</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+
+        temp
+    }
+
+    #[test]
+    fn enter_pulls_maven_parent_in_with_its_inheriting_module() {
+        let temp = init_maven_reactor();
+        let root = temp.path();
+
+        let changes =
+            enter_prerelease(root, &["maven/com.example/core".to_string()], "alpha").unwrap();
+
+        // The module has no <version> of its own to carry the label, so naming it alone
+        // has to move the parent too.
+        let moved: Vec<&str> = changes.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            moved.contains(&"com.example/parent"),
+            "parent not pulled in: {moved:?}"
+        );
+        assert!(
+            fs::read_to_string(root.join("pom.xml"))
+                .unwrap()
+                .contains("<version>1.0.0-alpha</version>")
+        );
+        assert!(
+            fs::read_to_string(root.join("core/pom.xml"))
+                .unwrap()
+                .contains("<version>1.0.0-alpha</version>")
+        );
+    }
+
+    #[test]
+    fn exit_pulls_maven_parent_in_with_its_inheriting_module() {
+        let temp = init_maven_reactor();
+        let root = temp.path();
+
+        enter_prerelease(root, &["maven/com.example/core".to_string()], "alpha").unwrap();
+        exit_prerelease(root, &["maven/com.example/core".to_string()]).unwrap();
+
+        // Exiting skips packages already stable, so without the parent in the batch
+        // there is no way back out of pre-release.
+        assert!(
+            fs::read_to_string(root.join("pom.xml"))
+                .unwrap()
+                .contains("<version>1.0.0</version>")
+        );
+        let core = fs::read_to_string(root.join("core/pom.xml")).unwrap();
+        assert!(
+            !core.contains("alpha"),
+            "module left in pre-release: {core}"
+        );
+    }
+
+    #[test]
+    fn enter_leaves_every_manifest_untouched_when_coupling_cannot_hold() {
+        let temp = init_maven_reactor();
+        let root = temp.path();
+        // An external parent can never join the batch, so the plan is unsatisfiable.
+        fs::write(
+            root.join("core/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.0.0</version>\n  </parent>\n  <groupId>com.example</groupId>\n  <artifactId>core</artifactId>\n</project>\n",
+        )
+        .unwrap();
+
+        let before: Vec<String> = ["pom.xml", "api/pom.xml", "core/pom.xml"]
+            .iter()
+            .map(|p| fs::read_to_string(root.join(p)).unwrap())
+            .collect();
+
+        let err = enter_prerelease(root, &["maven/com.example/core".to_string()], "alpha")
+            .expect_err("unsatisfiable coupling must fail");
+        assert!(
+            matches!(err, SampoError::Prerelease(_)),
+            "`sampo pre` should report its own error variant, got: {err:?}"
+        );
+
+        // Nothing may be left half-written — `api` in particular must not be pinning a
+        // version that will never exist.
+        for (path, original) in ["pom.xml", "api/pom.xml", "core/pom.xml"]
+            .iter()
+            .zip(before)
+        {
+            assert_eq!(
+                fs::read_to_string(root.join(path)).unwrap(),
+                original,
+                "{path} was modified by a failed run"
+            );
+        }
     }
 }

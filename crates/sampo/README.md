@@ -124,7 +124,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
 
 > [!NOTE]
-> Maven packages publish through `mvn deploy`, run per package with `--non-recursive`. Your POM must carry the deploy configuration (e.g. the [central-publishing-maven-plugin](https://central.sonatype.org/publish/publish-portal-maven/) with GPG signing for Maven Central), and credentials come from `~/.m2/settings.xml` — in GitHub Actions, [`actions/setup-java`](https://github.com/actions/setup-java) writes it and imports the GPG key for you. In multi-module reactors, run `mvn install` before `sampo publish` so sibling artifacts resolve locally, and put modules that inherit their `<version>` from the parent POM in a [`fixed` group](#packages-section) with it so they always release to the same number. Packages whose version is a `-SNAPSHOT` or a build-time property (`${revision}`) are skipped with a warning: pin a static release `<version>` for Sampo to manage them.
+> In multi-module reactors, run `mvn install` before `sampo publish`: packages publish one at a time, so siblings must resolve locally. Deploy configuration and credentials come from your POM and `~/.m2/settings.xml` — in GitHub Actions, [`actions/setup-java`](https://github.com/actions/setup-java) handles both.
 
 #### Pre-release versions
 
