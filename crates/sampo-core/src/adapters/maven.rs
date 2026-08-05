@@ -263,8 +263,8 @@ pub(super) fn implicit_fixed_groups(members: &[&PackageInfo]) -> Vec<Vec<String>
     groups
 }
 
-/// Fail before any manifest is written when a version-inheriting module cannot be
-/// released consistently: its parent must be in the same batch at the same version.
+/// Fail before any manifest is written when the plan targets a version Sampo cannot
+/// manage, or when a version-inheriting module would drift from its parent.
 pub(super) fn validate_release_plan(
     members: &[PackageInfo],
     new_version_by_id: &BTreeMap<String, String>,
@@ -274,6 +274,22 @@ pub(super) fn validate_release_plan(
         .filter(|m| m.kind == PackageKind::Maven)
         .map(|m| m.name.as_str())
         .collect();
+
+    // Checked first so the diagnosis holds whatever else the batch contains: discovery
+    // would drop a snapshot module, leaving no way back through Sampo.
+    for member in members.iter().filter(|m| m.kind == PackageKind::Maven) {
+        let Some(target) = new_version_by_id.get(&member.identifier) else {
+            continue;
+        };
+        if pom::is_snapshot_version(target) {
+            return Err(SampoError::Release(format!(
+                "'{}' would be versioned {}; Sampo manages static release versions and has \
+                 no snapshot cycle, use a pre-release identifier like alpha, beta or rc \
+                 instead of SNAPSHOT",
+                member.name, target
+            )));
+        }
+    }
 
     for member in members.iter().filter(|m| m.kind == PackageKind::Maven) {
         let Some(target) = new_version_by_id.get(&member.identifier) else {

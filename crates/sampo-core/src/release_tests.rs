@@ -2446,6 +2446,188 @@ end
     }
 
     #[test]
+    fn maven_snapshot_target_is_refused_on_the_release_path() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // A release version to Maven, so discovery keeps it, but bumping strips the
+        // counter and lands back on a snapshot.
+        let manifest = "<project>\n  <groupId>com.example</groupId>\n  <artifactId>lib</artifactId>\n  <version>1.2.3-SNAPSHOT.1</version>\n</project>\n";
+        fs::write(root.join("pom.xml"), manifest).unwrap();
+
+        let changeset = root.join(".sampo/changesets/c.md");
+        fs::write(
+            &changeset,
+            "---\nmaven/com.example/lib: major\n---\n\nfeat: a breaking change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("a snapshot target must be refused");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("2.0.0-SNAPSHOT") && message.contains("snapshot cycle"),
+                    "expected a snapshot rejection, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        assert_eq!(read_pom(&root.join("pom.xml")), manifest);
+        assert!(changeset.exists(), "the changeset must survive");
+    }
+
+    #[test]
+    fn unparseable_version_fails_without_consuming_the_changeset() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // A mainstream Java version shape (Spring, Netty, JBoss) that Sampo cannot bump.
+        let manifest = "<project>\n  <groupId>com.example</groupId>\n  <artifactId>lib</artifactId>\n  <version>1.0.0.RELEASE</version>\n</project>\n";
+        fs::write(root.join("pom.xml"), manifest).unwrap();
+
+        let changeset = root.join(".sampo/changesets/c.md");
+        fs::write(
+            &changeset,
+            "---\nmaven/com.example/lib: minor\n---\n\nfeat: a change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("an unbumpable version must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("com.example/lib"),
+                    "expected the package to be named, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        assert!(
+            changeset.exists(),
+            "the changeset must survive a failed release"
+        );
+        assert_eq!(read_pom(&root.join("pom.xml")), manifest);
+        assert!(
+            !root.join("CHANGELOG.md").exists(),
+            "no changelog entry may be written for a version that never moved"
+        );
+    }
+
+    #[test]
+    fn unbumpable_prerelease_fails_and_names_its_version() {
+        // `npm version prerelease` produces this shape: the base bump outruns the implied
+        // one, leaving no non-numeric identifier to hang the counter on.
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("demo", "1.2.4-0");
+        workspace.add_changeset(&["demo"], Bump::Minor, "feat: a change");
+
+        let err = workspace
+            .run_release(false)
+            .expect_err("an unbumpable pre-release must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("cargo/demo") && message.contains("1.2.4-0"),
+                    "the message must name the package and its version, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        workspace.assert_crate_version("demo", "1.2.4-0");
+        let pending = fs::read_dir(workspace.root.join(".sampo/changesets"))
+            .unwrap()
+            .count();
+        assert_eq!(pending, 1, "the changeset must survive a failed release");
+    }
+
+    #[test]
+    fn cascade_pulled_package_explains_why_it_blocks_the_release() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // Only `app` has a changeset; `lib` is dragged in as a dependent, on a PEP 440
+        // version that is perfectly valid but not something Sampo can bump.
+        fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nname = \"root\"\nversion = \"0.1.0\"\n\n[tool.uv.workspace]\nmembers = [\"app\", \"lib\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/pyproject.toml"),
+            "[project]\nname = \"app\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/pyproject.toml"),
+            "[project]\nname = \"lib\"\nversion = \"1.0.0.post1\"\ndependencies = [\"app>=1.0\"]\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\npypi/app: minor\n---\n\nfeat: a change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("an unbumpable dependent must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("pypi/lib") && message.contains("joined this release"),
+                    "the message must explain why an untouched package blocks the run, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparseable_version_fails_outside_maven_too() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // The guard lives in shared planning code, not in an adapter.
+        let manifest = "[project]\nname = \"demo\"\nversion = \"1.0.0.post1\"\n";
+        fs::write(root.join("pyproject.toml"), manifest).unwrap();
+
+        let changeset = root.join(".sampo/changesets/c.md");
+        fs::write(&changeset, "---\npypi/demo: minor\n---\n\nfeat: a change\n").unwrap();
+
+        let err = run_release(root, false).expect_err("an unbumpable version must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("pypi/demo") && message.contains("1.0.0.post1"),
+                    "expected the package and its version to be named, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        assert!(
+            changeset.exists(),
+            "the changeset must survive a failed release"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("pyproject.toml")).unwrap(),
+            manifest
+        );
+    }
+
+    #[test]
     fn structurally_coupled_bump_does_not_cite_fixed_group_policy() {
         set_release_branch_main();
         let temp_dir = tempfile::tempdir().unwrap();

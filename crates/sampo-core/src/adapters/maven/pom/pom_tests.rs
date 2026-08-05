@@ -250,14 +250,33 @@ fn discover_resolves_parent_group_id_property() {
 
 #[test]
 fn discover_skips_snapshot_versions() {
-    let temp = tempfile::tempdir().unwrap();
-    write_file(
-        &temp.path().join("pom.xml"),
-        &simple_pom("com.example", "lib", "1.2.3-SNAPSHOT"),
-    );
+    // Every spelling below is a snapshot to `mvn deploy`, and Central rejects it.
+    for version in [
+        "1.2.3-SNAPSHOT",
+        "1.2.3-snapshot",
+        "1.2.3-Snapshot",
+        "1.2.3.SNAPSHOT",
+        "1.2.3SNAPSHOT",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        write_file(
+            &temp.path().join("pom.xml"),
+            &simple_pom("com.example", "lib", version),
+        );
 
-    let packages = discover(temp.path()).unwrap();
-    assert!(packages.is_empty());
+        let packages = discover(temp.path()).unwrap();
+        assert!(packages.is_empty(), "{version} should be skipped");
+    }
+}
+
+#[test]
+fn snapshot_detection_leaves_release_versions_alone() {
+    for version in ["1.2.3", "1.2.3-rc.1", "1.2.3-alpha", "1.2.3.RELEASE"] {
+        assert!(
+            !is_snapshot_version(version),
+            "{version} is a release version"
+        );
+    }
 }
 
 #[test]

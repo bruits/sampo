@@ -13,8 +13,8 @@ const POM_FILE: &str = "pom.xml";
 
 /// Maven's mutable dev-version marker. Central rejects it on release deployments, and
 /// Sampo would otherwise mistake it for one of its own pre-release cycles, so packages
-/// carrying it are skipped at discovery.
-const SNAPSHOT_SUFFIX: &str = "-SNAPSHOT";
+/// carrying it are skipped at discovery and refused before any write.
+const SNAPSHOT_MARKER: &str = "SNAPSHOT";
 
 /// Bound the `<parent>` chain walk when resolving inherited properties, so a
 /// pathological or cyclic layout cannot spin.
@@ -489,14 +489,27 @@ fn classify_version(raw: &str) -> EffectiveVersion {
             "is resolved at build time; pin a static <version> for Sampo to manage it",
         );
     }
-    if trimmed.ends_with(SNAPSHOT_SUFFIX) {
+    if is_snapshot_version(trimmed) {
         return EffectiveVersion::Unmanageable(
             trimmed.to_string(),
-            "is a -SNAPSHOT; Sampo manages static release versions, remove the suffix \
-             for Sampo to manage it",
+            "is a snapshot; Sampo manages static release versions, remove the SNAPSHOT \
+             suffix for Sampo to manage it",
         );
     }
     EffectiveVersion::Static(trimmed.to_string())
+}
+
+/// Maven's own rule, minus the branch matching resolved timestamped filenames: a trailing
+/// `SNAPSHOT`, case-insensitive and with no separator required. A narrower rule would let
+/// `1.0.0-snapshot` through discovery and on to `mvn deploy`.
+pub(super) fn is_snapshot_version(value: &str) -> bool {
+    let trimmed = value.trim();
+    match trimmed.len().checked_sub(SNAPSHOT_MARKER.len()) {
+        Some(start) if trimmed.is_char_boundary(start) => {
+            trimmed[start..].eq_ignore_ascii_case(SNAPSHOT_MARKER)
+        }
+        _ => false,
+    }
 }
 
 /// A version literal Sampo may splice: not a `${…}` property, not a `[…]`/`(…]` range.

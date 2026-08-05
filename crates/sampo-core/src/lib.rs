@@ -33,6 +33,7 @@ pub use git::current_branch;
 pub use markdown::format_markdown_list_item;
 pub use prerelease::{
     VersionChange, enter_prerelease, exit_prerelease, restore_preserved_changesets,
+    validate_prerelease_entry,
 };
 pub use publish::{PublishExtraArgs, run_publish, tag_published_crate, topo_order};
 pub use release::{

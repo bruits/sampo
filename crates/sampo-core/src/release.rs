@@ -893,11 +893,21 @@ fn compute_plan_state(
         return Ok(PlanOutcome::NoApplicablePackages);
     }
 
+    // Snapshot the changeset targets before the cascade widens the map, so a failure can
+    // tell the user whether they named the package or the release pulled it in.
+    let direct_targets: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
+
     let dependents = build_dependency_graph(workspace, config);
     apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
     apply_linked_dependencies(&mut bump_by_pkg, config, workspace)?;
 
-    let releases = prepare_release_plan(&bump_by_pkg, workspace, preserved_targets, stabilize)?;
+    let releases = prepare_release_plan(
+        &bump_by_pkg,
+        workspace,
+        preserved_targets,
+        stabilize,
+        &direct_targets,
+    )?;
     if releases.is_empty() {
         return Ok(PlanOutcome::NoMatchingCrates);
     }
@@ -1720,12 +1730,34 @@ fn apply_linked_dependencies(
     Ok(())
 }
 
+/// A version Sampo cannot parse or bump stops the run: planning it as a no-op would
+/// consume the changeset and log an entry under a version that never moved.
+///
+/// A package the user never named needs the extra context, otherwise the run looks
+/// blocked by something unrelated to the changeset they wrote.
+fn version_plan_error(
+    identifier: &str,
+    old: &str,
+    reason: &str,
+    direct_targets: &BTreeSet<String>,
+) -> SampoError {
+    let mut message = format!("Cannot release '{identifier}' ({old}): {reason}");
+    if !direct_targets.contains(identifier) {
+        message.push_str(
+            ". It joined this release because another package depends on it or shares a \
+             version group with it; fix its version, or exclude it with packages.ignore",
+        );
+    }
+    SampoError::Release(message)
+}
+
 /// Prepare the release plan by matching bumps to workspace members
 fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
     preserved_targets: &BTreeSet<String>,
     stabilize: bool,
+    direct_targets: &BTreeSet<String>,
 ) -> Result<ReleasePlan> {
     // Map package identifier -> PackageInfo for quick lookup
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
@@ -1742,19 +1774,16 @@ fn prepare_release_plan(
                 info.version.clone()
             };
 
-            let newv = match parse_version_string(&old) {
-                Ok(parsed) => {
-                    if stabilize && !parsed.pre.is_empty() {
-                        stabilize_version_from_parsed(&parsed, *bump)
-                            .unwrap_or_else(|_| old.clone())
-                    } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
-                        bump_prerelease_entry(&parsed, *bump).unwrap_or_else(|_| old.clone())
-                    } else {
-                        bump_version_from_parsed(&parsed, *bump).unwrap_or_else(|_| old.clone())
-                    }
-                }
-                Err(_) => old.clone(),
-            };
+            let parsed = parse_version_string(&old)
+                .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
+            let newv = if stabilize && !parsed.pre.is_empty() {
+                stabilize_version_from_parsed(&parsed, *bump)
+            } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
+                bump_prerelease_entry(&parsed, *bump)
+            } else {
+                bump_version_from_parsed(&parsed, *bump)
+            }
+            .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
 
             releases.push((identifier.clone(), old, newv));
         }

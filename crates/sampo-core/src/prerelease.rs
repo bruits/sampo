@@ -40,6 +40,23 @@ pub fn enter_prerelease(
     Ok(changes)
 }
 
+/// Report whether entering `label` would be accepted, without writing anything.
+///
+/// The answer holds either side of the rollback a label switch performs, since entering
+/// strips any existing pre-release before applying the label.
+pub fn validate_prerelease_entry(root: &Path, packages: &[String], label: &str) -> Result<()> {
+    let workspace = discover_workspace(root)?;
+    let targets = resolve_targets(&workspace, packages)?;
+    let prerelease = validate_label(label)?;
+
+    let (_, new_versions) = plan_enter_updates(&targets, &prerelease)?;
+    if new_versions.is_empty() {
+        return Ok(());
+    }
+
+    validate_version_updates(&workspace, &new_versions)
+}
+
 /// Exit pre-release mode for the selected packages, restoring stable versions.
 pub fn exit_prerelease(root: &Path, packages: &[String]) -> Result<Vec<VersionChange>> {
     let workspace = discover_workspace(root)?;
@@ -256,12 +273,12 @@ fn to_prerelease(err: SampoError) -> SampoError {
     }
 }
 
-fn apply_version_updates(
+/// Reject an unsatisfiable plan before writing anything: manifests are written one at a
+/// time, so failing mid-loop leaves earlier ones pinning a version never published.
+fn validate_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
-    // Reject an unsatisfiable plan before writing anything: manifests are written one at
-    // a time, so failing mid-loop leaves earlier ones pinning a version never published.
     let new_version_by_id: BTreeMap<String, String> = workspace
         .members
         .iter()
@@ -271,7 +288,14 @@ fn apply_version_updates(
                 .map(|version| (member.canonical_identifier().to_string(), version.clone()))
         })
         .collect();
-    PackageAdapter::validate_release_plan(workspace, &new_version_by_id).map_err(to_prerelease)?;
+    PackageAdapter::validate_release_plan(workspace, &new_version_by_id).map_err(to_prerelease)
+}
+
+fn apply_version_updates(
+    workspace: &Workspace,
+    new_versions: &BTreeMap<String, String>,
+) -> Result<()> {
+    validate_version_updates(workspace, new_versions)?;
 
     // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
     let names_by_kind: BTreeMap<_, BTreeSet<&str>> =
@@ -684,5 +708,81 @@ bar = { version = "1.0.0", path = "crates/bar" }
                 "{path} was modified by a failed run"
             );
         }
+    }
+
+    #[test]
+    fn enter_rejects_snapshot_labels_on_maven_packages() {
+        // The label a Maven user reaches for first, and the one that would make the
+        // module vanish from discovery with no way back out of pre-release.
+        for label in ["SNAPSHOT", "snapshot", "rc-SNAPSHOT"] {
+            let temp = init_maven_reactor();
+            let root = temp.path();
+
+            let before: Vec<String> = ["pom.xml", "api/pom.xml", "core/pom.xml"]
+                .iter()
+                .map(|p| fs::read_to_string(root.join(p)).unwrap())
+                .collect();
+
+            let err = enter_prerelease(root, &["maven/com.example/core".to_string()], label)
+                .expect_err("a snapshot label must be refused");
+            match err {
+                SampoError::Prerelease(message) => {
+                    assert!(
+                        message.contains("static release versions"),
+                        "expected a snapshot rejection for {label}, got: {message}"
+                    );
+                }
+                other => panic!("expected Prerelease error for {label}, got {other:?}"),
+            }
+
+            for (path, original) in ["pom.xml", "api/pom.xml", "core/pom.xml"]
+                .iter()
+                .zip(before)
+            {
+                assert_eq!(
+                    fs::read_to_string(root.join(path)).unwrap(),
+                    original,
+                    "{path} was modified by a run refused for label {label}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validating_an_entry_writes_nothing_and_holds_from_a_prerelease_state() {
+        let temp = init_maven_reactor();
+        let root = temp.path();
+        let core = ["maven/com.example/core".to_string()];
+
+        let before: Vec<String> = ["pom.xml", "api/pom.xml", "core/pom.xml"]
+            .iter()
+            .map(|p| fs::read_to_string(root.join(p)).unwrap())
+            .collect();
+
+        validate_prerelease_entry(root, &core, "rc").expect("an ordinary label is accepted");
+        validate_prerelease_entry(root, &core, "SNAPSHOT")
+            .expect_err("a snapshot label is refused");
+
+        for (path, original) in ["pom.xml", "api/pom.xml", "core/pom.xml"]
+            .iter()
+            .zip(before)
+        {
+            assert_eq!(
+                fs::read_to_string(root.join(path)).unwrap(),
+                original,
+                "{path} was modified by a validation-only call"
+            );
+        }
+
+        // A label switch asks the question while still in pre-release.
+        enter_prerelease(root, &core, "rc").expect("entering rc succeeds");
+        validate_prerelease_entry(root, &core, "SNAPSHOT")
+            .expect_err("a snapshot label is still refused from a pre-release state");
+        assert!(
+            fs::read_to_string(root.join("pom.xml"))
+                .unwrap()
+                .contains("<version>1.0.0-rc</version>"),
+            "the workspace must stay on its current label"
+        );
     }
 }

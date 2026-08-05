@@ -132,6 +132,9 @@ Run `sampo pre` to manage pre-release versions for one or more packages.
 
 While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
 
+> [!NOTE]
+> Maven packages cannot take a `SNAPSHOT` label: Sampo manages static release versions and has no snapshot cycle, and Maven Central rejects snapshots on release deployments. Use `alpha`, `beta`, `rc` or a milestone like `M1` instead.
+
 ## Configuration
 
 > [!NOTE]

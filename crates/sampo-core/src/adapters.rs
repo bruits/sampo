@@ -242,9 +242,8 @@ impl PackageAdapter {
         }
     }
 
-    /// Validate the release plan before any manifest is written. A Maven module inheriting
-    /// its version from a parent POM cannot be released unless the parent releases to the
-    /// same version in the same batch.
+    /// Validate the release plan before any manifest is written, so a plan no adapter can
+    /// satisfy fails while the workspace is still untouched.
     pub fn validate_release_plan(
         workspace: &Workspace,
         new_version_by_id: &BTreeMap<String, String>,
