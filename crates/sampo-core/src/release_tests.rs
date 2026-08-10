@@ -2436,6 +2436,12 @@ end
                     message.contains("from 'com.example/parent'"),
                     "expected preflight rejection, got: {message}"
                 );
+                // The child's <parent><version> really is stale here, so the message must
+                // say so rather than blame diverging bumps.
+                assert!(
+                    message.contains("out of date"),
+                    "expected the staleness diagnosis, got: {message}"
+                );
             }
             other => panic!("expected Release error, got {other:?}"),
         }
@@ -2443,6 +2449,112 @@ end
         // Neither manifest was touched before the plan was rejected.
         assert_eq!(read_pom(&root.join("pom.xml")), parent);
         assert_eq!(read_pom(&root.join("core/pom.xml")), child);
+    }
+
+    #[test]
+    fn linked_group_raise_carries_the_structural_partner_along() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        let parent = "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n    <module>other</module>\n  </modules>\n</project>\n";
+        fs::write(root.join("pom.xml"), parent).unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        let child = maven_child("parent", "core", "1.0.0");
+        fs::write(root.join("core/pom.xml"), &child).unwrap();
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::write(
+            root.join("other/pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>other</artifactId>\n  <version>1.0.0</version>\n</project>\n",
+        )
+        .unwrap();
+
+        // A linked group is resolved without the structural groups folded in, so raising
+        // `core` to `other`'s major happens after the cascade settled the parent at patch.
+        // The parent has to follow, or it releases below the module inheriting from it.
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nlinked = [[\"maven/com.example/core\", \"maven/com.example/other\"]]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/changesets/a.md"),
+            "---\nmaven/com.example/core: patch\n---\n\nfix: core change\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/changesets/b.md"),
+            "---\nmaven/com.example/other: major\n---\n\nfeat: other change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).expect("a linked raise must not strand the parent");
+
+        for path in ["pom.xml", "core/pom.xml", "other/pom.xml"] {
+            assert!(
+                read_pom(&root.join(path)).contains("<version>2.0.0</version>"),
+                "{path} should have followed the linked group's major bump"
+            );
+        }
+    }
+
+    #[test]
+    fn a_raised_bump_reaches_structural_partners_whatever_the_module_order() {
+        // The inheriting module takes its version from the parent and depends on a
+        // sibling, so the sibling's major reaches the parent through it. Whether it
+        // does must not depend on how the artifactIds sort — hence both orderings.
+        for (dependency, inheritor) in [("aaa", "zzz"), ("zdep", "achild")] {
+            set_release_branch_main();
+            let temp_dir = tempfile::tempdir().unwrap();
+            let root = temp_dir.path();
+            fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+            fs::write(
+                root.join("pom.xml"),
+                format!(
+                    "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>{dependency}</module>\n    <module>{inheritor}</module>\n  </modules>\n</project>\n"
+                ),
+            )
+            .unwrap();
+            fs::create_dir_all(root.join(dependency)).unwrap();
+            fs::write(
+                root.join(dependency).join("pom.xml"),
+                format!(
+                    "<project>\n  <groupId>com.example</groupId>\n  <artifactId>{dependency}</artifactId>\n  <version>1.0.0</version>\n</project>\n"
+                ),
+            )
+            .unwrap();
+            fs::create_dir_all(root.join(inheritor)).unwrap();
+            fs::write(
+                root.join(inheritor).join("pom.xml"),
+                format!(
+                    "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>{inheritor}</artifactId>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>{dependency}</artifactId>\n      <version>1.0.0</version>\n    </dependency>\n  </dependencies>\n</project>\n"
+                ),
+            )
+            .unwrap();
+
+            fs::write(
+                root.join(".sampo/changesets/a.md"),
+                format!("---\nmaven/com.example/{inheritor}: patch\n---\n\nfix: a change\n"),
+            )
+            .unwrap();
+            fs::write(
+                root.join(".sampo/changesets/b.md"),
+                format!("---\nmaven/com.example/{dependency}: major\n---\n\nfeat: a change\n"),
+            )
+            .unwrap();
+
+            run_release(root, false)
+                .unwrap_or_else(|err| panic!("{dependency}/{inheritor} should release: {err:?}"));
+
+            for path in ["pom.xml", &format!("{inheritor}/pom.xml")] {
+                assert!(
+                    read_pom(&root.join(path)).contains("<version>2.0.0</version>"),
+                    "{path} should follow the major bump for {dependency}/{inheritor}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2503,6 +2615,12 @@ end
                 assert!(
                     message.contains("com.example/lib"),
                     "expected the package to be named, got: {message}"
+                );
+                // The package was named in the changeset, so it must not be blamed on
+                // the cascade — that clause is reserved for packages the user never named.
+                assert!(
+                    !message.contains("joined this release"),
+                    "a directly-named package must not be reported as pulled in: {message}"
                 );
             }
             other => panic!("expected Release error, got {other:?}"),
@@ -2625,6 +2743,117 @@ end
             fs::read_to_string(root.join("pyproject.toml")).unwrap(),
             manifest
         );
+    }
+
+    #[test]
+    fn coupled_pair_advances_together_across_successive_prereleases() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+        fs::create_dir_all(root.join(".sampo/prerelease")).unwrap();
+
+        // Naming the module you changed but not the aggregator POM you didn't is the
+        // normal workflow, so the parent reaches the second release with no changeset
+        // of its own.
+        let parent = "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.1-rc</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n";
+        fs::write(root.join("pom.xml"), parent).unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            maven_child("parent", "core", "1.0.1-rc"),
+        )
+        .unwrap();
+
+        let entry = "---\nmaven/com.example/core: patch\n---\n\nfix: a change\n";
+        fs::write(root.join(".sampo/prerelease/old.md"), entry).unwrap();
+        fs::write(root.join(".sampo/changesets/new.md"), entry).unwrap();
+
+        run_release(root, false).expect("a coupled pair must survive a second pre-release");
+
+        let released = read_pom(&root.join("pom.xml"));
+        assert!(
+            released.contains("<version>1.0.1-rc.1</version>"),
+            "parent should follow the module it is coupled to, got: {released}"
+        );
+        assert!(
+            read_pom(&root.join("core/pom.xml")).contains("<version>1.0.1-rc.1</version>"),
+            "the inheriting module's <parent><version> must match"
+        );
+    }
+
+    #[test]
+    fn fixed_group_lands_on_one_bump_level_when_a_member_is_raised_late() {
+        // `m` is only reached through its fixed group, and `z`'s major arrives after the
+        // group was already settled at patch. Without re-propagation the two split, and
+        // a fixed group silently released at inconsistent versions.
+        set_release_branch_main();
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("dep", "1.0.0");
+        workspace.add_crate("m", "1.0.0");
+        workspace.add_crate("z", "1.0.0");
+        workspace.add_dependency("z", "dep", "1.0.0");
+        workspace.set_config("[packages]\nfixed = [[\"cargo/m\", \"cargo/z\"]]\n");
+        workspace.add_changeset(&["m"], Bump::Patch, "fix: m");
+        workspace.add_changeset(&["dep"], Bump::Major, "feat: dep");
+
+        workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        workspace.assert_crate_version("dep", "2.0.0");
+        workspace.assert_crate_version("z", "2.0.0");
+        workspace.assert_crate_version("m", "2.0.0");
+    }
+
+    #[test]
+    fn fixed_group_follows_a_linked_raise() {
+        // The linked raise on `x` lands after the cascade settled `d`/`e` at patch, so the
+        // fixed group has to be re-settled or it releases below its dependency.
+        set_release_branch_main();
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("x", "1.0.0");
+        workspace.add_crate("y", "1.0.0");
+        workspace.add_crate("d", "1.0.0");
+        workspace.add_crate("e", "1.0.0");
+        workspace.add_dependency("d", "x", "1.0.0");
+        workspace.set_config(
+            "[packages]\nlinked = [[\"cargo/x\", \"cargo/y\"]]\nfixed = [[\"cargo/d\", \"cargo/e\"]]\n",
+        );
+        workspace.add_changeset(&["x"], Bump::Patch, "fix: x");
+        workspace.add_changeset(&["y"], Bump::Major, "feat: y");
+
+        workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        workspace.assert_crate_version("x", "2.0.0");
+        workspace.assert_crate_version("d", "2.0.0");
+        workspace.assert_crate_version("e", "2.0.0");
+    }
+
+    #[test]
+    fn declared_fixed_group_does_not_inherit_a_prerelease_counter() {
+        set_release_branch_main();
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("a", "1.0.0");
+        workspace.add_crate("b", "1.0.0");
+        workspace.set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n");
+
+        // `fixed` is a bump-level policy, not structural coupling, so `sampo pre` leaves
+        // `b` behind and the release below publishes it as a stable version.
+        enter_prerelease(&workspace.root, &["cargo/a".to_string()], "rc").unwrap();
+        workspace.add_changeset(&["a"], Bump::Patch, "fix: one");
+        workspace.run_release(false).expect("first release");
+        workspace.assert_crate_version("b", "1.0.1");
+
+        // `b` now joins pre-release from a published 1.0.1. Treating it as preserved
+        // because `a` is would give it `a`'s counter and land it on 1.0.1-rc.1, below
+        // what it just published.
+        enter_prerelease(&workspace.root, &["cargo/b".to_string()], "rc").unwrap();
+        workspace.add_changeset(&["b"], Bump::Patch, "fix: two");
+        workspace.run_release(false).expect("second release");
+        workspace.assert_crate_version("b", "1.0.2-rc");
     }
 
     #[test]

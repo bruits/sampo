@@ -28,10 +28,7 @@ pub fn enter_prerelease(
     label: &str,
 ) -> Result<Vec<VersionChange>> {
     let workspace = discover_workspace(root)?;
-    let targets = resolve_targets(&workspace, packages)?;
-    let prerelease = validate_label(label)?;
-
-    let (changes, new_versions) = plan_enter_updates(&targets, &prerelease)?;
+    let (changes, new_versions) = plan_entry(&workspace, packages, label)?;
     if new_versions.is_empty() {
         return Ok(Vec::new());
     }
@@ -43,18 +40,32 @@ pub fn enter_prerelease(
 /// Report whether entering `label` would be accepted, without writing anything.
 ///
 /// The answer holds either side of the rollback a label switch performs, since entering
-/// strips any existing pre-release before applying the label.
-pub fn validate_prerelease_entry(root: &Path, packages: &[String], label: &str) -> Result<()> {
-    let workspace = discover_workspace(root)?;
-    let targets = resolve_targets(&workspace, packages)?;
-    let prerelease = validate_label(label)?;
-
-    let (_, new_versions) = plan_enter_updates(&targets, &prerelease)?;
+/// strips any existing pre-release before applying the label. It is only as fresh as
+/// `workspace`: a caller that has written manifests since discovering it must discover
+/// again before asking.
+pub fn validate_prerelease_entry(
+    workspace: &Workspace,
+    packages: &[String],
+    label: &str,
+) -> Result<()> {
+    let (_, new_versions) = plan_entry(workspace, packages, label)?;
     if new_versions.is_empty() {
         return Ok(());
     }
 
-    validate_version_updates(&workspace, &new_versions)
+    validate_version_updates(workspace, &new_versions)
+}
+
+/// The version changes entering `label` would make. Shared so asking and doing cannot
+/// answer differently.
+fn plan_entry(
+    workspace: &Workspace,
+    packages: &[String],
+    label: &str,
+) -> Result<(Vec<VersionChange>, BTreeMap<String, String>)> {
+    let targets = resolve_targets(workspace, packages)?;
+    let prerelease = validate_label(label)?;
+    plan_enter_updates(&targets, &prerelease)
 }
 
 /// Exit pre-release mode for the selected packages, restoring stable versions.
@@ -759,8 +770,9 @@ bar = { version = "1.0.0", path = "crates/bar" }
             .map(|p| fs::read_to_string(root.join(p)).unwrap())
             .collect();
 
-        validate_prerelease_entry(root, &core, "rc").expect("an ordinary label is accepted");
-        validate_prerelease_entry(root, &core, "SNAPSHOT")
+        let workspace = discover_workspace(root).unwrap();
+        validate_prerelease_entry(&workspace, &core, "rc").expect("an ordinary label is accepted");
+        validate_prerelease_entry(&workspace, &core, "SNAPSHOT")
             .expect_err("a snapshot label is refused");
 
         for (path, original) in ["pom.xml", "api/pom.xml", "core/pom.xml"]
@@ -776,7 +788,8 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
         // A label switch asks the question while still in pre-release.
         enter_prerelease(root, &core, "rc").expect("entering rc succeeds");
-        validate_prerelease_entry(root, &core, "SNAPSHOT")
+        let workspace = discover_workspace(root).unwrap();
+        validate_prerelease_entry(&workspace, &core, "SNAPSHOT")
             .expect_err("a snapshot label is still refused from a pre-release state");
         assert!(
             fs::read_to_string(root.join("pom.xml"))

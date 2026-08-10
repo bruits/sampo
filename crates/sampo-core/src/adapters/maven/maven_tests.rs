@@ -100,3 +100,38 @@ fn version_exists_defers_to_private_deploy_repositories() {
         .unwrap();
     assert!(!exists);
 }
+
+#[test]
+fn validate_release_plan_tells_a_stale_parent_from_diverging_bumps() {
+    // The planner keeps a coupled pair on one bump level, so divergence at equal
+    // versions only reaches here from a caller that built the map some other way.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("pom.xml"),
+        "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("core")).unwrap();
+    fs::write(
+        root.join("core/pom.xml"),
+        "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>core</artifactId>\n</project>\n",
+    )
+    .unwrap();
+
+    let members = pom::discover(root).unwrap();
+    let plan = |child: &str, parent: &str| {
+        BTreeMap::from([
+            ("maven/com.example/core".to_string(), child.to_string()),
+            ("maven/com.example/parent".to_string(), parent.to_string()),
+        ])
+    };
+
+    // Both POMs read 1.0.0, so nothing is stale — only the planned versions differ.
+    let err = validate_release_plan(&members, &plan("1.0.1", "2.0.0")).unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("planned bumps diverged") && !message.contains("out of date"),
+        "expected the divergence diagnosis, got: {message}"
+    );
+}

@@ -350,8 +350,8 @@ pub(super) fn update_manifest_versions(
                     Some(parent_version) => {
                         return Err(SampoError::Release(format!(
                             "Manifest {} inherits its version from its parent POM, but is \
-                             planned for {} while the parent releases {}; align them via a \
-                             fixed group or declare an explicit <version>",
+                             planned for {} while the parent releases {}; align them on a \
+                             single version or declare an explicit <version>",
                             manifest_path.display(),
                             target,
                             parent_version
@@ -360,8 +360,7 @@ pub(super) fn update_manifest_versions(
                     None => {
                         return Err(SampoError::Release(format!(
                             "Manifest {} inherits its version from its parent POM; release \
-                             the parent to the same version (e.g. via a fixed group) or \
-                             declare an explicit <version>",
+                             the parent together with it or declare an explicit <version>",
                             manifest_path.display()
                         )));
                     }
@@ -554,8 +553,9 @@ struct PomDep {
     group_id: Option<String>,
     artifact_id: Option<String>,
     scope: Option<String>,
-    /// True for `<dependencyManagement>` entries (declarative pins, no ordering).
-    managed: bool,
+    /// True for entries that must not constrain publish order: `<dependencyManagement>`
+    /// pins, which are declarative, and profile-scoped ones, which are conditional.
+    ordering_exempt: bool,
 }
 
 struct ParsedPom {
@@ -602,7 +602,7 @@ impl ParsedPom {
     }
 
     /// The `group/artifact` keys of the declared dependencies, each with an
-    /// ordering-exemption flag (test scope or `<dependencyManagement>` pin).
+    /// ordering-exemption flag (test scope, `<dependencyManagement>` pin, or profile).
     fn dependency_keys(&self) -> Vec<(String, bool)> {
         let own_group = self.effective_group_id();
         let parent_group = self
@@ -624,7 +624,7 @@ impl ParsedPom {
             // importing its own child BOM must not cycle, and the documented
             // `mvn install` prerequisite covers local resolution during the publish run.
             let ordering_exempt =
-                dep.managed || dep.scope.as_deref().map(str::trim) == Some("test");
+                dep.ordering_exempt || dep.scope.as_deref().map(str::trim) == Some("test");
             keys.push((key, ordering_exempt));
         }
         keys
@@ -976,11 +976,11 @@ fn parse_pom_node(project: Node<'_>, source: &str) -> Option<ParsedPom> {
 
     let dependencies = dependency_elements(project, source)
         .into_iter()
-        .map(|(dep, managed)| PomDep {
+        .map(|(dep, ordering_exempt)| PomDep {
             group_id: find_child(dep, source, "groupId").and_then(|n| text_value(n, source)),
             artifact_id: find_child(dep, source, "artifactId").and_then(|n| text_value(n, source)),
             scope: find_child(dep, source, "scope").and_then(|n| text_value(n, source)),
-            managed,
+            ordering_exempt,
         })
         .collect();
 
@@ -1045,10 +1045,10 @@ fn dependency_elements<'tree>(project: Node<'tree>, source: &str) -> Vec<(Node<'
     }
 
     let mut out = Vec::new();
-    for (list, managed) in lists {
+    for (list, ordering_exempt) in lists {
         for dep in child_elements(list) {
             if element_name(dep, source) == Some("dependency") {
-                out.push((dep, managed));
+                out.push((dep, ordering_exempt));
             }
         }
     }

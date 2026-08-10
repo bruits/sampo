@@ -898,8 +898,15 @@ fn compute_plan_state(
     let direct_targets: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
 
     let dependents = build_dependency_graph(workspace, config);
-    apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
-    apply_linked_dependencies(&mut bump_by_pkg, config, workspace)?;
+    // A linked raise can outrun the coupling the cascade just settled, so re-settle until
+    // linked has nothing left to raise. Bumps only ever rise through three levels over a
+    // finite set of packages, so this converges; with no `packages.linked` it runs once.
+    loop {
+        apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
+        if !apply_linked_dependencies(&mut bump_by_pkg, config, workspace)? {
+            break;
+        }
+    }
 
     let releases = prepare_release_plan(
         &bump_by_pkg,
@@ -1135,6 +1142,13 @@ fn all_preserved_targets_in_prerelease(
     Ok(true)
 }
 
+/// The packages preserved changesets target, widened across structural coupling groups:
+/// members that cannot hold different versions must advance their pre-release the same
+/// way, or the plan is rejected for versions never out of step.
+///
+/// Declared `packages.fixed` groups stay unwidened, matching `sampo pre`: they are only
+/// bump-level policy, their members enter pre-release separately, and one could inherit
+/// a counter it never earned — landing below the version it last published.
 fn collect_preserved_targets(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
@@ -1146,6 +1160,17 @@ fn collect_preserved_targets(
             targets.insert(info.canonical_identifier().to_string());
         }
     }
+
+    if targets.is_empty() {
+        return Ok(targets);
+    }
+
+    for group in merge_overlapping_groups(PackageAdapter::implicit_fixed_groups(workspace)) {
+        if group.iter().any(|id| targets.contains(id)) {
+            targets.extend(group);
+        }
+    }
+
     Ok(targets)
 }
 
@@ -1637,12 +1662,15 @@ fn apply_dependency_cascade(
                     .entry(dep_name.clone())
                     .or_insert(dependent_bump);
                 // If already present, keep the higher bump
-                if *entry < dependent_bump {
+                let raised = *entry < dependent_bump;
+                if raised {
                     *entry = dependent_bump;
                 }
-                if !seen.contains(dep_name) {
+                // Re-queue on a raise, not only on first sight: a package popped before
+                // its bump grew would otherwise never carry the higher level onward.
+                let first_sight = seen.insert(dep_name.clone());
+                if raised || first_sight {
                     queue.push(dep_name.clone());
-                    seen.insert(dep_name.clone());
                 }
             }
         }
@@ -1671,12 +1699,13 @@ fn apply_dependency_cascade(
                     .entry(group_member.clone())
                     .or_insert(changed_bump);
                 // If already present, keep the higher bump
-                if *entry < changed_bump {
+                let raised = *entry < changed_bump;
+                if raised {
                     *entry = changed_bump;
                 }
-                if !seen.contains(group_member) {
+                let first_sight = seen.insert(group_member.clone());
+                if raised || first_sight {
                     queue.push(group_member.clone());
-                    seen.insert(group_member.clone());
                 }
             }
         }
@@ -1685,13 +1714,17 @@ fn apply_dependency_cascade(
     Ok(())
 }
 
-/// Apply linked dependencies logic: highest bump level to affected packages only
+/// Apply linked dependencies logic: highest bump level to affected packages only.
+///
+/// Returns whether any bump was raised, so the caller can settle the structural coupling
+/// a raise may have outrun.
 fn apply_linked_dependencies(
     bump_by_pkg: &mut BTreeMap<String, Bump>,
     cfg: &Config,
     ws: &Workspace,
-) -> Result<()> {
+) -> Result<bool> {
     let resolved_groups = resolve_config_groups(ws, &cfg.linked_dependencies, "packages.linked")?;
+    let mut raised = false;
 
     for group in &resolved_groups {
         // Check if any package in this group has been bumped
@@ -1721,13 +1754,14 @@ fn apply_linked_dependencies(
                         .unwrap_or(Bump::Patch);
                     if highest_bump > current_bump {
                         bump_by_pkg.insert(group_member.clone(), highest_bump);
+                        raised = true;
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(raised)
 }
 
 /// A version Sampo cannot parse or bump stops the run: planning it as a no-op would

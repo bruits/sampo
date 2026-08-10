@@ -318,11 +318,24 @@ pub(super) fn validate_release_plan(
         match new_version_by_id.get(&parent_id) {
             Some(parent_version) if parent_version == target => {}
             Some(parent_version) => {
+                // A stale <parent><version> and diverging planned bumps call for different
+                // remedies; telling a user to sync versions that already match sends them
+                // nowhere.
+                let parent_current = members
+                    .iter()
+                    .find(|m| m.kind == PackageKind::Maven && m.name == parent_key)
+                    .map(|m| m.version.as_str());
+                let tail = if parent_current == Some(member.version.as_str()) {
+                    "both sit at the same version, so only their planned bumps diverged; \
+                     declare an explicit <version> to release it independently"
+                } else {
+                    "its <parent><version> is out of date, sync it with the parent POM or \
+                     declare an explicit <version>"
+                };
                 return Err(SampoError::Release(format!(
                     "'{}' inherits its version from '{}', but is planned for {} while the \
-                     parent releases {}; align them (e.g. via a fixed group) or declare an \
-                     explicit <version>",
-                    member.name, parent_key, target, parent_version
+                     parent releases {}; {}",
+                    member.name, parent_key, target, parent_version, tail
                 )));
             }
             None => {

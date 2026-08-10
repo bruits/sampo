@@ -112,7 +112,7 @@ fn run_enter(args: &PreEnterArgs) -> Result<bool> {
 
     // Before the label switch below, which would otherwise leave a refused run out of
     // pre-release mode with its preserved changesets already moved back.
-    validate_prerelease_entry(&workspace.root, &canonical, &label)?;
+    validate_prerelease_entry(&workspace, &canonical, &label)?;
 
     let packages_to_reset = packages_requiring_label_switch(&workspace, &canonical, &label)?;
     if !packages_to_reset.is_empty() {

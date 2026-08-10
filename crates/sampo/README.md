@@ -124,6 +124,9 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
 
 > [!NOTE]
+> Sampo cannot ask a private registry whether a version is already published, so Maven, PyPI and Packagist packages configured for one are always publish targets and every run re-attempts them. That is harmless for Packagist, whose publish step is `composer validate`, and for `uv publish`, which skips already-uploaded files through the `--index` Sampo injects — though forwarding your own `--publish-url` via `--pypi-args` replaces that injected flag, and uv then attempts the upload every run. `mvn deploy` instead fails against a repository that refuses redeploys, and a failed publish stops the packages queued behind it.
+
+> [!NOTE]
 > In multi-module reactors, run `mvn install` before `sampo publish`: packages publish one at a time, so siblings must resolve locally. Deploy configuration and credentials come from your POM and `~/.m2/settings.xml` — in GitHub Actions, [`actions/setup-java`](https://github.com/actions/setup-java) handles both.
 
 #### Pre-release versions
