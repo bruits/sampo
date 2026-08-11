@@ -28,7 +28,7 @@ fn split_coordinates_requires_group_and_artifact() {
 }
 
 #[test]
-fn check_dependency_constraint_always_skips() {
+fn check_dependency_constraint_skips_or_warns() {
     let temp = tempfile::tempdir().unwrap();
     let manifest = write_manifest(
         temp.path(),
@@ -49,6 +49,11 @@ fn check_dependency_constraint_always_skips() {
          \x20   </dependency>\n\
          \x20   <dependency>\n\
          \x20     <groupId>com.example</groupId>\n\
+         \x20     <artifactId>held</artifactId>\n\
+         \x20     <version>${held.version}</version>\n\
+         \x20   </dependency>\n\
+         \x20   <dependency>\n\
+         \x20     <groupId>com.example</groupId>\n\
          \x20     <artifactId>ranged</artifactId>\n\
          \x20     <version>[1.0,2.0)</version>\n\
          \x20   </dependency>\n\
@@ -66,12 +71,95 @@ fn check_dependency_constraint_always_skips() {
     };
 
     expect_skip("com.example/pinned", "pinned version");
-    expect_skip("com.example/tracked", "property-managed version");
+    expect_skip("com.example/tracked", "tracks the project version");
     expect_skip("com.example/ranged", "version range");
     expect_skip(
         "com.example/missing",
         "dependency 'com.example/missing' not found in manifest",
     );
+
+    match check_dependency_constraint(&manifest, "com.example/held", "", "2.0.0").unwrap() {
+        ConstraintCheckResult::Unverifiable { constraint } => {
+            assert_eq!(constraint, "${held.version}");
+        }
+        other => panic!("expected Unverifiable for a custom property, got {other:?}"),
+    }
+}
+
+#[test]
+fn legacy_project_version_aliases_track_like_the_canonical_form() {
+    // Maven still resolves `${pom.version}` and `${version}` to the project version;
+    // warning that such a pin "will not follow" would be factually wrong.
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = write_manifest(
+        temp.path(),
+        "<project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>cli</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         \x20 <dependencies>\n\
+         \x20   <dependency>\n\
+         \x20     <groupId>com.example</groupId>\n\
+         \x20     <artifactId>legacy</artifactId>\n\
+         \x20     <version>${pom.version}</version>\n\
+         \x20   </dependency>\n\
+         \x20   <dependency>\n\
+         \x20     <groupId>com.example</groupId>\n\
+         \x20     <artifactId>bare</artifactId>\n\
+         \x20     <version>${version}</version>\n\
+         \x20   </dependency>\n\
+         \x20 </dependencies>\n\
+         </project>\n",
+    );
+
+    for dep in ["com.example/legacy", "com.example/bare"] {
+        match check_dependency_constraint(&manifest, dep, "", "2.0.0").unwrap() {
+            ConstraintCheckResult::Skipped { reason } => {
+                assert_eq!(reason, "tracks the project version");
+            }
+            other => panic!("expected Skipped for {dep}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn dependency_management_property_pin_is_unverifiable() {
+    // The canonical layout keeps `${dep.version}` pins in <dependencyManagement>; a
+    // versionless usage declared earlier must not shadow the entry carrying the pin.
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = write_manifest(
+        temp.path(),
+        "<project>\n\
+         \x20 <groupId>com.example</groupId>\n\
+         \x20 <artifactId>parent</artifactId>\n\
+         \x20 <version>1.0.0</version>\n\
+         \x20 <properties>\n\
+         \x20   <core.version>1.0.0</core.version>\n\
+         \x20 </properties>\n\
+         \x20 <dependencies>\n\
+         \x20   <dependency>\n\
+         \x20     <groupId>com.example</groupId>\n\
+         \x20     <artifactId>core</artifactId>\n\
+         \x20   </dependency>\n\
+         \x20 </dependencies>\n\
+         \x20 <dependencyManagement>\n\
+         \x20   <dependencies>\n\
+         \x20     <dependency>\n\
+         \x20       <groupId>com.example</groupId>\n\
+         \x20       <artifactId>core</artifactId>\n\
+         \x20       <version>${core.version}</version>\n\
+         \x20     </dependency>\n\
+         \x20   </dependencies>\n\
+         \x20 </dependencyManagement>\n\
+         </project>\n",
+    );
+
+    match check_dependency_constraint(&manifest, "com.example/core", "", "1.1.0").unwrap() {
+        ConstraintCheckResult::Unverifiable { constraint } => {
+            assert_eq!(constraint, "${core.version}");
+        }
+        other => panic!("expected Unverifiable for a dependencyManagement pin, got {other:?}"),
+    }
 }
 
 #[test]

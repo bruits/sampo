@@ -201,11 +201,13 @@ impl PackageAdapter {
         }
     }
 
-    /// Finalize workspace root manifests after all member manifests have been updated.
+    /// Finalize manifests that carry inherited versions after all member manifests have
+    /// been updated.
     ///
-    /// For each ecosystem that uses workspace version inheritance (currently Cargo), this
-    /// detects which members inherit their version, validates they resolve to the same version,
-    /// and updates the workspace root manifest accordingly.
+    /// Cargo detects which members inherit their version, validates they resolve to the
+    /// same version, and updates the workspace root manifest accordingly. Maven keeps the
+    /// `<parent><version>` of members left out of the plan current, so a release never
+    /// leaves a reactor Maven cannot resolve.
     pub fn finalize_workspace_roots(
         workspace: &Workspace,
         new_version_by_name: &BTreeMap<String, String>,
@@ -221,6 +223,15 @@ impl PackageAdapter {
                 &workspace.members,
                 new_version_by_name,
             )?;
+        }
+
+        let has_maven = workspace
+            .members
+            .iter()
+            .any(|pkg| pkg.kind == PackageKind::Maven);
+
+        if has_maven {
+            maven::finalize_inherited_references(&workspace.members, new_version_by_name)?;
         }
 
         Ok(())

@@ -221,11 +221,21 @@ pub(super) fn check_dependency_constraint(
 
     let trimmed = value.trim();
     // Maven dependency versions are not constraints: a plain version is a "soft"
-    // requirement resolved by mediation, `${…}` tracks a property, and ranges express
-    // an intent Sampo should not second-guess. The release rewrite keeps literal pins
-    // current, so there is nothing to validate here.
+    // requirement resolved by mediation, and the release rewrite keeps literal pins
+    // current. `${project.version}` (and its legacy aliases) tracks the dependent's
+    // own version; any other property is a pin Sampo neither resolves nor rewrites.
+    // Ranges express an intent Sampo should not second-guess.
+    let tracks_project_version = matches!(
+        trimmed,
+        "${project.version}" | "${pom.version}" | "${version}"
+    );
+    if trimmed.contains("${") && !tracks_project_version {
+        return Ok(ConstraintCheckResult::Unverifiable {
+            constraint: trimmed.to_string(),
+        });
+    }
     let reason = if trimmed.contains("${") {
-        "property-managed version"
+        "tracks the project version"
     } else if trimmed.starts_with('[') || trimmed.starts_with('(') {
         "version range"
     } else {
@@ -261,6 +271,72 @@ pub(super) fn implicit_fixed_groups(members: &[&PackageInfo]) -> Vec<Vec<String>
         }
     }
     groups
+}
+
+/// Keep excluded members' inherited references current after a release.
+///
+/// A module inheriting its `<version>` reads it from the parent's file, so its effective
+/// version moves with the parent whether Sampo writes it or not. An excluded member
+/// (`packages.ignore`, `ignore_unpublished`) is left out of the plan, but leaving its
+/// `<parent><version>` behind would break the reactor: Maven resolves the pin literally.
+pub(super) fn finalize_inherited_references(
+    members: &[PackageInfo],
+    new_version_by_name: &BTreeMap<String, String>,
+) -> Result<()> {
+    let maven_names: BTreeSet<&str> = members
+        .iter()
+        .filter(|m| m.kind == PackageKind::Maven)
+        .map(|m| m.name.as_str())
+        .collect();
+    let mut versions: BTreeMap<String, String> = new_version_by_name
+        .iter()
+        .filter(|(name, _)| maven_names.contains(name.as_str()))
+        .map(|(name, version)| (name.clone(), version.clone()))
+        .collect();
+
+    // Settle every effective version before writing anything: a member spliced against a
+    // half-settled map would keep stale pins on members settled later, and which ones
+    // would depend on discovery order.
+    let mut excluded: Vec<&PackageInfo> = Vec::new();
+    loop {
+        let mut changed = false;
+        for member in members.iter().filter(|m| m.kind == PackageKind::Maven) {
+            if versions.contains_key(&member.name) {
+                continue;
+            }
+            let manifest = pom::manifest_path(&member.path);
+            let Some(link) = pom::version_link(&manifest) else {
+                continue;
+            };
+            if !link.inherits {
+                continue;
+            }
+            let Some(parent_version) = link
+                .parent_key
+                .as_deref()
+                .and_then(|key| versions.get(key))
+                .cloned()
+            else {
+                continue;
+            };
+            versions.insert(member.name.clone(), parent_version);
+            excluded.push(member);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for member in excluded {
+        let manifest = pom::manifest_path(&member.path);
+        let text = std::fs::read_to_string(&manifest)?;
+        let (updated, _) = pom::update_manifest_versions(&manifest, &text, None, &versions)?;
+        if updated != text {
+            std::fs::write(&manifest, updated)?;
+        }
+    }
+    Ok(())
 }
 
 /// Fail before any manifest is written when the plan targets a version Sampo cannot

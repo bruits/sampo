@@ -1032,3 +1032,93 @@ fn profile_dependency_pins_are_rewritten_without_ordering_edges() {
         vec![("com.example/core".to_string(), "1.1.0".to_string())]
     );
 }
+
+#[test]
+fn discover_skips_a_version_holding_markup() {
+    // `<version>0.5.0<!-- pinned --></version>` under a workspace <parent> used to be
+    // read as "inherited": Sampo then released, changelogged, and tagged the parent's
+    // version while the POM kept its own.
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("pom.xml"),
+        "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n  </modules>\n</project>\n",
+    );
+    write_file(
+        &temp.path().join("core/pom.xml"),
+        "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>core</artifactId>\n  <version>0.5.0<!-- pinned --></version>\n</project>\n",
+    );
+
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1, "only the parent is manageable");
+    assert_eq!(packages[0].name, "com.example/parent");
+}
+
+#[test]
+fn discover_skips_an_inherited_version_holding_markup() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("pom.xml"),
+        "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>upstream</artifactId>\n    <version>1.0.0<!-- keep --></version>\n  </parent>\n  <artifactId>lib</artifactId>\n</project>\n",
+    );
+
+    let packages = discover(temp.path()).unwrap();
+    assert!(
+        packages.is_empty(),
+        "an unreadable parent pin is not a version"
+    );
+}
+
+#[test]
+fn a_version_holding_markup_is_not_inherited() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pom.xml");
+    write_file(
+        &manifest,
+        "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>core</artifactId>\n  <version>0.5.0<!-- pinned --></version>\n</project>\n",
+    );
+
+    let link = version_link(&manifest).unwrap();
+    assert!(
+        !link.inherits,
+        "a module with an unreadable own <version> must not be coupled to its parent"
+    );
+}
+
+#[test]
+fn update_refuses_a_version_holding_markup() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pom.xml");
+    let input = "<project>\n  <groupId>com.example</groupId>\n  <artifactId>lib</artifactId>\n  <version>1.0.0<!-- pinned --></version>\n</project>\n";
+    write_file(&manifest, input);
+
+    let err = update_manifest_versions(&manifest, input, Some("1.1.0"), &BTreeMap::new())
+        .expect_err("an unreadable <version> must refuse the update");
+    assert!(
+        err.to_string().contains("markup"),
+        "the error must name the cause, got: {err}"
+    );
+}
+
+#[test]
+fn pins_holding_markup_are_left_as_written() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pom.xml");
+    let input = "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0<!-- hold --></version>\n  </parent>\n  <artifactId>app</artifactId>\n  <version>2.0.0</version>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>core</artifactId>\n      <version>1.0.0<!-- hold --></version>\n    </dependency>\n  </dependencies>\n</project>\n";
+    write_file(&manifest, input);
+
+    let mut versions = BTreeMap::new();
+    versions.insert("com.example/parent".to_string(), "1.1.0".to_string());
+    versions.insert("com.example/core".to_string(), "1.1.0".to_string());
+
+    let (updated, applied) =
+        update_manifest_versions(&manifest, input, Some("2.0.1"), &versions).unwrap();
+    assert!(
+        updated.contains("<version>1.0.0<!-- hold --></version>"),
+        "unreadable pins must stay as written: {updated}"
+    );
+    assert!(updated.contains("<version>2.0.1</version>"));
+    assert!(
+        applied.is_empty(),
+        "nothing may claim a pin that was not moved: {applied:?}"
+    );
+}

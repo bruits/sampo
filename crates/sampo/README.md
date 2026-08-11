@@ -127,7 +127,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Sampo cannot ask a private registry whether a version is already published, so Maven, PyPI and Packagist packages configured for one are always publish targets and every run re-attempts them. That is harmless for Packagist, whose publish step is `composer validate`, and for `uv publish`, which skips already-uploaded files through the `--index` Sampo injects — though forwarding your own `--publish-url` via `--pypi-args` replaces that injected flag, and uv then attempts the upload every run. `mvn deploy` instead fails against a repository that refuses redeploys, and a failed publish stops the packages queued behind it.
 
 > [!NOTE]
-> In multi-module reactors, run `mvn install` before `sampo publish`: packages publish one at a time, so siblings must resolve locally. Deploy configuration and credentials come from your POM and `~/.m2/settings.xml` — in GitHub Actions, [`actions/setup-java`](https://github.com/actions/setup-java) handles both.
+> In multi-module reactors, run `mvn install` before `sampo publish`: packages publish one at a time, so siblings must resolve locally. Sampo's already-published check reads `repo1.maven.org`, which only sees a deployment once the Central Portal publishes it — enable `autoPublish` on `central-publishing-maven-plugin` and let the sync finish before re-running `sampo publish`.
 
 #### Pre-release versions
 
@@ -243,6 +243,9 @@ Sampo detects packages within the same monorepo (even one mixing ecosystems) tha
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages and can mix ecosystems. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo/a", "cargo/b"], ["cargo/c", "cargo/d"]]` and `cargo/a` is updated to `2.0.0` (major), then `cargo/b` will also be bumped to `2.0.0`, but `cargo/c` and `cargo/d` remain unchanged.
 
 `linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages and may include multiple ecosystems. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo/a", "cargo/b"]]` where `cargo/a` depends on `cargo/b`, when `cargo/b` is updated to `2.0.0` (major), then `cargo/a` will also be bumped to `2.0.0`. If `cargo/a` is later updated to `2.1.0` (minor), `cargo/b` remains at `2.0.0` since it's not affected. Finally, if `cargo/b` has a patch update, both `cargo/a` and `cargo/b` will be bumped with patch level since it's the highest bump in the group.
+
+> [!NOTE]
+> Maven modules inheriting their `<version>` from a parent POM release together, like a `fixed` group you never had to declare, and `sampo pre enter`/`exit` widens the same way. An ignored member stays out of releases and publishing, but its `<parent><version>` is kept current: Maven resolves that pin literally.
 
 > [!WARNING]
 > Packages cannot appear in both `fixed` and `linked` configurations.

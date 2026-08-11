@@ -963,7 +963,7 @@ fn compute_plan_state(
 
 /// Validates dependency constraints before applying releases.
 /// Returns error for fixed/linked packages with violations, warnings otherwise.
-fn validate_dependency_constraints(
+pub(crate) fn validate_dependency_constraints(
     releases: &ReleasePlan,
     workspace: &Workspace,
     config: &Config,
@@ -1044,6 +1044,14 @@ fn validate_dependency_constraints(
             match check_result {
                 ConstraintCheckResult::Satisfied => {}
                 ConstraintCheckResult::Skipped { .. } => {}
+                ConstraintCheckResult::Unverifiable { constraint } => {
+                    warnings.push(unverifiable_pin_warning(
+                        pkg_id,
+                        &dep_info.name,
+                        &constraint,
+                        new_dep_version,
+                    ));
+                }
                 ConstraintCheckResult::NotSatisfied {
                     constraint,
                     new_version,
@@ -1067,6 +1075,35 @@ fn validate_dependency_constraints(
                 }
             }
         }
+
+        // Declarative edges (`<dependencyManagement>` pins, dev-only deps) never block
+        // a release, but a property pin there goes stale all the same. Surface those,
+        // ignore every other outcome.
+        for dep_id in &pkg_info.internal_dev_deps {
+            if pkg_info.internal_deps.contains(dep_id) {
+                continue;
+            }
+            let Some(new_dep_version) = new_version_by_id.get(dep_id) else {
+                continue;
+            };
+            let Some(dep_info) = by_id.get(dep_id) else {
+                continue;
+            };
+            let check_result = adapter.check_dependency_constraint(
+                &manifest_path,
+                &dep_info.name,
+                "*",
+                new_dep_version,
+            )?;
+            if let ConstraintCheckResult::Unverifiable { constraint } = check_result {
+                warnings.push(unverifiable_pin_warning(
+                    pkg_id,
+                    &dep_info.name,
+                    &constraint,
+                    new_dep_version,
+                ));
+            }
+        }
     }
 
     if !violations.is_empty() {
@@ -1078,6 +1115,20 @@ fn validate_dependency_constraints(
     }
 
     Ok(warnings)
+}
+
+/// A pin the release rewrite will not touch, pointing at a package that is moving.
+fn unverifiable_pin_warning(
+    pkg_id: &str,
+    dep_name: &str,
+    constraint: &str,
+    new_version: &str,
+) -> String {
+    format!(
+        "Warning: {pkg_id} pins {dep_name} through '{constraint}', which Sampo leaves \
+         as written; {dep_name} releases {new_version} — update the pin yourself if it \
+         should follow"
+    )
 }
 
 /// Check if a package identifier is in any of the provided groups.

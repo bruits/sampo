@@ -337,6 +337,15 @@ pub(super) fn update_manifest_versions(
                     span.value
                 )));
             }
+            // Discovery skips a module whose <version> holds markup, so hitting this
+            // means the manifest changed under us.
+            None if spans.own_version_unreadable => {
+                return Err(SampoError::Release(format!(
+                    "Manifest {} has a <version> holding markup Sampo cannot read; use a \
+                     plain literal",
+                    manifest_path.display()
+                )));
+            }
             // The version is inherited: it only moves when the parent's own release
             // rewrites the <parent> block below, so both must land in the same batch
             // with the same number.
@@ -372,12 +381,23 @@ pub(super) fn update_manifest_versions(
     if let Some(parent) = &spans.parent
         && let Some(key) = &parent.key
         && let Some(new_version) = new_version_by_name.get(key)
-        && let Some(span) = &parent.version
-        && is_static_version(&span.value)
-        && &span.value != new_version
     {
-        edits.push((span.range.clone(), new_version.clone()));
-        updated.insert(key.clone());
+        match &parent.version {
+            Some(span) if is_static_version(&span.value) && &span.value != new_version => {
+                edits.push((span.range.clone(), new_version.clone()));
+                updated.insert(key.clone());
+            }
+            // A pin left as written must be said out loud: Maven resolves it literally,
+            // so a stale one breaks the reactor.
+            None if parent.version_unreadable => {
+                eprintln!(
+                    "Warning: {} pins its parent '{key}' with markup Sampo cannot read; \
+                     left as written",
+                    manifest_path.display()
+                );
+            }
+            _ => {}
+        }
     }
 
     for dep in &spans.dependencies {
@@ -385,14 +405,22 @@ pub(super) fn update_manifest_versions(
         let Some(new_version) = new_version_by_name.get(key) else {
             continue;
         };
-        let Some(span) = &dep.version else { continue };
-        // `${project.version}` and friends track the new version by themselves, and
-        // ranges express an intent Sampo should not overwrite.
-        if !is_static_version(&span.value) || &span.value == new_version {
-            continue;
+        match &dep.version {
+            // `${project.version}` follows the dependent's own version, and ranges
+            // express an intent Sampo should not overwrite.
+            Some(span) if is_static_version(&span.value) && &span.value != new_version => {
+                edits.push((span.range.clone(), new_version.clone()));
+                updated.insert(key.clone());
+            }
+            None if dep.version_unreadable => {
+                eprintln!(
+                    "Warning: {} pins dependency '{key}' with markup Sampo cannot read; \
+                     left as written",
+                    manifest_path.display()
+                );
+            }
+            _ => {}
         }
-        edits.push((span.range.clone(), new_version.clone()));
-        updated.insert(key.clone());
     }
 
     if edits.is_empty() {
@@ -435,12 +463,14 @@ pub(super) fn find_dependency_constraint_value(
         return Ok(parent.version.as_ref().map(|span| span.value.clone()));
     }
 
-    for dep in &spans.dependencies {
-        if dep.key.as_deref() == Some(dep_name) {
-            return Ok(dep.version.as_ref().map(|span| span.value.clone()));
-        }
-    }
-    Ok(None)
+    // A dependency can be declared more than once — typically versionless in
+    // `<dependencies>` with the pin in `<dependencyManagement>` — so the first match
+    // must not shadow the entry that actually carries the version.
+    Ok(spans
+        .dependencies
+        .iter()
+        .filter(|dep| dep.key.as_deref() == Some(dep_name))
+        .find_map(|dep| dep.version.as_ref().map(|span| span.value.clone())))
 }
 
 /// How a module's version relates to its parent POM.
@@ -461,7 +491,9 @@ pub(super) fn version_link(manifest_path: &Path) -> Option<VersionLink> {
         .map(str::trim)
         .filter(|v| !v.is_empty());
     Some(VersionLink {
-        inherits: own.is_none(),
+        // A present-but-unreadable `<version>` is not inherited: the module carries a
+        // version of its own, Sampo just cannot read it.
+        inherits: own.is_none() && parsed.version_markup.is_none(),
         parent_key: parsed.parent.as_ref().and_then(ParentRef::key),
     })
 }
@@ -475,6 +507,15 @@ enum EffectiveVersion {
     Unmanageable(String, &'static str),
     /// No `<version>` element, own or in the `<parent>` block.
     Absent,
+}
+
+/// A `<version>` element whose content is not a plain literal (a comment, a nested
+/// element, an entity reference).
+fn unreadable_version(markup: &str) -> EffectiveVersion {
+    EffectiveVersion::Unmanageable(
+        markup.to_string(),
+        "holds markup Sampo cannot read; use a plain literal for Sampo to manage it",
+    )
 }
 
 fn classify_version(raw: &str) -> EffectiveVersion {
@@ -524,6 +565,8 @@ struct ParentRef {
     group_id: Option<String>,
     artifact_id: Option<String>,
     version: Option<String>,
+    /// The `<version>` element's raw content when present but not a plain literal.
+    version_markup: Option<String>,
     /// `<relativePath>` as written: `None` when absent (Maven defaults to
     /// `../pom.xml`), `Some("")` when explicitly emptied (repository-only resolution).
     relative_path: Option<String>,
@@ -562,6 +605,8 @@ struct ParsedPom {
     group_id: Option<String>,
     artifact_id: Option<String>,
     version: Option<String>,
+    /// The own `<version>` element's raw content when present but not a plain literal.
+    version_markup: Option<String>,
     parent: Option<ParentRef>,
     modules: Vec<String>,
     dependencies: Vec<PomDep>,
@@ -590,13 +635,27 @@ impl ParsedPom {
     }
 
     /// The module's version, falling back to the `<parent>` block when absent.
+    ///
+    /// A `<version>` element that is present but unreadable is `Unmanageable`, never
+    /// "inherited": falling through to the parent would release, changelog, and tag a
+    /// version the POM itself does not carry.
     fn effective_version(&self) -> EffectiveVersion {
-        let raw = self
-            .version
-            .as_deref()
-            .or_else(|| self.parent.as_ref().and_then(|p| p.version.as_deref()));
-        match raw {
-            Some(raw) => classify_version(raw),
+        if let Some(markup) = &self.version_markup {
+            return unreadable_version(markup);
+        }
+        if let Some(raw) = self.version.as_deref() {
+            return classify_version(raw);
+        }
+        match &self.parent {
+            Some(parent) => {
+                if let Some(markup) = &parent.version_markup {
+                    return unreadable_version(markup);
+                }
+                match parent.version.as_deref() {
+                    Some(raw) => classify_version(raw),
+                    None => EffectiveVersion::Absent,
+                }
+            }
             None => EffectiveVersion::Absent,
         }
     }
@@ -817,16 +876,20 @@ struct TextSpan {
 struct ParentSpans {
     key: Option<String>,
     version: Option<TextSpan>,
+    /// The `<version>` element exists but its content is not a plain literal.
+    version_unreadable: bool,
 }
 
 struct DepSpans {
     key: Option<String>,
     version: Option<TextSpan>,
+    version_unreadable: bool,
 }
 
 /// Everything `update_manifest_versions` may splice, located in a single parse.
 struct PomSpans {
     own_version: Option<TextSpan>,
+    own_version_unreadable: bool,
     parent: Option<ParentSpans>,
     dependencies: Vec<DepSpans>,
 }
@@ -943,6 +1006,30 @@ fn text_value(element: Node<'_>, source: &str) -> Option<String> {
     text_span(element, source).map(|span| span.value)
 }
 
+/// The raw inner content of an element, for diagnostics on values `text_span` refuses.
+fn raw_content(element: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = element.walk();
+    let content = element
+        .children(&mut cursor)
+        .find(|n| n.kind() == "content")?;
+    source
+        .get(content.start_byte()..content.end_byte())
+        .map(|raw| raw.trim().to_string())
+}
+
+/// A `<version>` element's readable value, plus its raw content when the element is
+/// present but not a plain literal. Telling those apart matters: an absent element
+/// means the version is inherited, an unreadable one means Sampo must not guess.
+fn version_field(element: Option<Node<'_>>, source: &str) -> (Option<String>, Option<String>) {
+    let Some(node) = element else {
+        return (None, None);
+    };
+    match text_value(node, source) {
+        Some(value) => (Some(value), None),
+        None => (None, raw_content(node, source)),
+    }
+}
+
 fn parse_pom(source: &str) -> Option<ParsedPom> {
     let tree = parse_xml(source)?;
     let project = root_element(&tree)?;
@@ -956,12 +1043,18 @@ fn parse_pom_node(project: Node<'_>, source: &str) -> Option<ParsedPom> {
 
     let field = |name: &str| find_child(project, source, name).and_then(|n| text_value(n, source));
 
-    let parent = find_child(project, source, "parent").map(|parent| ParentRef {
-        group_id: find_child(parent, source, "groupId").and_then(|n| text_value(n, source)),
-        artifact_id: find_child(parent, source, "artifactId").and_then(|n| text_value(n, source)),
-        version: find_child(parent, source, "version").and_then(|n| text_value(n, source)),
-        relative_path: find_child(parent, source, "relativePath")
-            .map(|n| text_value(n, source).unwrap_or_default()),
+    let parent = find_child(project, source, "parent").map(|parent| {
+        let (version, version_markup) =
+            version_field(find_child(parent, source, "version"), source);
+        ParentRef {
+            group_id: find_child(parent, source, "groupId").and_then(|n| text_value(n, source)),
+            artifact_id: find_child(parent, source, "artifactId")
+                .and_then(|n| text_value(n, source)),
+            version,
+            version_markup,
+            relative_path: find_child(parent, source, "relativePath")
+                .map(|n| text_value(n, source).unwrap_or_default()),
+        }
     });
 
     let modules = find_child(project, source, "modules")
@@ -997,10 +1090,13 @@ fn parse_pom_node(project: Node<'_>, source: &str) -> Option<ParsedPom> {
                 .unwrap_or_default()
         });
 
+    let (version, version_markup) = version_field(find_child(project, source, "version"), source);
+
     Some(ParsedPom {
         group_id: field("groupId"),
         artifact_id: field("artifactId"),
-        version: field("version"),
+        version,
+        version_markup,
         parent,
         modules,
         dependencies,
@@ -1069,11 +1165,29 @@ fn locate_pom_spans(source: &str) -> Option<PomSpans> {
         .and_then(ParentRef::literal_group_id)
         .map(str::to_string);
 
-    let own_version = find_child(project, source, "version").and_then(|n| text_span(n, source));
+    // Same definition as `version_field`: unreadable means content exists and is not a
+    // plain literal; an empty element has no content and counts as absent on both sides.
+    let version_span = |node: Option<Node<'_>>| -> (Option<TextSpan>, bool) {
+        match node {
+            Some(node) => {
+                let span = text_span(node, source);
+                let unreadable = span.is_none() && raw_content(node, source).is_some();
+                (span, unreadable)
+            }
+            None => (None, false),
+        }
+    };
 
-    let parent = find_child(project, source, "parent").map(|parent| ParentSpans {
-        key: parsed.parent.as_ref().and_then(ParentRef::key),
-        version: find_child(parent, source, "version").and_then(|n| text_span(n, source)),
+    let (own_version, own_version_unreadable) =
+        version_span(find_child(project, source, "version"));
+
+    let parent = find_child(project, source, "parent").map(|parent| {
+        let (version, version_unreadable) = version_span(find_child(parent, source, "version"));
+        ParentSpans {
+            key: parsed.parent.as_ref().and_then(ParentRef::key),
+            version,
+            version_unreadable,
+        }
     });
 
     let dependencies = dependency_elements(project, source)
@@ -1082,6 +1196,7 @@ fn locate_pom_spans(source: &str) -> Option<PomSpans> {
             let group = find_child(dep, source, "groupId").and_then(|n| text_value(n, source));
             let artifact =
                 find_child(dep, source, "artifactId").and_then(|n| text_value(n, source));
+            let (version, version_unreadable) = version_span(find_child(dep, source, "version"));
             DepSpans {
                 key: dependency_key(
                     group.as_deref(),
@@ -1089,13 +1204,15 @@ fn locate_pom_spans(source: &str) -> Option<PomSpans> {
                     own_group.as_deref(),
                     parent_group.as_deref(),
                 ),
-                version: find_child(dep, source, "version").and_then(|n| text_span(n, source)),
+                version,
+                version_unreadable,
             }
         })
         .collect();
 
     Some(PomSpans {
         own_version,
+        own_version_unreadable,
         parent,
         dependencies,
     })

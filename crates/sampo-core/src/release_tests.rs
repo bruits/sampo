@@ -3043,4 +3043,312 @@ end
             "a package outside the declared group must not cite it: {core_changelog}"
         );
     }
+
+    #[test]
+    fn ignored_inheriting_module_keeps_its_parent_reference_current() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n    <module>lib</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/pom.xml"),
+            maven_child("parent", "lib", "1.0.0"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>core</artifactId>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>lib</artifactId>\n      <version>1.0.0</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nignore = [\"maven/com.example/core\"]\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/p.md"),
+            "---\nmaven/com.example/parent: minor\n---\n\nfeat: parent change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        // The ignored module takes no part in the release, but Maven reads its
+        // effective version from the parent's file: its references must follow.
+        assert!(read_pom(&root.join("pom.xml")).contains("<version>1.1.0</version>"));
+        let child = read_pom(&root.join("core/pom.xml"));
+        assert!(
+            !child.contains("1.0.0"),
+            "ignored child's references went stale: {child}"
+        );
+        assert_eq!(
+            child.matches("<version>1.1.0</version>").count(),
+            2,
+            "parent reference and sibling pin must both follow: {child}"
+        );
+        assert!(
+            !root.join("core/CHANGELOG.md").exists(),
+            "an ignored module must not receive a changelog"
+        );
+        let pending = fs::read_dir(root.join(".sampo/changesets"))
+            .unwrap()
+            .count();
+        assert_eq!(pending, 0, "the parent's changeset must be consumed");
+    }
+
+    #[test]
+    fn excluded_members_pins_on_each_other_settle_before_writing() {
+        // `alpha` sorts before `beta`, so a single-phase walk would write alpha's pin
+        // on beta before beta's effective version is known — and never come back.
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>alpha</module>\n    <module>beta</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("alpha")).unwrap();
+        fs::write(
+            root.join("alpha/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>alpha</artifactId>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>beta</artifactId>\n      <version>1.0.0</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("beta")).unwrap();
+        fs::write(
+            root.join("beta/pom.xml"),
+            maven_child("parent", "beta", "1.0.0"),
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nignore = [\"maven/com.example/alpha\", \"maven/com.example/beta\"]\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/p.md"),
+            "---\nmaven/com.example/parent: minor\n---\n\nfeat: parent change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        let alpha = read_pom(&root.join("alpha/pom.xml"));
+        assert!(
+            !alpha.contains("1.0.0"),
+            "alpha's pin on beta must see beta's settled version: {alpha}"
+        );
+        assert!(read_pom(&root.join("beta/pom.xml")).contains("<version>1.1.0</version>"));
+    }
+
+    #[test]
+    fn dependency_management_property_pin_warns_without_blocking() {
+        // The canonical enterprise layout: the parent pins `core` through a property in
+        // its <dependencyManagement>, the modules declare versionless dependencies.
+        // Sampo cannot move the property; the release must still go through.
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n    <module>app</module>\n  </modules>\n  <properties>\n    <core.version>1.0.0</core.version>\n  </properties>\n  <dependencyManagement>\n    <dependencies>\n      <dependency>\n        <groupId>com.example</groupId>\n        <artifactId>core</artifactId>\n        <version>${core.version}</version>\n      </dependency>\n    </dependencies>\n  </dependencyManagement>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            maven_child("parent", "core", "1.0.0"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>app</artifactId>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>core</artifactId>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\nmaven/com.example/core: minor\n---\n\nfeat: core change\n",
+        )
+        .unwrap();
+
+        // run_release only prints warnings, so capture them from the validator directly.
+        let workspace = discover_workspace(root).unwrap();
+        let config = Config::load(root).unwrap();
+        let releases: Vec<(String, String, String)> = [
+            ("maven/com.example/parent", "1.0.0", "1.1.0"),
+            ("maven/com.example/core", "1.0.0", "1.1.0"),
+            ("maven/com.example/app", "1.0.0", "1.1.0"),
+        ]
+        .into_iter()
+        .map(|(id, old, new)| (id.to_string(), old.to_string(), new.to_string()))
+        .collect();
+        let warnings =
+            crate::release::validate_dependency_constraints(&releases, &workspace, &config)
+                .unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("pins com.example/core through '${core.version}'")),
+            "the dependencyManagement pin must be surfaced: {warnings:?}"
+        );
+
+        run_release(root, false).expect("a dependencyManagement property pin must not block");
+
+        let parent = read_pom(&root.join("pom.xml"));
+        assert!(
+            parent.contains("<core.version>1.0.0</core.version>"),
+            "the property is the user's to move: {parent}"
+        );
+        assert!(parent.contains("<version>1.1.0</version>"));
+    }
+
+    #[test]
+    fn ignored_inheritance_chain_is_maintained_to_the_leaf() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>grandparent</artifactId>\n  <version>2.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>parent</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("parent")).unwrap();
+        fs::write(
+            root.join("parent/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>grandparent</artifactId>\n    <version>2.0.0</version>\n  </parent>\n  <artifactId>parent</artifactId>\n  <packaging>pom</packaging>\n  <modules>\n    <module>leaf</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("parent/leaf")).unwrap();
+        fs::write(
+            root.join("parent/leaf/pom.xml"),
+            maven_child("parent", "leaf", "2.0.0"),
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nignore = [\"maven/com.example/parent\", \"maven/com.example/leaf\"]\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/g.md"),
+            "---\nmaven/com.example/grandparent: minor\n---\n\nfeat: grandparent change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        // The middle member's effective version moves with the grandparent, so the
+        // leaf's reference to it must settle in the same pass.
+        assert!(read_pom(&root.join("pom.xml")).contains("<version>2.1.0</version>"));
+        assert!(read_pom(&root.join("parent/pom.xml")).contains("<version>2.1.0</version>"));
+        assert!(read_pom(&root.join("parent/leaf/pom.xml")).contains("<version>2.1.0</version>"));
+    }
+
+    #[test]
+    fn unpublished_inheriting_module_keeps_its_parent_reference_current() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>examples</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("examples")).unwrap();
+        // The conventional deploy-skipped examples module: inherits its version, never
+        // published, ignored globally through `ignore_unpublished`.
+        fs::write(
+            root.join("examples/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>examples</artifactId>\n  <properties>\n    <maven.deploy.skip>true</maven.deploy.skip>\n  </properties>\n</project>\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nignore_unpublished = true\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/p.md"),
+            "---\nmaven/com.example/parent: minor\n---\n\nfeat: parent change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        assert!(read_pom(&root.join("pom.xml")).contains("<version>1.1.0</version>"));
+        let examples = read_pom(&root.join("examples/pom.xml"));
+        assert!(
+            examples.contains("<version>1.1.0</version>"),
+            "deploy-skipped module's parent reference went stale: {examples}"
+        );
+    }
+
+    #[test]
+    fn property_pin_in_a_structural_group_warns_without_blocking() {
+        // `app` pins `core` through a custom property inside a parent-inherited group.
+        // Sampo cannot move the property, and hard-erroring here would block the
+        // standard enterprise reactor layout; the release must go through.
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <groupId>com.example</groupId>\n  <artifactId>parent</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n    <module>app</module>\n  </modules>\n</project>\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(
+            root.join("core/pom.xml"),
+            maven_child("parent", "core", "1.0.0"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/pom.xml"),
+            "<project>\n  <parent>\n    <groupId>com.example</groupId>\n    <artifactId>parent</artifactId>\n    <version>1.0.0</version>\n  </parent>\n  <artifactId>app</artifactId>\n  <properties>\n    <core.version>1.0.0</core.version>\n  </properties>\n  <dependencies>\n    <dependency>\n      <groupId>com.example</groupId>\n      <artifactId>core</artifactId>\n      <version>${core.version}</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\nmaven/com.example/core: minor\n---\n\nfeat: core change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).expect("an unverifiable pin must warn, not block");
+
+        let app = read_pom(&root.join("app/pom.xml"));
+        assert!(
+            app.contains("<core.version>1.0.0</core.version>"),
+            "the property is the user's to move: {app}"
+        );
+        assert!(
+            app.contains("<version>1.1.0</version>"),
+            "the coupled parent reference must still advance: {app}"
+        );
+    }
 }
