@@ -2672,8 +2672,8 @@ end
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
 
-        // Only `app` has a changeset; `lib` is dragged in as a dependent, on a PEP 440
-        // version that is perfectly valid but not something Sampo can bump.
+        // Only `app` has a changeset; `lib` is dragged in as a dependent, on a valid
+        // PEP 440 version Sampo cannot bump.
         fs::write(
             root.join("pyproject.toml"),
             "[project]\nname = \"root\"\nversion = \"0.1.0\"\n\n[tool.uv.workspace]\nmembers = [\"app\", \"lib\"]\n",
@@ -2711,7 +2711,7 @@ end
     }
 
     #[test]
-    fn unparseable_version_fails_outside_maven_too() {
+    fn unparseable_version_fails_for_any_ecosystem() {
         set_release_branch_main();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
@@ -2730,6 +2730,14 @@ end
                 assert!(
                     message.contains("pypi/demo") && message.contains("1.0.0.post1"),
                     "expected the package and its version to be named, got: {message}"
+                );
+                assert!(
+                    !message.contains("joined this release"),
+                    "a directly-named package must not be reported as pulled in, got: {message}"
+                );
+                assert!(
+                    message.contains("fix its version, or exclude it with packages.ignore"),
+                    "the remedy must not depend on how the package entered the plan, got: {message}"
                 );
             }
             other => panic!("expected Release error, got {other:?}"),

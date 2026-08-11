@@ -827,9 +827,8 @@ mod tests {
 
     impl ScopedEnv {
         fn set(overrides: &[(&'static str, OsString)]) -> Self {
-            // A test that panics while holding the guard poisons the mutex; the env
-            // state it protects is restored by Drop regardless, so recover instead of
-            // cascading the failure into every later test.
+            // Recover from a poisoned mutex: the env state it protects is restored by
+            // Drop regardless, so one panicking test must not cascade into the rest.
             let lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             let mut original = Vec::with_capacity(overrides.len());
             for (key, _) in overrides {
@@ -899,9 +898,8 @@ fn main() {
 }
 "#;
 
-    /// Minimal local stand-in for the crates.io existence check: answers every request
-    /// with a fixed status. It keeps publish tests off the real network — crates.io
-    /// rate-limits busy IPs, which made these tests flaky.
+    /// Local stand-in for the crates.io existence check: answers every request with a
+    /// fixed status, keeping publish tests off the rate-limited real API.
     struct FakeCratesIo {
         base_url: String,
         addr: std::net::SocketAddr,
@@ -921,10 +919,9 @@ fn main() {
                         break;
                     }
                     let Ok(mut stream) = stream else { continue };
-                    // Drain the request headers before answering (responding with
+                    // Drain the request headers before answering: responding with
                     // inbound data still pending can RST the connection before the
-                    // client reads the status); the path and body are irrelevant
-                    // since only the status code is under test.
+                    // client reads the status.
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                     let mut request = Vec::new();
                     let mut buffer = [0u8; 1024];
@@ -971,13 +968,11 @@ fn main() {
 
     impl FakeCargo {
         /// Installs the stub cargo binary plus a local crates.io stand-in reporting
-        /// every version as unpublished (the common case for test fixtures).
+        /// every version as unpublished (the common case).
         fn install(fail_dry_run: bool, fail_actual: bool, version: &str) -> Self {
             Self::install_with_registry(fail_dry_run, fail_actual, version, false)
         }
 
-        /// Like [`FakeCargo::install`], but the local registry reports every version
-        /// as already published when `already_published` is true.
         fn install_with_registry(
             fail_dry_run: bool,
             fail_actual: bool,

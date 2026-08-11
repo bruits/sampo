@@ -110,8 +110,8 @@ fn run_enter(args: &PreEnterArgs) -> Result<bool> {
 
     let mut any_changes = false;
 
-    // Before the label switch below, which would otherwise leave a refused run out of
-    // pre-release mode with its preserved changesets already moved back.
+    // Validate before the label switch: a refused run would otherwise exit pre-release
+    // mode with its preserved changesets already moved back.
     validate_prerelease_entry(&workspace, &canonical, &label)?;
 
     let packages_to_reset = packages_requiring_label_switch(&workspace, &canonical, &label)?;

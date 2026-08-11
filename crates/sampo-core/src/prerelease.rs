@@ -39,10 +39,9 @@ pub fn enter_prerelease(
 
 /// Report whether entering `label` would be accepted, without writing anything.
 ///
-/// The answer holds either side of the rollback a label switch performs, since entering
-/// strips any existing pre-release before applying the label. It is only as fresh as
-/// `workspace`: a caller that has written manifests since discovering it must discover
-/// again before asking.
+/// The verdict survives a label switch's rollback, since entering strips any existing
+/// pre-release before applying the label. It is only as fresh as `workspace`:
+/// re-discover after writing manifests.
 pub fn validate_prerelease_entry(
     workspace: &Workspace,
     packages: &[String],
@@ -56,8 +55,7 @@ pub fn validate_prerelease_entry(
     validate_version_updates(workspace, &new_versions)
 }
 
-/// The version changes entering `label` would make. Shared so asking and doing cannot
-/// answer differently.
+/// The version changes entering `label` would make, shared so entry and validation agree.
 fn plan_entry(
     workspace: &Workspace,
     packages: &[String],
@@ -469,6 +467,31 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn validating_an_entry_answers_without_writing() {
+        let temp = init_workspace();
+        let root = temp.path();
+        let before = fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap();
+
+        let workspace = discover_workspace(root).unwrap();
+        let err = validate_prerelease_entry(&workspace, &[String::from("foo")], "123").unwrap_err();
+        match err {
+            SampoError::Prerelease(msg) => {
+                assert!(msg.contains("non-numeric"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        validate_prerelease_entry(&workspace, &[String::from("foo")], "alpha")
+            .expect("a valid entry must be accepted");
+
+        assert_eq!(
+            fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap(),
+            before,
+            "validation must never write a manifest"
+        );
     }
 
     #[test]

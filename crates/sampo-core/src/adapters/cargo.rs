@@ -26,8 +26,8 @@ pub(crate) struct CratesIoApiBaseOverrideGuard {
     previous: Option<String>,
 }
 
-/// Point the crates.io existence check at a local stand-in for the duration of the
-/// guard: the real API rate-limits busy IPs, which made network-dependent tests flaky.
+/// Point the crates.io existence check at a local stand-in: the real API rate-limits
+/// busy IPs, which made network-dependent tests flaky.
 #[cfg(test)]
 pub(crate) fn override_crates_io_api_base_for_tests(base: &str) -> CratesIoApiBaseOverrideGuard {
     let previous =

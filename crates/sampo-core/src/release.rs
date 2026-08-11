@@ -1716,8 +1716,8 @@ fn apply_dependency_cascade(
 
 /// Apply linked dependencies logic: highest bump level to affected packages only.
 ///
-/// Returns whether any bump was raised, so the caller can settle the structural coupling
-/// a raise may have outrun.
+/// Returns whether any bump was raised, so the caller can re-settle the dependency
+/// cascade and `packages.fixed` groups a raise may have outrun.
 fn apply_linked_dependencies(
     bump_by_pkg: &mut BTreeMap<String, Bump>,
     cfg: &Config,
@@ -1765,10 +1765,8 @@ fn apply_linked_dependencies(
 }
 
 /// A version Sampo cannot parse or bump stops the run: planning it as a no-op would
-/// consume the changeset and log an entry under a version that never moved.
-///
-/// A package the user never named needs the extra context, otherwise the run looks
-/// blocked by something unrelated to the changeset they wrote.
+/// consume the changeset and log an entry under a version that never moved. Packages
+/// the user never named get extra context explaining how they joined the plan.
 fn version_plan_error(
     identifier: &str,
     old: &str,
@@ -1778,10 +1776,11 @@ fn version_plan_error(
     let mut message = format!("Cannot release '{identifier}' ({old}): {reason}");
     if !direct_targets.contains(identifier) {
         message.push_str(
-            ". It joined this release because another package depends on it or shares a \
-             version group with it; fix its version, or exclude it with packages.ignore",
+            ". It joined this release because it depends on a package being released or \
+             shares a version group with it",
         );
     }
+    message.push_str("; fix its version, or exclude it with packages.ignore");
     SampoError::Release(message)
 }
 
