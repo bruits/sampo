@@ -5,7 +5,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
-        sync::{Mutex, MutexGuard, OnceLock},
+        sync::{Mutex, MutexGuard, OnceLock, PoisonError},
     };
 
     use crate::*;
@@ -31,7 +31,9 @@ mod tests {
 
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
-            let lock = env_lock().lock().unwrap();
+            // Recover from a poisoned mutex: the env state it protects is restored by
+            // Drop regardless, so one panicking test must not cascade into the rest.
+            let lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             let original = std::env::var(key).ok();
             unsafe {
                 std::env::set_var(key, value);
@@ -62,7 +64,7 @@ mod tests {
             let root = temp_dir.path().to_path_buf();
 
             {
-                let _lock = env_lock().lock().unwrap();
+                let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
                 unsafe {
                     std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
                 }
@@ -1767,7 +1769,7 @@ tempfile = "3.0"
         let root = temp_dir.path().to_path_buf();
 
         {
-            let _lock = env_lock().lock().unwrap();
+            let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             unsafe {
                 std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
             }
@@ -2013,7 +2015,7 @@ bar = { version = "1.0.0", path = "crates/bar" }
         message: &str,
     ) {
         {
-            let _lock = env_lock().lock().unwrap();
+            let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
             unsafe {
                 std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
             }
@@ -2254,5 +2256,178 @@ end
             "ignored package `b` must not appear in released packages, got {:?}",
             released
         );
+    }
+
+    fn set_release_branch_main() {
+        let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
+        unsafe {
+            std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
+        }
+    }
+
+    #[test]
+    fn unbumpable_prerelease_fails_and_names_its_version() {
+        // `npm version prerelease` produces this shape: the base bump outruns the implied
+        // one, leaving no non-numeric identifier to hang the counter on.
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("demo", "1.2.4-0");
+        workspace.add_changeset(&["demo"], Bump::Minor, "feat: a change");
+
+        let err = workspace
+            .run_release(false)
+            .expect_err("an unbumpable pre-release must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("cargo/demo") && message.contains("1.2.4-0"),
+                    "the message must name the package and its version, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        workspace.assert_crate_version("demo", "1.2.4-0");
+        let pending = fs::read_dir(workspace.root.join(".sampo/changesets"))
+            .unwrap()
+            .count();
+        assert_eq!(pending, 1, "the changeset must survive a failed release");
+    }
+
+    #[test]
+    fn cascade_pulled_package_explains_why_it_blocks_the_release() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // Only `app` has a changeset; `lib` is dragged in as a dependent, on a valid
+        // PEP 440 version Sampo cannot bump.
+        fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nname = \"root\"\nversion = \"0.1.0\"\n\n[tool.uv.workspace]\nmembers = [\"app\", \"lib\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/pyproject.toml"),
+            "[project]\nname = \"app\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/pyproject.toml"),
+            "[project]\nname = \"lib\"\nversion = \"1.0.0.post1\"\ndependencies = [\"app>=1.0\"]\n",
+        )
+        .unwrap();
+
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\npypi/app: minor\n---\n\nfeat: a change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("an unbumpable dependent must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("pypi/lib") && message.contains("joined this release"),
+                    "the message must explain why an untouched package blocks the run, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparseable_version_fails_for_any_ecosystem() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        // The guard lives in shared planning code, not in an adapter.
+        let manifest = "[project]\nname = \"demo\"\nversion = \"1.0.0.post1\"\n";
+        fs::write(root.join("pyproject.toml"), manifest).unwrap();
+
+        let changeset = root.join(".sampo/changesets/c.md");
+        fs::write(&changeset, "---\npypi/demo: minor\n---\n\nfeat: a change\n").unwrap();
+
+        let err = run_release(root, false).expect_err("an unbumpable version must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("pypi/demo") && message.contains("1.0.0.post1"),
+                    "expected the package and its version to be named, got: {message}"
+                );
+                assert!(
+                    !message.contains("joined this release"),
+                    "a directly-named package must not be reported as pulled in, got: {message}"
+                );
+                assert!(
+                    message.contains("fix its version, or exclude it with packages.ignore"),
+                    "the remedy must not depend on how the package entered the plan, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        assert!(
+            changeset.exists(),
+            "the changeset must survive a failed release"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("pyproject.toml")).unwrap(),
+            manifest
+        );
+    }
+
+    #[test]
+    fn fixed_group_lands_on_one_bump_level_when_a_member_is_raised_late() {
+        // `m` is only reached through its fixed group, and `z`'s major arrives after the
+        // group was already settled at patch. Without re-propagation the two split, and
+        // a fixed group silently released at inconsistent versions.
+        set_release_branch_main();
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("dep", "1.0.0");
+        workspace.add_crate("m", "1.0.0");
+        workspace.add_crate("z", "1.0.0");
+        workspace.add_dependency("z", "dep", "1.0.0");
+        workspace.set_config("[packages]\nfixed = [[\"cargo/m\", \"cargo/z\"]]\n");
+        workspace.add_changeset(&["m"], Bump::Patch, "fix: m");
+        workspace.add_changeset(&["dep"], Bump::Major, "feat: dep");
+
+        workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        workspace.assert_crate_version("dep", "2.0.0");
+        workspace.assert_crate_version("z", "2.0.0");
+        workspace.assert_crate_version("m", "2.0.0");
+    }
+
+    #[test]
+    fn fixed_group_follows_a_linked_raise() {
+        // The linked raise on `x` lands after the cascade settled `d`/`e` at patch, so the
+        // fixed group has to be re-settled or it releases below its dependency.
+        set_release_branch_main();
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("x", "1.0.0");
+        workspace.add_crate("y", "1.0.0");
+        workspace.add_crate("d", "1.0.0");
+        workspace.add_crate("e", "1.0.0");
+        workspace.add_dependency("d", "x", "1.0.0");
+        workspace.set_config(
+            "[packages]\nlinked = [[\"cargo/x\", \"cargo/y\"]]\nfixed = [[\"cargo/d\", \"cargo/e\"]]\n",
+        );
+        workspace.add_changeset(&["x"], Bump::Patch, "fix: x");
+        workspace.add_changeset(&["y"], Bump::Major, "feat: y");
+
+        workspace
+            .run_release(false)
+            .expect("release should succeed");
+
+        workspace.assert_crate_version("x", "2.0.0");
+        workspace.assert_crate_version("d", "2.0.0");
+        workspace.assert_crate_version("e", "2.0.0");
     }
 }

@@ -825,11 +825,28 @@ fn compute_plan_state(
         return Ok(PlanOutcome::NoApplicablePackages);
     }
 
-    let dependents = build_dependency_graph(workspace, config);
-    apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
-    apply_linked_dependencies(&mut bump_by_pkg, config, workspace)?;
+    // Snapshot the changeset targets before the cascade widens the map, so a failure can
+    // tell the user whether they named the package or the release pulled it in.
+    let direct_targets: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
 
-    let releases = prepare_release_plan(&bump_by_pkg, workspace, preserved_targets, stabilize)?;
+    let dependents = build_dependency_graph(workspace, config);
+    // A linked raise can outrun the coupling the cascade just settled, so re-settle until
+    // linked has nothing left to raise. Bumps only ever rise through three levels over a
+    // finite set of packages, so this converges; with no `packages.linked` it runs once.
+    loop {
+        apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
+        if !apply_linked_dependencies(&mut bump_by_pkg, config, workspace)? {
+            break;
+        }
+    }
+
+    let releases = prepare_release_plan(
+        &bump_by_pkg,
+        workspace,
+        preserved_targets,
+        stabilize,
+        &direct_targets,
+    )?;
     if releases.is_empty() {
         return Ok(PlanOutcome::NoMatchingCrates);
     }
@@ -1550,12 +1567,15 @@ fn apply_dependency_cascade(
                     .entry(dep_name.clone())
                     .or_insert(dependent_bump);
                 // If already present, keep the higher bump
-                if *entry < dependent_bump {
+                let raised = *entry < dependent_bump;
+                if raised {
                     *entry = dependent_bump;
                 }
-                if !seen.contains(dep_name) {
+                // Re-queue on a raise, not only on first sight: a package popped before
+                // its bump grew would otherwise never carry the higher level onward.
+                let first_sight = seen.insert(dep_name.clone());
+                if raised || first_sight {
                     queue.push(dep_name.clone());
-                    seen.insert(dep_name.clone());
                 }
             }
         }
@@ -1584,12 +1604,13 @@ fn apply_dependency_cascade(
                     .entry(group_member.clone())
                     .or_insert(changed_bump);
                 // If already present, keep the higher bump
-                if *entry < changed_bump {
+                let raised = *entry < changed_bump;
+                if raised {
                     *entry = changed_bump;
                 }
-                if !seen.contains(group_member) {
+                let first_sight = seen.insert(group_member.clone());
+                if raised || first_sight {
                     queue.push(group_member.clone());
-                    seen.insert(group_member.clone());
                 }
             }
         }
@@ -1598,13 +1619,17 @@ fn apply_dependency_cascade(
     Ok(())
 }
 
-/// Apply linked dependencies logic: highest bump level to affected packages only
+/// Apply linked dependencies logic: highest bump level to affected packages only.
+///
+/// Returns whether any bump was raised, so the caller can re-settle the dependency
+/// cascade and `packages.fixed` groups a raise may have outrun.
 fn apply_linked_dependencies(
     bump_by_pkg: &mut BTreeMap<String, Bump>,
     cfg: &Config,
     ws: &Workspace,
-) -> Result<()> {
+) -> Result<bool> {
     let resolved_groups = resolve_config_groups(ws, &cfg.linked_dependencies, "packages.linked")?;
+    let mut raised = false;
 
     for group in &resolved_groups {
         // Check if any package in this group has been bumped
@@ -1634,13 +1659,34 @@ fn apply_linked_dependencies(
                         .unwrap_or(Bump::Patch);
                     if highest_bump > current_bump {
                         bump_by_pkg.insert(group_member.clone(), highest_bump);
+                        raised = true;
                     }
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(raised)
+}
+
+/// A version Sampo cannot parse or bump stops the run: planning it as a no-op would
+/// consume the changeset and log an entry under a version that never moved. Packages
+/// the user never named get extra context explaining how they joined the plan.
+fn version_plan_error(
+    identifier: &str,
+    old: &str,
+    reason: &str,
+    direct_targets: &BTreeSet<String>,
+) -> SampoError {
+    let mut message = format!("Cannot release '{identifier}' ({old}): {reason}");
+    if !direct_targets.contains(identifier) {
+        message.push_str(
+            ". It joined this release because it depends on a package being released or \
+             shares a version group with it",
+        );
+    }
+    message.push_str("; fix its version, or exclude it with packages.ignore");
+    SampoError::Release(message)
 }
 
 /// Prepare the release plan by matching bumps to workspace members
@@ -1649,6 +1695,7 @@ fn prepare_release_plan(
     ws: &Workspace,
     preserved_targets: &BTreeSet<String>,
     stabilize: bool,
+    direct_targets: &BTreeSet<String>,
 ) -> Result<ReleasePlan> {
     // Map package identifier -> PackageInfo for quick lookup
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
@@ -1665,19 +1712,16 @@ fn prepare_release_plan(
                 info.version.clone()
             };
 
-            let newv = match parse_version_string(&old) {
-                Ok(parsed) => {
-                    if stabilize && !parsed.pre.is_empty() {
-                        stabilize_version_from_parsed(&parsed, *bump)
-                            .unwrap_or_else(|_| old.clone())
-                    } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
-                        bump_prerelease_entry(&parsed, *bump).unwrap_or_else(|_| old.clone())
-                    } else {
-                        bump_version_from_parsed(&parsed, *bump).unwrap_or_else(|_| old.clone())
-                    }
-                }
-                Err(_) => old.clone(),
-            };
+            let parsed = parse_version_string(&old)
+                .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
+            let newv = if stabilize && !parsed.pre.is_empty() {
+                stabilize_version_from_parsed(&parsed, *bump)
+            } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
+                bump_prerelease_entry(&parsed, *bump)
+            } else {
+                bump_version_from_parsed(&parsed, *bump)
+            }
+            .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
 
             releases.push((identifier.clone(), old, newv));
         }

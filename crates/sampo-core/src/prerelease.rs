@@ -25,16 +25,38 @@ pub fn enter_prerelease(
     label: &str,
 ) -> Result<Vec<VersionChange>> {
     let workspace = discover_workspace(root)?;
-    let targets = resolve_targets(&workspace, packages)?;
-    let prerelease = validate_label(label)?;
-
-    let (changes, new_versions) = plan_enter_updates(&targets, &prerelease)?;
+    let (changes, new_versions) = plan_entry(&workspace, packages, label)?;
     if new_versions.is_empty() {
         return Ok(Vec::new());
     }
 
     apply_version_updates(&workspace, &new_versions)?;
     Ok(changes)
+}
+
+/// Report whether entering `label` would be accepted, without writing anything.
+///
+/// The verdict survives a label switch's rollback, since entering strips any existing
+/// pre-release before applying the label. It is only as fresh as `workspace`:
+/// re-discover after writing manifests.
+pub fn validate_prerelease_entry(
+    workspace: &Workspace,
+    packages: &[String],
+    label: &str,
+) -> Result<()> {
+    plan_entry(workspace, packages, label)?;
+    Ok(())
+}
+
+/// The version changes entering `label` would make, shared so entry and validation agree.
+fn plan_entry(
+    workspace: &Workspace,
+    packages: &[String],
+    label: &str,
+) -> Result<(Vec<VersionChange>, BTreeMap<String, String>)> {
+    let targets = resolve_targets(workspace, packages)?;
+    let prerelease = validate_label(label)?;
+    plan_enter_updates(&targets, &prerelease)
 }
 
 /// Exit pre-release mode for the selected packages, restoring stable versions.
@@ -229,6 +251,14 @@ fn plan_exit_updates(
     Ok((changes, new_versions))
 }
 
+/// `sampo pre` owns the whole run, so adapter failures surface under its own variant.
+fn to_prerelease(err: SampoError) -> SampoError {
+    match err {
+        SampoError::Release(msg) => SampoError::Prerelease(msg),
+        other => other,
+    }
+}
+
 fn apply_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
@@ -256,27 +286,23 @@ fn apply_version_updates(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let (updated, _deps) = adapter.update_manifest_versions(
-            &manifest_path,
-            &original,
-            new_pkg_version,
-            &filtered_versions,
-        )?;
+        let (updated, _deps) = adapter
+            .update_manifest_versions(
+                &manifest_path,
+                &original,
+                new_pkg_version,
+                &filtered_versions,
+            )
+            .map_err(to_prerelease)?;
 
         if updated != original {
             fs::write(&manifest_path, updated)?;
         }
     }
 
-    PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(|err| match err {
-        SampoError::Release(msg) => SampoError::Prerelease(msg),
-        other => other,
-    })?;
+    PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(to_prerelease)?;
 
-    regenerate_lockfile(workspace).map_err(|err| match err {
-        SampoError::Release(msg) => SampoError::Prerelease(msg),
-        other => other,
-    })?;
+    regenerate_lockfile(workspace).map_err(to_prerelease)?;
 
     Ok(())
 }
@@ -398,6 +424,31 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn validating_an_entry_answers_without_writing() {
+        let temp = init_workspace();
+        let root = temp.path();
+        let before = fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap();
+
+        let workspace = discover_workspace(root).unwrap();
+        let err = validate_prerelease_entry(&workspace, &[String::from("foo")], "123").unwrap_err();
+        match err {
+            SampoError::Prerelease(msg) => {
+                assert!(msg.contains("non-numeric"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        validate_prerelease_entry(&workspace, &[String::from("foo")], "alpha")
+            .expect("a valid entry must be accepted");
+
+        assert_eq!(
+            fs::read_to_string(root.join("crates/foo/Cargo.toml")).unwrap(),
+            before,
+            "validation must never write a manifest"
+        );
     }
 
     #[test]

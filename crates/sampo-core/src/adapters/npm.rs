@@ -927,7 +927,11 @@ fn interpret_npm_view(success: bool, stdout: &str, stderr: &str, spec: &str) -> 
 
 fn enforce_registry_rate_limit() {
     let lock = REGISTRY_LAST_CALL.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().unwrap();
+    // Recover from poisoning: the guarded Instant stays valid even if a holder panicked.
+    let mut guard = match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     let now = Instant::now();
     if let Some(last) = *guard {
         let elapsed = now.saturating_duration_since(last);
