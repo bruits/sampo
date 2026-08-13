@@ -2,7 +2,7 @@
 
 GitHub App server to inspect pull requests and automatically request Sampo changesets when needed.
 
-Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md).
+Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentation](https://github.com/bruits/sampo/blob/main/crates/sampo/README.md).
 
 ## Usage
 
