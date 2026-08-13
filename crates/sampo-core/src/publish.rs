@@ -22,6 +22,7 @@ pub struct PublishExtraArgs {
     pub hex: Vec<String>,
     pub pypi: Vec<String>,
     pub packagist: Vec<String>,
+    pub maven: Vec<String>,
 }
 
 impl PublishExtraArgs {
@@ -33,6 +34,7 @@ impl PublishExtraArgs {
             PackageKind::Hex => &self.hex,
             PackageKind::PyPI => &self.pypi,
             PackageKind::Packagist => &self.packagist,
+            PackageKind::Maven => &self.maven,
         };
         let mut merged = self.universal.clone();
         merged.extend(ecosystem_args.iter().cloned());
@@ -111,6 +113,7 @@ pub fn run_publish(
             crate::types::PackageKind::Hex => PackageAdapter::Hex,
             crate::types::PackageKind::PyPI => PackageAdapter::PyPI,
             crate::types::PackageKind::Packagist => PackageAdapter::Packagist,
+            crate::types::PackageKind::Maven => PackageAdapter::Maven,
         };
 
         let manifest = adapter.manifest_path(&c.path);

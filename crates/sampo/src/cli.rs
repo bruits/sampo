@@ -53,7 +53,7 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, or --packagist-args to forward arguments\nto a specific ecosystem only.")]
+Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, --packagist-args, or --maven-args to forward\narguments to a specific ecosystem only.")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
@@ -78,6 +78,10 @@ pub struct PublishArgs {
     /// Extra arguments forwarded only to Packagist/Composer
     #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
     pub packagist_args: Option<Vec<String>>,
+
+    /// Extra arguments forwarded only to Maven (e.g. --maven-args -DskipTests)
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub maven_args: Option<Vec<String>>,
 
     /// Extra flags passed through to ALL underlying publish commands (must follow `--`)
     #[arg(last = true, value_name = "PUBLISH_ARG")]
@@ -383,6 +387,7 @@ mod tests {
             "--hex-args=--replace",
             "--pypi-args=--skip-existing",
             "--packagist-args=--no-interaction",
+            "--maven-args=-DskipTests",
         ])
         .unwrap();
         match cli.command {
@@ -395,6 +400,7 @@ mod tests {
                     args.packagist_args,
                     Some(vec!["--no-interaction".to_string()])
                 );
+                assert_eq!(args.maven_args, Some(vec!["-DskipTests".to_string()]));
             }
             _ => panic!("wrong variant"),
         }

@@ -10,6 +10,7 @@ pub enum PackageKind {
     Hex,
     PyPI,
     Packagist,
+    Maven,
 }
 
 impl PackageKind {
@@ -21,6 +22,7 @@ impl PackageKind {
             Self::Hex => "hex",
             Self::PyPI => "pypi",
             Self::Packagist => "packagist",
+            Self::Maven => "maven",
         }
     }
 
@@ -32,6 +34,7 @@ impl PackageKind {
             Self::Hex => "Hex",
             Self::PyPI => "PyPI",
             Self::Packagist => "Packagist",
+            Self::Maven => "Maven",
         }
     }
 
@@ -52,6 +55,7 @@ impl PackageKind {
             "hex" => Some(Self::Hex),
             "pypi" => Some(Self::PyPI),
             "packagist" => Some(Self::Packagist),
+            "maven" => Some(Self::Maven),
             _ => None,
         }
     }
@@ -463,12 +467,21 @@ pub enum ConstraintCheckResult {
     Skipped {
         reason: String,
     },
+    /// The pin is written in a form the release rewrite will not touch and the check
+    /// cannot resolve (e.g. a Maven `${property}`): the user must move it themselves.
+    /// Warns, never blocks — Sampo cannot tell a stale pin from a deliberately held one.
+    Unverifiable {
+        constraint: String,
+    },
 }
 
 impl ConstraintCheckResult {
-    /// Returns true if the constraint check passed (satisfied or skipped).
+    /// Returns true if the constraint check passed (satisfied, skipped, or warn-only).
     pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Satisfied | Self::Skipped { .. })
+        matches!(
+            self,
+            Self::Satisfied | Self::Skipped { .. } | Self::Unverifiable { .. }
+        )
     }
 
     /// Returns true if the constraint is not satisfied.
@@ -492,6 +505,9 @@ impl std::fmt::Display for ConstraintCheckResult {
                 )
             }
             Self::Skipped { reason } => write!(f, "skipped: {}", reason),
+            Self::Unverifiable { constraint } => {
+                write!(f, "unverifiable: pinned through '{}'", constraint)
+            }
         }
     }
 }

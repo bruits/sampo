@@ -161,6 +161,9 @@ struct Config {
     /// Extra arguments forwarded only to Packagist/Composer
     packagist_args: Option<String>,
 
+    /// Extra arguments forwarded only to Maven
+    maven_args: Option<String>,
+
     /// Base branch for the Release PR (default: current ref name or 'main')
     base_branch: Option<String>,
 
@@ -233,6 +236,10 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let maven_args = std::env::var("INPUT_MAVEN_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         let base_branch = std::env::var("INPUT_BASE_BRANCH")
             .ok()
             .filter(|v| !v.is_empty());
@@ -280,6 +287,7 @@ impl Config {
             hex_args,
             pypi_args,
             packagist_args,
+            maven_args,
             base_branch,
             pr_branch,
             pr_title,
@@ -753,6 +761,7 @@ fn build_publish_extra_args(config: &Config) -> PublishExtraArgs {
         hex: parse_args_string(config.hex_args.as_deref()),
         pypi: parse_args_string(config.pypi_args.as_deref()),
         packagist: parse_args_string(config.packagist_args.as_deref()),
+        maven: parse_args_string(config.maven_args.as_deref()),
     }
 }
 
@@ -1274,6 +1283,7 @@ mod tests {
             hex_args: None,
             pypi_args: None,
             packagist_args: None,
+            maven_args: None,
             base_branch: None,
             pr_branch: None,
             pr_title: None,

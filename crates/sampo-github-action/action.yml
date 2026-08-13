@@ -35,6 +35,9 @@ inputs:
   packagist-args:
     description: "Extra arguments forwarded only to Packagist/Composer"
     required: false
+  maven-args:
+    description: "Extra arguments forwarded only to `mvn deploy`"
+    required: false
   base-branch:
     description: "Base branch for the Release PR when auto prepares it"
     required: false
@@ -97,6 +100,7 @@ runs:
         INPUT_HEX_ARGS: ${{ inputs['hex-args'] }}
         INPUT_PYPI_ARGS: ${{ inputs['pypi-args'] }}
         INPUT_PACKAGIST_ARGS: ${{ inputs['packagist-args'] }}
+        INPUT_MAVEN_ARGS: ${{ inputs['maven-args'] }}
         INPUT_BASE_BRANCH: ${{ inputs['base-branch'] }}
         INPUT_PR_BRANCH: ${{ inputs['pr-branch'] }}
         INPUT_PR_TITLE: ${{ inputs['pr-title'] }}

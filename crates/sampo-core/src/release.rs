@@ -190,6 +190,44 @@ fn resolve_config_groups(
     Ok(resolved)
 }
 
+/// The fixed groups Sampo enforces: the user's `packages.fixed` config plus any implicit
+/// groups an ecosystem derives from its structure (Maven parent-inherited versions).
+/// Overlapping groups are merged so no package lands in two.
+fn enforced_fixed_groups(workspace: &Workspace, config: &Config) -> Result<Vec<Vec<String>>> {
+    let mut groups =
+        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    groups.extend(PackageAdapter::implicit_fixed_groups(workspace));
+    Ok(merge_overlapping_groups(groups))
+}
+
+/// Merge any groups that share a member into one, so membership is unambiguous.
+pub(crate) fn merge_overlapping_groups(groups: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    let mut sets: Vec<BTreeSet<String>> = groups
+        .into_iter()
+        .map(|group| group.into_iter().collect::<BTreeSet<String>>())
+        .filter(|set| !set.is_empty())
+        .collect();
+
+    let mut merged = true;
+    while merged {
+        merged = false;
+        'scan: for i in 0..sets.len() {
+            for j in (i + 1)..sets.len() {
+                if sets[i].intersection(&sets[j]).next().is_some() {
+                    let other = sets.remove(j);
+                    sets[i].extend(other);
+                    merged = true;
+                    break 'scan;
+                }
+            }
+        }
+    }
+
+    sets.into_iter()
+        .map(|set| set.into_iter().collect())
+        .collect()
+}
+
 /// Create a changelog entry for dependency updates
 ///
 /// Returns a tuple of (message, bump_type) suitable for adding to changelog messages
@@ -203,6 +241,19 @@ pub fn create_dependency_update_entry(updates: &[DependencyUpdate]) -> Option<(S
 pub fn create_fixed_dependency_policy_entry(bump: Bump) -> (String, Bump) {
     (
         "Bumped due to fixed dependency group policy".to_string(),
+        bump,
+    )
+}
+
+/// Create a changelog entry for a package an ecosystem couples structurally
+///
+/// Distinct from the fixed-group entry: this coupling is derived from the manifests, so
+/// citing a `packages.fixed` policy would name config the user never wrote.
+///
+/// Returns a tuple of (message, bump_type) suitable for adding to changelog messages
+pub fn create_structural_version_coupling_entry(bump: Bump) -> (String, Bump) {
+    (
+        "Bumped to stay aligned with the packages it shares a version with".to_string(),
         bump,
     )
 }
@@ -257,6 +308,19 @@ pub fn detect_all_dependency_explanations(
     let policy_packages =
         detect_fixed_dependency_policy_packages(changesets, workspace, config, &bumped_packages)?;
 
+    // A package pulled in only by structural coupling never opted into a `fixed` group,
+    // so it gets its own wording. Declared membership wins when a package is in both.
+    let declared: BTreeSet<String> =
+        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?
+            .into_iter()
+            .flatten()
+            .collect();
+    let structural: BTreeSet<String> = PackageAdapter::implicit_fixed_groups(workspace)
+        .into_iter()
+        .flatten()
+        .filter(|id| !declared.contains(id))
+        .collect();
+
     for (pkg_name, policy_bump) in policy_packages {
         // For accurate bump detection, infer from actual version changes
         let actual_bump = if let Some((old_ver, new_ver)) = releases.get(&pkg_name) {
@@ -265,7 +329,11 @@ pub fn detect_all_dependency_explanations(
             policy_bump
         };
 
-        let (msg, bump_type) = create_fixed_dependency_policy_entry(actual_bump);
+        let (msg, bump_type) = if structural.contains(&pkg_name) {
+            create_structural_version_coupling_entry(actual_bump)
+        } else {
+            create_fixed_dependency_policy_entry(actual_bump)
+        };
         messages_by_pkg
             .entry(pkg_name)
             .or_default()
@@ -294,10 +362,11 @@ pub fn detect_all_dependency_explanations(
         if let Some(crate_info) = by_id.get(crate_id) {
             // Find which internal dependencies were updated
             let mut updated_deps = Vec::new();
+            // A dependency can sit in both sets (a Cargo crate that is also a
+            // dev-dependency, a Maven pin repeated in a profile) and must be named once.
             for dep_name in crate_info
                 .internal_deps
-                .iter()
-                .chain(&crate_info.internal_dev_deps)
+                .union(&crate_info.internal_dev_deps)
             {
                 if let Some(new_version) = new_version_by_name.get(dep_name as &str) {
                     // This internal dependency was updated
@@ -350,8 +419,7 @@ pub fn detect_fixed_dependency_policy_packages(
         }
     }
 
-    let resolved_groups =
-        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    let resolved_groups = enforced_fixed_groups(workspace, config)?;
 
     // Build dependency graph (dependent -> set of dependencies) - only non-ignored packages
     let mut dependents: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -859,6 +927,14 @@ fn compute_plan_state(
         eprintln!("{}", warning);
     }
 
+    // Fail before any manifest is written when structural version coupling cannot hold,
+    // keeping releases atomic.
+    let new_version_by_id: BTreeMap<String, String> = releases
+        .iter()
+        .map(|(id, _, new_ver)| (id.clone(), new_ver.clone()))
+        .collect();
+    PackageAdapter::validate_release_plan(workspace, &new_version_by_id)?;
+
     let released_packages: Vec<ReleasedPackage> = releases
         .iter()
         .map(|(name, old_version, new_version)| {
@@ -887,7 +963,7 @@ fn compute_plan_state(
 
 /// Validates dependency constraints before applying releases.
 /// Returns error for fixed/linked packages with violations, warnings otherwise.
-fn validate_dependency_constraints(
+pub(crate) fn validate_dependency_constraints(
     releases: &ReleasePlan,
     workspace: &Workspace,
     config: &Config,
@@ -903,8 +979,7 @@ fn validate_dependency_constraints(
         .map(|pkg| (pkg.canonical_identifier().to_string(), pkg))
         .collect();
 
-    let fixed_groups =
-        resolve_config_groups(workspace, &config.fixed_dependencies, "packages.fixed")?;
+    let fixed_groups = enforced_fixed_groups(workspace, config)?;
     let linked_groups =
         resolve_config_groups(workspace, &config.linked_dependencies, "packages.linked")?;
 
@@ -969,6 +1044,14 @@ fn validate_dependency_constraints(
             match check_result {
                 ConstraintCheckResult::Satisfied => {}
                 ConstraintCheckResult::Skipped { .. } => {}
+                ConstraintCheckResult::Unverifiable { constraint } => {
+                    warnings.push(unverifiable_pin_warning(
+                        pkg_id,
+                        &dep_info.name,
+                        &constraint,
+                        new_dep_version,
+                    ));
+                }
                 ConstraintCheckResult::NotSatisfied {
                     constraint,
                     new_version,
@@ -992,6 +1075,35 @@ fn validate_dependency_constraints(
                 }
             }
         }
+
+        // Declarative edges (`<dependencyManagement>` pins, dev-only deps) never block
+        // a release, but a property pin there goes stale all the same. Surface those,
+        // ignore every other outcome.
+        for dep_id in &pkg_info.internal_dev_deps {
+            if pkg_info.internal_deps.contains(dep_id) {
+                continue;
+            }
+            let Some(new_dep_version) = new_version_by_id.get(dep_id) else {
+                continue;
+            };
+            let Some(dep_info) = by_id.get(dep_id) else {
+                continue;
+            };
+            let check_result = adapter.check_dependency_constraint(
+                &manifest_path,
+                &dep_info.name,
+                "*",
+                new_dep_version,
+            )?;
+            if let ConstraintCheckResult::Unverifiable { constraint } = check_result {
+                warnings.push(unverifiable_pin_warning(
+                    pkg_id,
+                    &dep_info.name,
+                    &constraint,
+                    new_dep_version,
+                ));
+            }
+        }
     }
 
     if !violations.is_empty() {
@@ -1003,6 +1115,20 @@ fn validate_dependency_constraints(
     }
 
     Ok(warnings)
+}
+
+/// A pin the release rewrite will not touch, pointing at a package that is moving.
+fn unverifiable_pin_warning(
+    pkg_id: &str,
+    dep_name: &str,
+    constraint: &str,
+    new_version: &str,
+) -> String {
+    format!(
+        "Warning: {pkg_id} pins {dep_name} through '{constraint}', which Sampo leaves \
+         as written; {dep_name} releases {new_version} — update the pin yourself if it \
+         should follow"
+    )
 }
 
 /// Check if a package identifier is in any of the provided groups.
@@ -1067,6 +1193,13 @@ fn all_preserved_targets_in_prerelease(
     Ok(true)
 }
 
+/// The packages preserved changesets target, widened across structural coupling groups:
+/// members that cannot hold different versions must advance their pre-release the same
+/// way, or the plan is rejected for versions never out of step.
+///
+/// Declared `packages.fixed` groups stay unwidened, matching `sampo pre`: they are only
+/// bump-level policy, their members enter pre-release separately, and one could inherit
+/// a counter it never earned — landing below the version it last published.
 fn collect_preserved_targets(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
@@ -1078,6 +1211,17 @@ fn collect_preserved_targets(
             targets.insert(info.canonical_identifier().to_string());
         }
     }
+
+    if targets.is_empty() {
+        return Ok(targets);
+    }
+
+    for group in merge_overlapping_groups(PackageAdapter::implicit_fixed_groups(workspace)) {
+        if group.iter().any(|id| targets.contains(id)) {
+            targets.extend(group);
+        }
+    }
+
     Ok(targets)
 }
 
@@ -1356,6 +1500,7 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             PackageKind::Hex => PackageAdapter::Hex,
             PackageKind::PyPI => PackageAdapter::PyPI,
             PackageKind::Packagist => PackageAdapter::Packagist,
+            PackageKind::Maven => PackageAdapter::Maven,
         };
 
         let lockfile_exists = match kind {
@@ -1381,6 +1526,8 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             }
             PackageKind::PyPI => workspace.root.join("uv.lock").exists(),
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
+            // Maven has no lockfile; dependency versions live in the POMs themselves.
+            PackageKind::Maven => false,
         };
 
         if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
@@ -1517,8 +1664,7 @@ fn apply_dependency_cascade(
     cfg: &Config,
     ws: &Workspace,
 ) -> Result<()> {
-    let resolved_fixed_groups =
-        resolve_config_groups(ws, &cfg.fixed_dependencies, "packages.fixed")?;
+    let resolved_fixed_groups = enforced_fixed_groups(ws, cfg)?;
 
     // Helper function to find which fixed group a package belongs to, if any
     let find_fixed_group = |pkg_id: &str| -> Option<usize> {

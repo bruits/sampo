@@ -16,7 +16,7 @@ pub struct InitReport {
 /// Unlike other commands, `init` works directly in `cwd` without walking up
 /// the directory tree. The user must run it from their project root.
 pub fn init_from_cwd(cwd: &Path) -> Result<InitReport> {
-    // Check if there's a manifest in cwd (Cargo.toml, package.json, mix.exs, gleam.toml, src/*.app.src, pyproject.toml)
+    // Check if there's a package manifest in cwd for any supported ecosystem.
     let packages = discover_packages_at(cwd)?;
     if packages.is_empty() {
         return Err(sampo_core::errors::SampoError::Workspace(

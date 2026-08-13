@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
@@ -118,16 +118,25 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 > [!WARNING]
-> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
+> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
 
 > [!TIP]
-> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, or `--packagist-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+
+> [!NOTE]
+> Sampo cannot ask a private registry whether a version is already published, so Maven, PyPI and Packagist packages configured for one are always publish targets and every run re-attempts them. That is harmless for Packagist, whose publish step is `composer validate`, and for `uv publish`, which skips already-uploaded files through the `--index` Sampo injects — though forwarding your own `--publish-url` via `--pypi-args` replaces that injected flag, and uv then attempts the upload every run. `mvn deploy` instead fails against a repository that refuses redeploys, and a failed publish stops the packages queued behind it.
+
+> [!NOTE]
+> In multi-module reactors, run `mvn install` before `sampo publish`: packages publish one at a time, so siblings must resolve locally. Sampo's already-published check reads `repo1.maven.org`, which only sees a deployment once the Central Portal publishes it — enable `autoPublish` on `central-publishing-maven-plugin` and let the sync finish before re-running `sampo publish`.
 
 #### Pre-release versions
 
 Run `sampo pre` to manage pre-release versions for one or more packages.
 
 While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
+
+> [!NOTE]
+> Maven packages cannot take a `SNAPSHOT` label: Sampo manages static release versions and has no snapshot cycle, and Maven Central rejects snapshots on release deployments. Use `alpha`, `beta`, `rc` or a milestone like `M1` instead.
 
 ## Configuration
 
@@ -173,7 +182,7 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `tag_format`: Template used for git tags created by `sampo publish` (default: `"{package_name}-v{version}"`). Supported placeholders:
 
-- `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, or `packagist`.
+- `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, `packagist`, or `maven`.
 - `{package_name}` — the package's local name.
 - `{version}` — the released version (required).
 
@@ -234,6 +243,9 @@ Sampo detects packages within the same monorepo (even one mixing ecosystems) tha
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages and can mix ecosystems. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo/a", "cargo/b"], ["cargo/c", "cargo/d"]]` and `cargo/a` is updated to `2.0.0` (major), then `cargo/b` will also be bumped to `2.0.0`, but `cargo/c` and `cargo/d` remain unchanged.
 
 `linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages and may include multiple ecosystems. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo/a", "cargo/b"]]` where `cargo/a` depends on `cargo/b`, when `cargo/b` is updated to `2.0.0` (major), then `cargo/a` will also be bumped to `2.0.0`. If `cargo/a` is later updated to `2.1.0` (minor), `cargo/b` remains at `2.0.0` since it's not affected. Finally, if `cargo/b` has a patch update, both `cargo/a` and `cargo/b` will be bumped with patch level since it's the highest bump in the group.
+
+> [!NOTE]
+> Maven modules inheriting their `<version>` from a parent POM release together, like a `fixed` group you never had to declare, and `sampo pre enter`/`exit` widens the same way. An ignored member stays out of releases and publishing, but its `<parent><version>` is kept current: Maven resolves that pin literally.
 
 > [!WARNING]
 > Packages cannot appear in both `fixed` and `linked` configurations.
