@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "sampo"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "clap",
  "dialoguer",
@@ -2294,7 +2294,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "cargo_metadata",
  "changesets",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-action"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "glob",
  "reqwest",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "sampo-github-bot"
-version = "0.4.9"
+version = "0.4.10"
 dependencies = [
  "axum",
  "hmac 0.13.0",

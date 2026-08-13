@@ -1,5 +1,18 @@
 # sampo-github-action
 
+## 0.18.0 — 2026-08-13
+
+### Minor changes
+
+- [785c986](https://github.com/bruits/sampo/commit/785c98662a61a204fc43252cb227a1bd2de5e487) **⚠️ breaking change:** Sampo now refuses to release a package whose version it cannot parse or bump (for example a PEP 440 `1.0.0.post1`), instead of planning a do-nothing release that consumed the changeset and wrote a changelog entry under the unchanged version. A run that used to succeed while silently skipping such a package now fails with the package and version named, leaving manifests untouched and no changeset consumed; fix its version, or exclude it with `packages.ignore`. The same validation now runs before `sampo pre enter`'s label switch: a refused entry (invalid label, unbumpable version) used to exit pre-release mode and move preserved changesets back before failing; it now leaves the workspace untouched. — Thanks @goulvenclech!
+- [91bbcc2](https://github.com/bruits/sampo/commit/91bbcc250a37178571054ef8399fac1b52d67740) **Erlang packages are now supported!** Sampo now automatically detects Erlang applications managed by rebar3 (via their `.app.src`, for publishing to Hex) and handles versioning, changelogs, and publishing—even in mixed BEAM workspaces. Applications whose version is derived dynamically (`{vsn, git}`, `{vsn, "%VSN%"}`, or a `.app.src.script`) are skipped with a warning. — Thanks @goulvenclech!
+- [57bb659](https://github.com/bruits/sampo/commit/57bb65924c678d311307e9d9fd5262f507dd9f57) **Gleam packages are now supported!** Sampo now automatically detects Gleam packages managed by `gleam.toml` (for publishing to Hex) and handles versioning, changelogs, and publishing—even in mixed workspaces. — Thanks @goulvenclech!
+- [c22e2db](https://github.com/bruits/sampo/commit/c22e2db24c1a33d9bd0ccafc48a574e0417d428f) **Java packages are now supported!** Sampo now automatically detects Maven projects (via their `pom.xml`, including multi-module reactors with parent-inherited versions) and handles versioning, changelogs, and publishing to Maven Central through `mvn deploy`. Packages whose version is a snapshot or a build-time property (`${revision}`) are skipped with a warning, and Sampo refuses to write a snapshot version rather than lose track of the package. — Thanks @goulvenclech!
+
+### Patch changes
+
+- Updated dependencies: sampo-core (Cargo)@0.16.0
+
 ## 0.17.0 — 2026-06-28
 
 ### Minor changes
