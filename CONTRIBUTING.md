@@ -38,6 +38,7 @@ We're also committed to fostering a welcoming and respectful community. Any issu
 - For errors, use typed error enums in library crates (derived with `thiserror`). Per-crate `pub type Result<T>` aliases for ergonomic signatures. Add context at the boundary (CLI/action) rather than deep in core, keep library error messages concise.
 - Prefer `?` propagation when possible, and reserve `.expect()`/`.unwrap()` for cases where failure is a programmer bug (e.g. hardcoded regex literals, test helpers).
 - Document any new public APIs, configuration options, or user-facing changes in the relevant README files. If you're unsure where or how to document something, just ask and we'll help you out.
+- Avoid ecosystem-specific notes in the documentation as much as possible, especially in general, widely-read sections. Never add one unless it covers a Sampo specificity that users of that ecosystem must know to avoid problems. When unavoidable (e.g. Packagist short tags), keep it brief and start it with the same clarification as ecosystem-specific changesets: `In PHP (Packagist) projects, ...`.
 - We deeply value idiomatic, easy-to-maintain Rust code. Avoid code duplication when possible. And prefer clarity over cleverness, and small focused functions over dark magic.
 - Explicit `use` imports for standard library types (e.g. `use std::collections::HashMap;`).
 
