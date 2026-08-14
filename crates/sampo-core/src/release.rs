@@ -607,6 +607,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             &config,
             &preserved_targets,
             false,
+            true,
         )? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
@@ -640,8 +641,26 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     }
 
     // Ahead of the preserved-changeset restore below, which is already a write.
-    if !dry_run {
-        preflight_lockfile_tools(&workspace)?;
+    if !dry_run && any_lockfile_present(&workspace) {
+        let planned = match &cached_plan_state {
+            Some(plan) => released_ecosystems(&workspace, &plan.releases),
+            // No plan yet, and the real one needs the restore first.
+            None => {
+                let mut preview = current_changesets.clone();
+                preview.extend(filter_prerelease_entries(
+                    preserved_changesets.clone(),
+                    &workspace,
+                )?);
+                preview_released_ecosystems(
+                    &preview,
+                    &workspace,
+                    &config,
+                    &preserved_targets,
+                    false,
+                )?
+            }
+        };
+        preflight_lockfile_tools(&workspace, &planned)?;
     }
 
     let mut final_changesets;
@@ -666,6 +685,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             &config,
             &preserved_targets,
             false,
+            true,
         )? {
             PlanOutcome::Plan(plan) => plan,
             PlanOutcome::NoApplicablePackages => {
@@ -693,6 +713,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
                 &config,
                 &preserved_targets,
                 false,
+                true,
             )? {
                 PlanOutcome::Plan(plan) => plan,
                 PlanOutcome::NoApplicablePackages => {
@@ -750,7 +771,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         &prerelease_targets,
     )?;
 
-    regenerate_lockfile(&workspace)?;
+    regenerate_lockfile(&workspace, &released_ecosystems(&workspace, &releases))?;
 
     Ok(ReleaseOutput {
         released_packages,
@@ -792,9 +813,14 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
         });
     }
 
-    // Ahead of the preserved-changeset restore below, which is already a write.
-    if !dry_run {
-        preflight_lockfile_tools(&workspace)?;
+    // The restore is a write, so the gate must precede it, planning from the union it restores.
+    let restores_changesets = !preserved_changesets.is_empty();
+    if !dry_run && restores_changesets && any_lockfile_present(&workspace) {
+        let mut preview = current_changesets.clone();
+        preview.extend(preserved_changesets.clone());
+        let planned =
+            preview_released_ecosystems(&preview, &workspace, &config, &preserved_targets, true)?;
+        preflight_lockfile_tools(&workspace, &planned)?;
     }
 
     // Always restore all preserved changesets — unlike a normal release, which skips preserved
@@ -822,6 +848,7 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
         &workspace,
         &config,
         &preserved_targets,
+        true,
         true,
     )? {
         PlanOutcome::Plan(plan) => plan,
@@ -858,6 +885,11 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
         });
     }
 
+    let released_kinds = released_ecosystems(&workspace, &releases);
+    if !restores_changesets {
+        preflight_lockfile_tools(&workspace, &released_kinds)?;
+    }
+
     apply_releases(
         &releases,
         &workspace,
@@ -876,7 +908,7 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
         &prerelease_targets,
     )?;
 
-    regenerate_lockfile(&workspace)?;
+    regenerate_lockfile(&workspace, &released_kinds)?;
 
     Ok(ReleaseOutput {
         released_packages,
@@ -884,12 +916,15 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
     })
 }
 
+/// `report_warnings` is off for the preflight preview, whose plan the user never sees: its
+/// constraint warnings would reach them twice.
 fn compute_plan_state(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
     config: &Config,
     preserved_targets: &BTreeSet<String>,
     stabilize: bool,
+    report_warnings: bool,
 ) -> Result<PlanOutcome> {
     let (mut bump_by_pkg, messages_by_pkg, used_paths) =
         compute_initial_bumps(changesets, workspace, config)?;
@@ -928,8 +963,10 @@ fn compute_plan_state(
     // This checks that internal dependency version constraints will be satisfied
     // after the planned bumps. Returns error for fixed/linked packages, warnings otherwise.
     let constraint_warnings = validate_dependency_constraints(&releases, workspace, config)?;
-    for warning in &constraint_warnings {
-        eprintln!("{}", warning);
+    if report_warnings {
+        for warning in &constraint_warnings {
+            eprintln!("{}", warning);
+        }
     }
 
     // Fail before any manifest is written when structural version coupling cannot hold,
@@ -1480,14 +1517,15 @@ fn unique_destination_path(dir: &Path, file_name: &OsStr) -> PathBuf {
     }
 }
 
-/// Regenerate lockfiles for every ecosystem present in a workspace, so they reflect the
-/// versions just written to the manifests.
-pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
+pub(crate) fn regenerate_lockfile(
+    workspace: &Workspace,
+    released_kinds: &BTreeSet<PackageKind>,
+) -> Result<()> {
     use crate::types::PackageKind;
 
     let mut errors: Vec<(PackageKind, String)> = Vec::new();
 
-    for kind in ecosystems_with_lockfiles(workspace) {
+    for kind in ecosystems_with_lockfiles(workspace, released_kinds) {
         if let Err(e) = PackageAdapter::from_kind(kind).regenerate_lockfile(&workspace.root) {
             errors.push((kind, adapter_failure_detail(e)));
         }
@@ -1510,12 +1548,16 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
     Ok(())
 }
 
-/// Ecosystems whose lockfile is already on disk, in a stable order so failure messages
-/// list them deterministically.
-fn ecosystems_with_lockfiles(workspace: &Workspace) -> BTreeSet<PackageKind> {
+/// Ordered, so failure messages list ecosystems deterministically.
+fn ecosystems_with_lockfiles(
+    workspace: &Workspace,
+    released_kinds: &BTreeSet<PackageKind>,
+) -> BTreeSet<PackageKind> {
     let mut present: BTreeSet<PackageKind> = BTreeSet::new();
     for pkg in &workspace.members {
-        present.insert(pkg.kind);
+        if released_kinds.contains(&pkg.kind) {
+            present.insert(pkg.kind);
+        }
     }
 
     present
@@ -1551,11 +1593,65 @@ fn ecosystems_with_lockfiles(workspace: &Workspace) -> BTreeSet<PackageKind> {
 
 /// Check the tooling each lockfile regeneration will need, before the release writes
 /// anything. See [`PackageAdapter::preflight_lockfile_regen`].
-pub(crate) fn preflight_lockfile_tools(workspace: &Workspace) -> Result<()> {
-    for kind in ecosystems_with_lockfiles(workspace) {
+///
+/// `released_kinds` must come from a resolved plan: `fixed`/`linked` groups can pull another
+/// ecosystem in, which a scan of the raw changesets would miss.
+pub(crate) fn preflight_lockfile_tools(
+    workspace: &Workspace,
+    released_kinds: &BTreeSet<PackageKind>,
+) -> Result<()> {
+    for kind in ecosystems_with_lockfiles(workspace, released_kinds) {
         PackageAdapter::from_kind(kind).preflight_lockfile_regen(&workspace.root)?;
     }
     Ok(())
+}
+
+/// Widened by name rather than by identifier: the root-manifest rewrite is keyed on bare
+/// names, so a shared name drags the other ecosystem's root manifest in.
+pub(crate) fn released_ecosystems(
+    workspace: &Workspace,
+    releases: &ReleasePlan,
+) -> BTreeSet<PackageKind> {
+    let released_names: BTreeSet<&str> = releases
+        .iter()
+        .filter_map(|(identifier, _, _)| workspace.find_by_identifier(identifier))
+        .map(|pkg| pkg.name.as_str())
+        .collect();
+
+    workspace
+        .members
+        .iter()
+        .filter(|member| released_names.contains(member.name.as_str()))
+        .map(|member| member.kind)
+        .collect()
+}
+
+/// Cheap upper bound on the gate: previewing a plan costs a second full computation.
+fn any_lockfile_present(workspace: &Workspace) -> bool {
+    let every_kind: BTreeSet<PackageKind> = workspace.members.iter().map(|pkg| pkg.kind).collect();
+    !ecosystems_with_lockfiles(workspace, &every_kind).is_empty()
+}
+
+/// `compute_plan_state` only reads, so this preview stays write-free — the preflight runs
+/// before the writes that produce the real plan.
+fn preview_released_ecosystems(
+    changesets: &[ChangesetInfo],
+    workspace: &Workspace,
+    config: &Config,
+    preserved_targets: &BTreeSet<String>,
+    stabilize: bool,
+) -> Result<BTreeSet<PackageKind>> {
+    match compute_plan_state(
+        changesets,
+        workspace,
+        config,
+        preserved_targets,
+        stabilize,
+        false,
+    )? {
+        PlanOutcome::Plan(plan) => Ok(released_ecosystems(workspace, &plan.releases)),
+        PlanOutcome::NoApplicablePackages | PlanOutcome::NoMatchingCrates => Ok(BTreeSet::new()),
+    }
 }
 
 /// Unwrap `Release` instead of stringifying: re-wrapping would print the prefix twice.

@@ -1066,11 +1066,17 @@ fn lockfile_regen_command(
     }
 }
 
-fn parse_major_minor(version: &str) -> Option<(u32, u32)> {
-    let mut parts = version.trim().split('.');
+/// Anchored on the whole output: bun prints one bare version and nothing else, so a version
+/// read out of anything longer could be a date or a build stamp.
+fn parse_bun_version(reported: &str) -> Option<(&str, (u32, u32))> {
+    let token = reported.trim();
+    if token.split_whitespace().count() != 1 {
+        return None;
+    }
+    let mut parts = token.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
-    Some((major, minor))
+    Some((token, (major, minor)))
 }
 
 /// 1.2 is the oldest bun where `bun.lock` is the default and the `--lockfile-only`/`--no-save`
@@ -1081,18 +1087,124 @@ fn require_bun_lockfile_flags() -> Result<()> {
         .arg("--version")
         .output()
         .map_err(SampoError::Io)?;
-    let reported = String::from_utf8_lossy(&output.stdout);
-    let version = reported.trim();
 
-    // An unreadable version is not itself a reason to stop.
-    let Some(parsed) = parse_major_minor(version) else {
-        return Ok(());
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let snippet: String = stderr.trim().chars().take(400).collect();
+        return Err(SampoError::Release(format!(
+            "`bun --version` failed with status {}: {snippet}; install a working bun 1.2 or \
+             later, or delete the lockfile to opt out of regeneration",
+            output.status
+        )));
+    }
+
+    let reported = String::from_utf8_lossy(&output.stdout);
+    let Some((version, parsed)) = parse_bun_version(&reported) else {
+        return Err(SampoError::Release(format!(
+            "cannot read a version from `bun --version` (got {:?}); bun 1.2 or later is \
+             required to refresh bun.lock, or delete the lockfile to opt out of regeneration",
+            reported.trim()
+        )));
     };
 
     if parsed < (1, 2) {
         return Err(SampoError::Release(format!(
             "bun {version} cannot refresh bun.lock without also rewriting package.json; \
              upgrade to bun 1.2 or later, or delete the lockfile to opt out of regeneration"
+        )));
+    }
+    Ok(())
+}
+
+/// `bun.lock` is JSONC and bun emits trailing commas, which `serde_json` rejects. Only that
+/// dialect difference is handled: the file read here is always one bun just wrote.
+fn strip_trailing_commas(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for c in source.chars() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match c {
+            '"' => in_string = true,
+            '}' | ']' => {
+                let kept = out.trim_end();
+                if kept.ends_with(',') {
+                    let len = kept.len() - 1;
+                    out.truncate(len);
+                }
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn bun_workspace_key(workspace_root: &Path, member_path: &Path) -> Option<String> {
+    let relative = member_path.strip_prefix(workspace_root).ok()?;
+    Some(
+        relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
+/// Exit status alone does not prove regeneration happened: the flags are undocumented, and a
+/// bun that ignores them exits 0 having refreshed nothing.
+fn verify_bun_lockfile_versions(workspace_root: &Path) -> Result<()> {
+    let Ok(raw) = fs::read_to_string(workspace_root.join("bun.lock")) else {
+        return Ok(());
+    };
+    let Ok(document) = serde_json::from_str::<JsonValue>(&strip_trailing_commas(&raw)) else {
+        return Ok(());
+    };
+    let Some(workspaces) = document.get("workspaces").and_then(JsonValue::as_object) else {
+        return Ok(());
+    };
+
+    let mut stale: Vec<String> = Vec::new();
+    for member in discover_npm(workspace_root)? {
+        if member.version.is_empty() {
+            continue;
+        }
+        let Some(key) = bun_workspace_key(workspace_root, &member.path) else {
+            continue;
+        };
+        // bun records no version on the root's `""` entry, so an absent one proves nothing.
+        let Some(recorded) = workspaces
+            .get(&key)
+            .and_then(|entry| entry.get("version"))
+            .and_then(JsonValue::as_str)
+        else {
+            continue;
+        };
+        if recorded != member.version {
+            stale.push(format!(
+                "{} ({} instead of {})",
+                member.name, recorded, member.version
+            ));
+        }
+    }
+
+    if !stale.is_empty() {
+        return Err(SampoError::Release(format!(
+            "bun ran without refreshing bun.lock, which still records {}; upgrade bun, or \
+             delete the lockfile to opt out of regeneration",
+            stale.join(", ")
         )));
     }
     Ok(())
@@ -1124,6 +1236,10 @@ fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
             "{} failed with status {}",
             program, status
         )));
+    }
+
+    if lockfile_name == "bun.lock" {
+        verify_bun_lockfile_versions(workspace_root)?;
     }
 
     println!("{} updated.", lockfile_name);

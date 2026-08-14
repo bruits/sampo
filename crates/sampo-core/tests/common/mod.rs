@@ -35,16 +35,14 @@ pub fn write_workspace(root: &Path) {
     .unwrap();
 }
 
-/// A `bun` stand-in reporting `version`, logging every other invocation to `argv_log`
-/// and failing it.
-pub fn write_fake_bun(dir: &Path, argv_log: &Path, version: &str) {
+pub fn write_bun_with_version_body(dir: &Path, argv_log: &Path, version_body: &str) {
     fs::create_dir_all(dir).unwrap();
     let stub = dir.join("bun");
     fs::write(
         &stub,
         format!(
             "#!/bin/sh\n\
-             if [ \"$1\" = \"--version\" ]; then echo {version}; exit 0; fi\n\
+             if [ \"$1\" = \"--version\" ]; then {version_body}; fi\n\
              printf '%s\\n' \"$*\" >> '{}'\n\
              exit 1\n",
             argv_log.display()
@@ -52,6 +50,10 @@ pub fn write_fake_bun(dir: &Path, argv_log: &Path, version: &str) {
     )
     .unwrap();
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+pub fn write_fake_bun(dir: &Path, argv_log: &Path, version: &str) {
+    write_bun_with_version_body(dir, argv_log, &format!("echo {version}; exit 0"));
 }
 
 /// Point the release at `main` and make `dir` the only place tools are found.
@@ -65,6 +67,8 @@ pub fn use_only(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
     unsafe {
         std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
         std::env::set_var("PATH", dir);
+        // Set on GitHub Actions, where it sends changelog enrichment down another path.
+        std::env::remove_var("GITHUB_REPOSITORY");
     }
     guard
 }

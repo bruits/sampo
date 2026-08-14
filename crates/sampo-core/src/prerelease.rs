@@ -6,7 +6,7 @@ use crate::release::{
     restore_prerelease_changesets,
 };
 use crate::types::{
-    PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
+    PackageInfo, PackageKind, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
 };
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
@@ -305,7 +305,17 @@ fn apply_version_updates(
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
     validate_version_updates(workspace, new_versions)?;
-    preflight_lockfile_tools(workspace).map_err(to_prerelease)?;
+
+    // Matched by name, like the manifest rewrite below: a shared name is bumped in every
+    // ecosystem holding it, staling each of their lockfiles.
+    let updated_kinds: BTreeSet<PackageKind> = workspace
+        .members
+        .iter()
+        .filter(|member| new_versions.contains_key(&member.name))
+        .map(|member| member.kind)
+        .collect();
+
+    preflight_lockfile_tools(workspace, &updated_kinds).map_err(to_prerelease)?;
 
     // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
     let names_by_kind: BTreeMap<_, BTreeSet<&str>> =
@@ -346,7 +356,7 @@ fn apply_version_updates(
 
     PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(to_prerelease)?;
 
-    regenerate_lockfile(workspace).map_err(to_prerelease)?;
+    regenerate_lockfile(workspace, &updated_kinds).map_err(to_prerelease)?;
 
     Ok(())
 }
