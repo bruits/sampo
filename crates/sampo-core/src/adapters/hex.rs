@@ -1,3 +1,4 @@
+use crate::adapters::require_on_path;
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::PackageInfo;
 use reqwest::StatusCode;
@@ -194,6 +195,17 @@ impl HexAdapter {
         } else {
             mix::publish(manifest_path, dry_run, extra_args)
         }
+    }
+
+    /// Must mirror the tool selection in `regenerate_lockfile` below.
+    pub(super) fn preflight_lockfile_regen(&self, workspace_root: &Path) -> Result<()> {
+        if workspace_root.join("mix.exs").exists() {
+            require_on_path("mix")?;
+        }
+        if gleam::has_lockfile_to_regenerate(workspace_root) {
+            require_on_path("gleam")?;
+        }
+        Ok(())
     }
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {

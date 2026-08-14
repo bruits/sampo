@@ -264,3 +264,17 @@ fn regenerate_lockfile_is_noop_without_existing_lockfile() {
     assert!(regenerate_lockfile(temp.path()).is_ok());
     assert!(!temp.path().join("manifest.toml").exists());
 }
+
+#[test]
+fn only_a_resolved_package_needs_the_gleam_binary() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("gleam.toml"),
+        "name = \"app\"\nversion = \"1.0.0\"\n",
+    );
+
+    assert!(!has_lockfile_to_regenerate(temp.path()));
+
+    write_file(&temp.path().join("manifest.toml"), "");
+    assert!(has_lockfile_to_regenerate(temp.path()));
+}

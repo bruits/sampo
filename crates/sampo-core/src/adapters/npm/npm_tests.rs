@@ -723,6 +723,86 @@ fn detect_workspace_package_manager_bun() {
 }
 
 #[test]
+fn lockfile_regen_command_per_package_manager() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    for (manager, expected) in [
+        (
+            super::PackageManager::Npm,
+            ("npm", vec!["install", "--package-lock-only"]),
+        ),
+        (
+            super::PackageManager::Pnpm,
+            ("pnpm", vec!["install", "--lockfile-only"]),
+        ),
+        (
+            super::PackageManager::Yarn,
+            ("yarn", vec!["install", "--mode", "update-lockfile"]),
+        ),
+        (
+            super::PackageManager::Bun,
+            ("bun", vec!["update", "--lockfile-only", "--no-save"]),
+        ),
+    ] {
+        let (program, args, _) = super::lockfile_regen_command(manager, root);
+        assert_eq!((program, args), expected, "for {manager:?}");
+    }
+}
+
+#[test]
+fn lockfile_regen_command_reports_bun_binary_lockfile() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    let (_, _, text) = super::lockfile_regen_command(super::PackageManager::Bun, root);
+    assert_eq!(text, "bun.lock");
+
+    fs::write(root.join("bun.lockb"), "").unwrap();
+    let (_, _, binary) = super::lockfile_regen_command(super::PackageManager::Bun, root);
+    assert_eq!(binary, "bun.lockb");
+}
+
+#[test]
+fn parse_bun_version_reads_what_bun_actually_prints() {
+    for (reported, expected) in [
+        ("1.3.14\n", Some(("1.3.14", (1, 3)))),
+        (
+            "1.2.0-canary.20260101",
+            Some(("1.2.0-canary.20260101", (1, 2))),
+        ),
+        ("", None),
+        ("not a version", None),
+        ("1", None),
+        // A banner date would otherwise read as 2026.1 and clear the floor.
+        ("2026.01.15\n1.1.30", None),
+        ("bun 1.1.30", None),
+        ("1.2.0 (canary)", None),
+    ] {
+        assert_eq!(super::parse_bun_version(reported), expected, "{reported:?}");
+    }
+}
+
+#[test]
+fn strip_trailing_commas_leaves_json_meaning_intact() {
+    let stripped = super::strip_trailing_commas(
+        "{\"workspaces\":{\"packages/a\":{\"version\":\"1.0.0\"},},\"list\":[1,2,],}",
+    );
+    let parsed: super::JsonValue = serde_json::from_str(&stripped).expect("parses as JSON");
+    assert_eq!(parsed["workspaces"]["packages/a"]["version"], "1.0.0");
+    assert_eq!(parsed["list"], serde_json::json!([1, 2]));
+}
+
+#[test]
+fn strip_trailing_commas_keeps_string_contents() {
+    let source = "{\"name\":\"a,b}\",\"tail\":\"x[,]\",}";
+    let parsed: super::JsonValue =
+        serde_json::from_str(&super::strip_trailing_commas(source)).expect("parses as JSON");
+    assert_eq!(parsed["name"], "a,b}");
+    assert_eq!(parsed["tail"], "x[,]");
+}
+
+#[test]
 fn detect_workspace_package_manager_yarn() {
     let temp = tempdir().unwrap();
     let root = temp.path();

@@ -1,4 +1,4 @@
-use crate::adapters::{format_command_display, has_flag};
+use crate::adapters::{format_command_display, has_flag, require_on_path};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -176,6 +176,17 @@ impl NpmAdapter {
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         regenerate_npm_lockfile(workspace_root)
+    }
+
+    pub(super) fn preflight_lockfile_regen(&self, workspace_root: &Path) -> Result<()> {
+        let package_manager = detect_workspace_package_manager(workspace_root)?;
+        let (program, _, _) = lockfile_regen_command(package_manager, workspace_root);
+        require_on_path(program)?;
+
+        if package_manager == PackageManager::Bun {
+            require_bun_lockfile_flags()?;
+        }
+        Ok(())
     }
 }
 
@@ -1019,15 +1030,12 @@ fn parse_package_manager_field(field: &str) -> Option<PackageManager> {
     }
 }
 
-/// Regenerate the lockfile for npm-ecosystem packages.
-///
-/// Detects which package manager is in use (npm, pnpm, yarn, or bun) by examining
-/// lockfiles and package.json packageManager field, then runs the appropriate install
-/// command to regenerate the lockfile after version updates.
-fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
-    let package_manager = detect_workspace_package_manager(workspace_root)?;
-
-    let (program, args, lockfile_name) = match package_manager {
+/// Command that refreshes the lockfile for a package manager, and the lockfile it writes.
+fn lockfile_regen_command(
+    package_manager: PackageManager,
+    workspace_root: &Path,
+) -> (&'static str, Vec<&'static str>, &'static str) {
+    match package_manager {
         PackageManager::Npm => (
             "npm",
             vec!["install", "--package-lock-only"],
@@ -1039,16 +1047,173 @@ fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
             vec!["install", "--mode", "update-lockfile"],
             "yarn.lock",
         ),
+        // `bun install` leaves a workspace member's own version stale in an existing text
+        // lockfile (oven-sh/bun#18906); `bun update` rewrites those entries. `--lockfile-only`
+        // spares node_modules, `--no-save` keeps the root manifest's own dependency ranges.
+        //
+        // The pair is undocumented: bun documents `--no-save` as skipping the lockfile write
+        // too (oven-sh/bun#30407), and only the earlier return taken by `--lockfile-only`
+        // saves it anyway. A bun honouring its own docs would write no lockfile and exit 0.
         PackageManager::Bun => (
             "bun",
-            vec!["install", "--frozen-lockfile=false"],
+            vec!["update", "--lockfile-only", "--no-save"],
             if workspace_root.join("bun.lockb").exists() {
                 "bun.lockb"
             } else {
                 "bun.lock"
             },
         ),
+    }
+}
+
+/// Anchored on the whole output: bun prints one bare version and nothing else, so a version
+/// read out of anything longer could be a date or a build stamp.
+fn parse_bun_version(reported: &str) -> Option<(&str, (u32, u32))> {
+    let token = reported.trim();
+    if token.split_whitespace().count() != 1 {
+        return None;
+    }
+    let mut parts = token.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((token, (major, minor)))
+}
+
+/// 1.2 is the oldest bun where `bun.lock` is the default and the `--lockfile-only`/`--no-save`
+/// pair is known to refresh it. Older bun accepts unknown flags silently, so the same command
+/// may write no lockfile at all.
+fn require_bun_lockfile_flags() -> Result<()> {
+    let output = command("bun")
+        .arg("--version")
+        .output()
+        .map_err(SampoError::Io)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let snippet: String = stderr.trim().chars().take(400).collect();
+        return Err(SampoError::Release(format!(
+            "`bun --version` failed with status {}: {snippet}; install a working bun 1.2 or \
+             later, or delete the lockfile to opt out of regeneration",
+            output.status
+        )));
+    }
+
+    let reported = String::from_utf8_lossy(&output.stdout);
+    let Some((version, parsed)) = parse_bun_version(&reported) else {
+        return Err(SampoError::Release(format!(
+            "cannot read a version from `bun --version` (got {:?}); bun 1.2 or later is \
+             required to refresh bun.lock, or delete the lockfile to opt out of regeneration",
+            reported.trim()
+        )));
     };
+
+    if parsed < (1, 2) {
+        return Err(SampoError::Release(format!(
+            "bun {version} cannot refresh bun.lock without also rewriting package.json; \
+             upgrade to bun 1.2 or later, or delete the lockfile to opt out of regeneration"
+        )));
+    }
+    Ok(())
+}
+
+/// `bun.lock` is JSONC and bun emits trailing commas, which `serde_json` rejects. Only that
+/// dialect difference is handled: the file read here is always one bun just wrote.
+fn strip_trailing_commas(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for c in source.chars() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match c {
+            '"' => in_string = true,
+            '}' | ']' => {
+                let kept = out.trim_end();
+                if kept.ends_with(',') {
+                    let len = kept.len() - 1;
+                    out.truncate(len);
+                }
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn bun_workspace_key(workspace_root: &Path, member_path: &Path) -> Option<String> {
+    let relative = member_path.strip_prefix(workspace_root).ok()?;
+    Some(
+        relative
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
+/// Exit status alone does not prove regeneration happened: the flags are undocumented, and a
+/// bun that ignores them exits 0 having refreshed nothing.
+fn verify_bun_lockfile_versions(workspace_root: &Path) -> Result<()> {
+    let Ok(raw) = fs::read_to_string(workspace_root.join("bun.lock")) else {
+        return Ok(());
+    };
+    let Ok(document) = serde_json::from_str::<JsonValue>(&strip_trailing_commas(&raw)) else {
+        return Ok(());
+    };
+    let Some(workspaces) = document.get("workspaces").and_then(JsonValue::as_object) else {
+        return Ok(());
+    };
+
+    let mut stale: Vec<String> = Vec::new();
+    for member in discover_npm(workspace_root)? {
+        if member.version.is_empty() {
+            continue;
+        }
+        let Some(key) = bun_workspace_key(workspace_root, &member.path) else {
+            continue;
+        };
+        // bun records no version on the root's `""` entry, so an absent one proves nothing.
+        let Some(recorded) = workspaces
+            .get(&key)
+            .and_then(|entry| entry.get("version"))
+            .and_then(JsonValue::as_str)
+        else {
+            continue;
+        };
+        if recorded != member.version {
+            stale.push(format!(
+                "{} ({} instead of {})",
+                member.name, recorded, member.version
+            ));
+        }
+    }
+
+    if !stale.is_empty() {
+        return Err(SampoError::Release(format!(
+            "bun ran without refreshing bun.lock, which still records {}; upgrade bun, or \
+             delete the lockfile to opt out of regeneration",
+            stale.join(", ")
+        )));
+    }
+    Ok(())
+}
+
+/// Regenerate the lockfile for npm-ecosystem packages.
+fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
+    let package_manager = detect_workspace_package_manager(workspace_root)?;
+    let (program, args, lockfile_name) = lockfile_regen_command(package_manager, workspace_root);
 
     println!("Regenerating {} using {}…", lockfile_name, program);
 
@@ -1071,6 +1236,10 @@ fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
             "{} failed with status {}",
             program, status
         )));
+    }
+
+    if lockfile_name == "bun.lock" {
+        verify_bun_lockfile_versions(workspace_root)?;
     }
 
     println!("{} updated.", lockfile_name);

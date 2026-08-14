@@ -47,6 +47,9 @@ jobs:
           # Maven packages read credentials from ~/.m2/settings.xml (see actions/setup-java)
 ```
 
+> [!WARNING]
+> If your repository commits a lockfile, install the matching package manager in the workflow before this step. Runners ship `npm` and `yarn`, but not `pnpm` or `bun`.
+
 ### Creating GitHub Releases and Discussions
 
 Set the `create-github-release` input to `true` to create a GitHub Release for each new tag created when publishing packages. The release notes are generated from the changesets included in the release.

@@ -183,6 +183,16 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
     Ok(())
 }
 
+/// Narrower than [`can_discover`]: a `gleam.toml` with no lockfile yet is discovered but
+/// never regenerated.
+pub(super) fn has_lockfile_to_regenerate(workspace_root: &Path) -> bool {
+    find_manifests(workspace_root).iter().any(|manifest_path| {
+        manifest_path
+            .parent()
+            .is_some_and(|dir| dir.join(GLEAM_LOCKFILE).exists())
+    })
+}
+
 pub(super) fn regenerate_lockfile(workspace_root: &Path) -> Result<()> {
     // Each Gleam package owns its `manifest.toml`; refresh every one that already
     // exists. Like the other adapters, we never create a lockfile the user has not
