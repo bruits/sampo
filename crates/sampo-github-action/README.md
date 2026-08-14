@@ -44,8 +44,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}         # For npm packages (optional, uses .npmrc if not set)
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}     # For Hex packages (optional)
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }} # For PyPI packages via uv (optional)
-          # Maven packages read credentials from ~/.m2/settings.xml; use actions/setup-java
-          # (server-id/server-username/server-password + gpg inputs) to provision it.
+          # Maven packages read credentials from ~/.m2/settings.xml (see actions/setup-java)
 ```
 
 > [!WARNING]
