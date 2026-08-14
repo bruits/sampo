@@ -141,6 +141,23 @@ impl PackageAdapter {
         }
     }
 
+    /// Check that lockfile regeneration can run, before the release writes anything.
+    ///
+    /// Regeneration only runs once manifests, changelogs and changesets are rewritten, and
+    /// nothing rolls those back. Best-effort: [`crate::process::is_on_path`] cannot answer
+    /// on Windows.
+    pub fn preflight_lockfile_regen(&self, workspace_root: &Path) -> Result<()> {
+        match self {
+            Self::Cargo => require_on_path("cargo"),
+            Self::Npm => npm::NpmAdapter.preflight_lockfile_regen(workspace_root),
+            Self::Hex => hex::HexAdapter.preflight_lockfile_regen(workspace_root),
+            Self::PyPI => require_on_path("uv"),
+            Self::Packagist => require_on_path("composer"),
+            // Maven has no lockfile.
+            Self::Maven => Ok(()),
+        }
+    }
+
     /// Regenerate the workspace lockfile after version updates.
     pub fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         match self {
@@ -326,6 +343,17 @@ impl PackageAdapter {
                 new_version,
             ),
         }
+    }
+}
+
+pub(crate) fn require_on_path(program: &str) -> Result<()> {
+    if crate::process::is_on_path(program) {
+        Ok(())
+    } else {
+        Err(crate::errors::SampoError::Release(format!(
+            "{program} not found in PATH; install it to regenerate the lockfile, \
+             or delete the lockfile to opt out of regeneration"
+        )))
     }
 }
 

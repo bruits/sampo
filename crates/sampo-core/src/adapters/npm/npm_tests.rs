@@ -723,6 +723,47 @@ fn detect_workspace_package_manager_bun() {
 }
 
 #[test]
+fn lockfile_regen_command_per_package_manager() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    for (manager, expected) in [
+        (
+            super::PackageManager::Npm,
+            ("npm", vec!["install", "--package-lock-only"]),
+        ),
+        (
+            super::PackageManager::Pnpm,
+            ("pnpm", vec!["install", "--lockfile-only"]),
+        ),
+        (
+            super::PackageManager::Yarn,
+            ("yarn", vec!["install", "--mode", "update-lockfile"]),
+        ),
+        (
+            super::PackageManager::Bun,
+            ("bun", vec!["update", "--lockfile-only", "--no-save"]),
+        ),
+    ] {
+        let (program, args, _) = super::lockfile_regen_command(manager, root);
+        assert_eq!((program, args), expected, "for {manager:?}");
+    }
+}
+
+#[test]
+fn lockfile_regen_command_reports_bun_binary_lockfile() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    let (_, _, text) = super::lockfile_regen_command(super::PackageManager::Bun, root);
+    assert_eq!(text, "bun.lock");
+
+    fs::write(root.join("bun.lockb"), "").unwrap();
+    let (_, _, binary) = super::lockfile_regen_command(super::PackageManager::Bun, root);
+    assert_eq!(binary, "bun.lockb");
+}
+
+#[test]
 fn detect_workspace_package_manager_yarn() {
     let temp = tempdir().unwrap();
     let root = temp.path();

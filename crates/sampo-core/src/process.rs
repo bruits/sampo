@@ -17,6 +17,20 @@ pub fn command(program: &str) -> Command {
     }
 }
 
+/// Whether `program` resolves to an executable on `PATH`.
+///
+/// Always `true` on Windows, where resolution goes through `cmd.exe` and `PATHEXT`.
+pub fn is_on_path(program: &str) -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+
+    match std::env::var_os("PATH") {
+        Some(paths) => std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()),
+        None => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

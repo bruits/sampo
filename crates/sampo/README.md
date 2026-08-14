@@ -118,7 +118,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 > [!WARNING]
-> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`.
+> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`. `sampo release` needs them too whenever a lockfile is committed, since it refreshes the lockfile after bumping versions, and stops if it cannot.
 
 > [!TIP]
 > Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.

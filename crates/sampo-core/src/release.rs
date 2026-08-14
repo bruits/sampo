@@ -639,6 +639,11 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         }
     }
 
+    // Ahead of the preserved-changeset restore below, which is already a write.
+    if !dry_run {
+        preflight_lockfile_tools(&workspace)?;
+    }
+
     let mut final_changesets;
     let plan_state = if using_preserved {
         if dry_run {
@@ -745,12 +750,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         &prerelease_targets,
     )?;
 
-    // Regenerate lockfiles for all ecosystems present in the workspace.
-    // This ensures the release branch includes consistent, up-to-date lockfiles
-    // and avoids a dirty working tree later. Only runs when lockfiles already exist,
-    // to keep tests (which create ephemeral workspaces without lockfiles) fast.
-    // Errors are logged but do not fail the release to keep behavior resilient.
-    let _ = regenerate_lockfile(&workspace);
+    regenerate_lockfile(&workspace)?;
 
     Ok(ReleaseOutput {
         released_packages,
@@ -790,6 +790,11 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
             released_packages: vec![],
             dry_run,
         });
+    }
+
+    // Ahead of the preserved-changeset restore below, which is already a write.
+    if !dry_run {
+        preflight_lockfile_tools(&workspace)?;
     }
 
     // Always restore all preserved changesets — unlike a normal release, which skips preserved
@@ -871,7 +876,7 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
         &prerelease_targets,
     )?;
 
-    let _ = regenerate_lockfile(&workspace);
+    regenerate_lockfile(&workspace)?;
 
     Ok(ReleaseOutput {
         released_packages,
@@ -1475,35 +1480,47 @@ fn unique_destination_path(dir: &Path, file_name: &OsStr) -> PathBuf {
     }
 }
 
-/// Regenerate the Cargo.lock at the workspace root using Cargo.
-///
-/// Uses `cargo generate-lockfile`, which will rebuild the lockfile with the latest
-/// compatible versions, ensuring the lockfile reflects the new workspace versions.
-/// Regenerate lockfiles for all ecosystems present in a workspace.
+/// Regenerate lockfiles for every ecosystem present in a workspace, so they reflect the
+/// versions just written to the manifests.
 pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
     use crate::types::PackageKind;
-    use rustc_hash::FxHashSet;
 
-    // Determine which ecosystems are present in the workspace
-    let mut ecosystems: FxHashSet<PackageKind> = FxHashSet::default();
-    for pkg in &workspace.members {
-        ecosystems.insert(pkg.kind);
-    }
-
-    // Regenerate lockfiles for each ecosystem present
     let mut errors: Vec<(PackageKind, String)> = Vec::new();
 
-    for kind in ecosystems {
-        let adapter = match kind {
-            PackageKind::Cargo => PackageAdapter::Cargo,
-            PackageKind::Npm => PackageAdapter::Npm,
-            PackageKind::Hex => PackageAdapter::Hex,
-            PackageKind::PyPI => PackageAdapter::PyPI,
-            PackageKind::Packagist => PackageAdapter::Packagist,
-            PackageKind::Maven => PackageAdapter::Maven,
-        };
+    for kind in ecosystems_with_lockfiles(workspace) {
+        if let Err(e) = PackageAdapter::from_kind(kind).regenerate_lockfile(&workspace.root) {
+            errors.push((kind, adapter_failure_detail(e)));
+        }
+    }
 
-        let lockfile_exists = match kind {
+    if !errors.is_empty() {
+        let details = errors
+            .iter()
+            .map(|(kind, err)| format!("{} ({})", kind.display_name(), err))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(SampoError::Release(format!(
+            "Cannot regenerate lockfiles for {details}; make the reported command succeed, \
+             or delete the lockfile to opt out of regeneration. Version updates were already \
+             written to the working tree: discard all of them before retrying, including the \
+             files the run created — a partial restore can release the same changeset twice"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Ecosystems whose lockfile is already on disk, in a stable order so failure messages
+/// list them deterministically.
+fn ecosystems_with_lockfiles(workspace: &Workspace) -> BTreeSet<PackageKind> {
+    let mut present: BTreeSet<PackageKind> = BTreeSet::new();
+    for pkg in &workspace.members {
+        present.insert(pkg.kind);
+    }
+
+    present
+        .into_iter()
+        .filter(|kind| match kind {
             PackageKind::Cargo => workspace.root.join("Cargo.lock").exists(),
             PackageKind::Npm => {
                 workspace.root.join("package-lock.json").exists()
@@ -1528,25 +1545,25 @@ pub(crate) fn regenerate_lockfile(workspace: &Workspace) -> Result<()> {
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
             // Maven has no lockfile; dependency versions live in the POMs themselves.
             PackageKind::Maven => false,
-        };
+        })
+        .collect()
+}
 
-        if lockfile_exists && let Err(e) = adapter.regenerate_lockfile(&workspace.root) {
-            errors.push((kind, e.to_string()));
-        }
+/// Check the tooling each lockfile regeneration will need, before the release writes
+/// anything. See [`PackageAdapter::preflight_lockfile_regen`].
+pub(crate) fn preflight_lockfile_tools(workspace: &Workspace) -> Result<()> {
+    for kind in ecosystems_with_lockfiles(workspace) {
+        PackageAdapter::from_kind(kind).preflight_lockfile_regen(&workspace.root)?;
     }
-
-    // If there were errors, report them but don't fail the release
-    if !errors.is_empty() {
-        for (kind, err) in errors {
-            eprintln!(
-                "Warning: failed to regenerate {} lockfile: {}",
-                kind.display_name(),
-                err
-            );
-        }
-    }
-
     Ok(())
+}
+
+/// Unwrap `Release` instead of stringifying: re-wrapping would print the prefix twice.
+fn adapter_failure_detail(err: SampoError) -> String {
+    match err {
+        SampoError::Release(msg) => msg,
+        other => other.to_string(),
+    }
 }
 
 /// Compute initial bumps from changesets and collect messages

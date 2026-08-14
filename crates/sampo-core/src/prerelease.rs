@@ -2,7 +2,7 @@ use crate::adapters::PackageAdapter;
 use crate::discover_workspace;
 use crate::errors::{Result, SampoError};
 use crate::release::{
-    merge_overlapping_groups, parse_version_string, regenerate_lockfile,
+    merge_overlapping_groups, parse_version_string, preflight_lockfile_tools, regenerate_lockfile,
     restore_prerelease_changesets,
 };
 use crate::types::{
@@ -305,6 +305,7 @@ fn apply_version_updates(
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
     validate_version_updates(workspace, new_versions)?;
+    preflight_lockfile_tools(workspace).map_err(to_prerelease)?;
 
     // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
     let names_by_kind: BTreeMap<_, BTreeSet<&str>> =

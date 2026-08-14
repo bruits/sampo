@@ -1,4 +1,4 @@
-use crate::adapters::{format_command_display, has_flag};
+use crate::adapters::{format_command_display, has_flag, require_on_path};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -176,6 +176,17 @@ impl NpmAdapter {
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
         regenerate_npm_lockfile(workspace_root)
+    }
+
+    pub(super) fn preflight_lockfile_regen(&self, workspace_root: &Path) -> Result<()> {
+        let package_manager = detect_workspace_package_manager(workspace_root)?;
+        let (program, _, _) = lockfile_regen_command(package_manager, workspace_root);
+        require_on_path(program)?;
+
+        if package_manager == PackageManager::Bun {
+            require_bun_lockfile_flags()?;
+        }
+        Ok(())
     }
 }
 
@@ -1019,15 +1030,12 @@ fn parse_package_manager_field(field: &str) -> Option<PackageManager> {
     }
 }
 
-/// Regenerate the lockfile for npm-ecosystem packages.
-///
-/// Detects which package manager is in use (npm, pnpm, yarn, or bun) by examining
-/// lockfiles and package.json packageManager field, then runs the appropriate install
-/// command to regenerate the lockfile after version updates.
-fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
-    let package_manager = detect_workspace_package_manager(workspace_root)?;
-
-    let (program, args, lockfile_name) = match package_manager {
+/// Command that refreshes the lockfile for a package manager, and the lockfile it writes.
+fn lockfile_regen_command(
+    package_manager: PackageManager,
+    workspace_root: &Path,
+) -> (&'static str, Vec<&'static str>, &'static str) {
+    match package_manager {
         PackageManager::Npm => (
             "npm",
             vec!["install", "--package-lock-only"],
@@ -1039,16 +1047,61 @@ fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
             vec!["install", "--mode", "update-lockfile"],
             "yarn.lock",
         ),
+        // `bun install` leaves a workspace member's own version stale in an existing text
+        // lockfile (oven-sh/bun#18906); `bun update` rewrites those entries. `--lockfile-only`
+        // spares node_modules, `--no-save` keeps the root manifest's own dependency ranges.
+        //
+        // The pair is undocumented: bun documents `--no-save` as skipping the lockfile write
+        // too (oven-sh/bun#30407), and only the earlier return taken by `--lockfile-only`
+        // saves it anyway. A bun honouring its own docs would write no lockfile and exit 0.
         PackageManager::Bun => (
             "bun",
-            vec!["install", "--frozen-lockfile=false"],
+            vec!["update", "--lockfile-only", "--no-save"],
             if workspace_root.join("bun.lockb").exists() {
                 "bun.lockb"
             } else {
                 "bun.lock"
             },
         ),
+    }
+}
+
+fn parse_major_minor(version: &str) -> Option<(u32, u32)> {
+    let mut parts = version.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// 1.2 is the oldest bun where `bun.lock` is the default and the `--lockfile-only`/`--no-save`
+/// pair is known to refresh it. Older bun accepts unknown flags silently, so the same command
+/// may write no lockfile at all.
+fn require_bun_lockfile_flags() -> Result<()> {
+    let output = command("bun")
+        .arg("--version")
+        .output()
+        .map_err(SampoError::Io)?;
+    let reported = String::from_utf8_lossy(&output.stdout);
+    let version = reported.trim();
+
+    // An unreadable version is not itself a reason to stop.
+    let Some(parsed) = parse_major_minor(version) else {
+        return Ok(());
     };
+
+    if parsed < (1, 2) {
+        return Err(SampoError::Release(format!(
+            "bun {version} cannot refresh bun.lock without also rewriting package.json; \
+             upgrade to bun 1.2 or later, or delete the lockfile to opt out of regeneration"
+        )));
+    }
+    Ok(())
+}
+
+/// Regenerate the lockfile for npm-ecosystem packages.
+fn regenerate_npm_lockfile(workspace_root: &Path) -> Result<()> {
+    let package_manager = detect_workspace_package_manager(workspace_root)?;
+    let (program, args, lockfile_name) = lockfile_regen_command(package_manager, workspace_root);
 
     println!("Regenerating {} using {}…", lockfile_name, program);
 
