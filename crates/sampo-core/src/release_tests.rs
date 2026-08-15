@@ -2754,6 +2754,61 @@ end
     }
 
     #[test]
+    fn versionless_package_fails_the_release_before_any_write() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pyproject.toml"),
+            "[tool.uv.workspace]\nmembers = [\"good\", \"noversion\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("good")).unwrap();
+        let good_manifest = "[project]\nname = \"good\"\nversion = \"1.0.0\"\n";
+        fs::write(root.join("good/pyproject.toml"), good_manifest).unwrap();
+        fs::create_dir_all(root.join("noversion")).unwrap();
+        fs::write(
+            root.join("noversion/pyproject.toml"),
+            "[project]\nname = \"noversion\"\n",
+        )
+        .unwrap();
+
+        let changeset = root.join(".sampo/changesets/c.md");
+        fs::write(
+            &changeset,
+            "---\npypi/good: minor\npypi/noversion: minor\n---\n\nfeat: a change\n",
+        )
+        .unwrap();
+
+        let err = run_release(root, false).expect_err("a versionless package must fail the run");
+        match err {
+            crate::errors::SampoError::Release(message) => {
+                assert!(
+                    message.contains("noversion") && message.contains("`[project].version`"),
+                    "the message must name the package and the missing field, got: {message}"
+                );
+            }
+            other => panic!("expected Release error, got {other:?}"),
+        }
+
+        assert_eq!(
+            fs::read_to_string(root.join("good/pyproject.toml")).unwrap(),
+            good_manifest,
+            "no manifest may be written when the plan is invalid"
+        );
+        assert!(
+            !root.join("good/CHANGELOG.md").exists(),
+            "no changelog may be written when the plan is invalid"
+        );
+        assert!(
+            changeset.exists(),
+            "the changeset must survive a failed release"
+        );
+    }
+
+    #[test]
     fn coupled_pair_advances_together_across_successive_prereleases() {
         set_release_branch_main();
         let temp_dir = tempfile::tempdir().unwrap();

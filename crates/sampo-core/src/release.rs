@@ -1583,7 +1583,14 @@ fn ecosystems_with_lockfiles(
                             && member.path.join("manifest.toml").exists()
                     })
             }
-            PackageKind::PyPI => workspace.root.join("uv.lock").exists(),
+            PackageKind::PyPI => {
+                // A declared uv workspace shares a single root uv.lock; scanned
+                // packages are independent uv projects, each owning one.
+                workspace.root.join("uv.lock").exists()
+                    || workspace.members.iter().any(|member| {
+                        member.kind == PackageKind::PyPI && member.path.join("uv.lock").exists()
+                    })
+            }
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
             // Maven has no lockfile; dependency versions live in the POMs themselves.
             PackageKind::Maven => false,

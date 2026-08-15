@@ -19,6 +19,13 @@ const PYPI_RATE_LIMIT: Duration = Duration::from_millis(200);
 
 static PYPI_LAST_CALL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
 
+pub(super) fn validate_release_plan(
+    members: &[PackageInfo],
+    new_version_by_id: &BTreeMap<String, String>,
+) -> Result<()> {
+    pip::validate_release_plan(members, new_version_by_id)
+}
+
 /// Stateless adapter for PyPI/pip workspaces.
 pub(super) struct PyPIAdapter;
 

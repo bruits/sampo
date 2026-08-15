@@ -132,13 +132,40 @@ fn discover_skips_directory_owned_by_mix() {
 }
 
 #[test]
-fn discover_errors_on_malformed_manifest() {
+fn discover_skips_nameless_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(&temp.path().join("gleam.toml"), "version = \"1.0.0\"\n");
+    write_file(
+        &temp.path().join("good/gleam.toml"),
+        "name = \"good\"\nversion = \"1.0.0\"\n",
+    );
+
+    let names: Vec<String> = discover(temp.path())
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["good"]);
+}
+
+#[test]
+fn discover_skips_malformed_manifest() {
     let temp = tempfile::tempdir().unwrap();
     write_file(
         &temp.path().join("gleam.toml"),
         "name = \"app\"\nversion =\n",
     );
-    assert!(discover(temp.path()).is_err());
+    write_file(
+        &temp.path().join("good/gleam.toml"),
+        "name = \"good\"\nversion = \"1.0.0\"\n",
+    );
+
+    let names: Vec<String> = discover(temp.path())
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["good"]);
 }
 
 #[test]

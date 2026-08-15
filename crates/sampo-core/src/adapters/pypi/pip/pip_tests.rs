@@ -114,6 +114,195 @@ dependencies = []
 }
 
 #[test]
+fn discover_scans_subdirectories_without_root_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("package1/pyproject.toml"),
+        "[project]\nname = \"package1\"\nversion = \"0.1.0\"\ndependencies = [\"package2\"]\n",
+    );
+    write_file(
+        &root.join("group1/package2/pyproject.toml"),
+        "[project]\nname = \"package2\"\nversion = \"0.2.0\"\n",
+    );
+
+    assert!(can_discover(root));
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["package2", "package1"]);
+    let package1 = packages.iter().find(|p| p.name == "package1").unwrap();
+    assert!(
+        package1.internal_deps.contains("pypi/package2"),
+        "internal dependencies must link across scanned directories"
+    );
+}
+
+#[test]
+fn discover_scan_respects_depth_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("a/b/c/d/pyproject.toml"),
+        "[project]\nname = \"at-limit\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(
+        &root.join("a/b/c/d/e/pyproject.toml"),
+        "[project]\nname = \"beyond-limit\"\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["at-limit"]);
+}
+
+#[test]
+fn discover_scan_skips_virtualenvs_caches_and_fixtures() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pkg/pyproject.toml"),
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+    );
+    for dir in [
+        ".venv/vendored",
+        "venv/vendored",
+        "env/vendored",
+        "build/staged",
+        "dist/staged",
+        "site-packages/installed",
+        "__pycache__/cached",
+        "tests/fixture-project",
+        "test/fixture-project",
+        "node_modules/js-thing",
+    ] {
+        write_file(
+            &root.join(dir).join("pyproject.toml"),
+            "[project]\nname = \"vendored\"\nversion = \"9.9.9\"\n",
+        );
+    }
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg"]);
+}
+
+#[test]
+fn discover_scan_ignores_tool_config_only_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        "[tool.ruff]\nline-length = 100\n",
+    );
+    write_file(
+        &root.join("pkg/pyproject.toml"),
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg"]);
+}
+
+#[test]
+fn discover_root_package_disables_scan() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        "[project]\nname = \"root-pkg\"\nversion = \"1.0.0\"\n",
+    );
+    write_file(
+        &root.join("stray/pyproject.toml"),
+        "[project]\nname = \"stray\"\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["root-pkg"]);
+}
+
+#[test]
+fn discover_uv_workspace_disables_scan() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        "[tool.uv.workspace]\nmembers = [\"pkg_a\"]\n",
+    );
+    write_file(
+        &root.join("pkg_a/pyproject.toml"),
+        "[project]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(
+        &root.join("pkg_b/pyproject.toml"),
+        "[project]\nname = \"pkg-b\"\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg-a"]);
+}
+
+#[test]
+fn discover_survives_invalid_member_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        "[tool.uv.workspace]\nmembers = [\"good\", \"legacy\", \"broken\", \"not_a_package\"]\n",
+    );
+    write_file(
+        &root.join("good/pyproject.toml"),
+        "[project]\nname = \"good\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(
+        &root.join("legacy/pyproject.toml"),
+        "[tool.poetry]\nname = \"legacy\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join("broken/pyproject.toml"), "not [ valid toml");
+    write_file(&root.join("not_a_package/pyproject.toml"), "[tool.ruff]\n");
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["good"]);
+}
+
+#[test]
+fn discover_falls_back_to_scan_when_root_manifest_is_invalid() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(&root.join("pyproject.toml"), "not [ valid toml");
+    write_file(
+        &root.join("pkg/pyproject.toml"),
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg"]);
+}
+
+#[test]
+fn discover_scan_survives_invalid_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("good/pyproject.toml"),
+        "[project]\nname = \"good\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join("broken/pyproject.toml"), "not [ valid toml");
+    write_file(
+        &root.join("nameless/pyproject.toml"),
+        "[project]\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["good"]);
+}
+
+#[test]
 fn discover_uv_workspace_packages() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -236,6 +425,86 @@ dependencies = []
 }
 
 #[test]
+fn uv_lock_dirs_refreshes_root_lock_for_declared_workspaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        "[tool.uv.workspace]\nmembers = [\"pkg\"]\n",
+    );
+    write_file(
+        &root.join("pkg/pyproject.toml"),
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join("uv.lock"), "");
+    // A stray member lock inside a declared workspace is not a uv project
+    // root; uv keeps the single root lockfile.
+    write_file(&root.join("pkg/uv.lock"), "");
+
+    let dirs = uv_lock_dirs(root).unwrap();
+    assert_eq!(dirs, vec![root.to_path_buf()]);
+}
+
+#[test]
+fn uv_lock_dirs_refreshes_each_scanned_package_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pkg_a/pyproject.toml"),
+        "[project]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join("pkg_a/uv.lock"), "");
+    // No lockfile committed for pkg_b: nothing to refresh there.
+    write_file(
+        &root.join("pkg_b/pyproject.toml"),
+        "[project]\nname = \"pkg-b\"\nversion = \"0.1.0\"\n",
+    );
+
+    let dirs = uv_lock_dirs(root).unwrap();
+    assert_eq!(dirs, vec![normalize_path(&root.join("pkg_a"))]);
+}
+
+#[test]
+fn uv_lock_dirs_skips_locks_of_rejected_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(&root.join("broken/pyproject.toml"), "not [ valid toml");
+    write_file(&root.join("broken/uv.lock"), "");
+    write_file(
+        &root.join("good/pyproject.toml"),
+        "[project]\nname = \"good\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join("good/uv.lock"), "");
+
+    let dirs = uv_lock_dirs(root).unwrap();
+    assert_eq!(dirs, vec![normalize_path(&root.join("good"))]);
+}
+
+#[test]
+fn update_manifest_versions_errors_when_version_field_missing() {
+    let manifest = r#"
+[project]
+name = "my-pkg"
+dependencies = []
+"#;
+
+    let versions = BTreeMap::new();
+    let err = update_manifest_versions(
+        Path::new("pyproject.toml"),
+        manifest,
+        Some("0.2.0"),
+        &versions,
+    )
+    .unwrap_err();
+
+    let message = err.to_string();
+    assert!(
+        message.contains("no `version` field"),
+        "error should explain the missing field: {message}"
+    );
+}
+
+#[test]
 fn update_manifest_versions_rewrites_violated_dependencies() {
     let manifest = r#"
 [project]
@@ -340,10 +609,9 @@ version = "0.1.0"
 }
 
 #[test]
-fn regenerate_lockfile_requires_manifest() {
+fn regenerate_lockfile_is_a_no_op_without_lockfiles() {
     let temp = tempfile::tempdir().unwrap();
-    let err = regenerate_lockfile(temp.path()).expect_err("expected missing manifest to fail");
-    assert!(format!("{}", err).contains("pyproject.toml"));
+    regenerate_lockfile(temp.path()).expect("no lockfile means nothing to regenerate");
 }
 
 #[test]
