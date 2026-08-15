@@ -1,4 +1,4 @@
-use crate::adapters::PackageAdapter;
+use crate::adapters::{PackageAdapter, PublishOutcome};
 use crate::tag_template::Placeholder;
 use crate::types::{PackageInfo, PackageKind, PublishOutput};
 use crate::{
@@ -240,21 +240,32 @@ pub fn run_publish(
                 .push((*package, manifest.as_path()));
         }
 
+        let mut not_validated: Vec<String> = Vec::new();
         for (kind, packages) in &packages_by_kind {
             let adapter = PackageAdapter::from_kind(*kind);
             let args = extra_args.args_for_kind(*kind);
-            adapter.publish_dry_run(&ws.root, packages, &args)?;
+            not_validated.extend(adapter.publish_dry_run(&ws.root, packages, &args)?);
         }
 
-        println!("Dry-run validation passed.");
+        if not_validated.is_empty() {
+            println!("Dry-run validation passed.");
+        } else {
+            println!(
+                "Dry-run validation incomplete: {} could not be validated. Will attempt publish.",
+                not_validated.join(", ")
+            );
+        }
     }
 
     let mut tags_to_create: Vec<String> = Vec::new();
     let mut any_published = false;
+    let mut not_simulated: Vec<String> = Vec::new();
 
     for (package, adapter, manifest) in &publish_targets {
         let args = extra_args.args_for_kind(package.kind);
-        adapter.publish(manifest.as_path(), dry_run, &args)?;
+        if adapter.publish(manifest.as_path(), dry_run, &args)? == PublishOutcome::DryRunSkipped {
+            not_simulated.push(package.display_name(true));
+        }
         any_published = true;
 
         // Publishable packages always carry a version, so the tag is well-formed.
@@ -342,8 +353,17 @@ pub fn run_publish(
 
     if dry_run {
         println!("Dry-run complete.");
+        if !not_simulated.is_empty() {
+            println!("{} could not be validated.", not_simulated.join(", "));
+        }
     } else {
         println!("Publish complete.");
+        if !not_simulated.is_empty() {
+            eprintln!(
+                "Warning: {} did not reach the registry: the publish was skipped as a dry run, but the release was still tagged.",
+                not_simulated.join(", ")
+            );
+        }
     }
 
     Ok(PublishOutput {

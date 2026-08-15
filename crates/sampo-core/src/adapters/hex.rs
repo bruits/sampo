@@ -490,7 +490,7 @@ fn satisfies_pessimistic(version_str: &str, version: (u64, u64, u64)) -> Option<
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     for (package, manifest) in packages {
         HexAdapter
             .publish(manifest, true, extra_args)
@@ -504,7 +504,7 @@ pub(super) fn publish_dry_run(
             })?;
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 fn enforce_hex_rate_limit() {

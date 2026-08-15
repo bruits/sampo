@@ -13,6 +13,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
+/// Whether the publish spawned a command at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishOutcome {
+    Ran,
+    DryRunSkipped,
+}
+
 /// Package ecosystem adapter (Cargo, npm, etc.).
 #[derive(Debug, Clone, Copy)]
 pub enum PackageAdapter {
@@ -111,27 +118,37 @@ impl PackageAdapter {
         manifest_path: &Path,
         dry_run: bool,
         extra_args: &[String],
-    ) -> Result<()> {
+    ) -> Result<PublishOutcome> {
         match self {
-            Self::Cargo => cargo::CargoAdapter.publish(manifest_path, dry_run, extra_args),
+            Self::Cargo => cargo::CargoAdapter
+                .publish(manifest_path, dry_run, extra_args)
+                .map(|()| PublishOutcome::Ran),
             Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, extra_args),
-            Self::Hex => hex::HexAdapter.publish(manifest_path, dry_run, extra_args),
-            Self::PyPI => pypi::PyPIAdapter.publish(manifest_path, dry_run, extra_args),
-            Self::Packagist => {
-                packagist::PackagistAdapter.publish(manifest_path, dry_run, extra_args)
-            }
-            Self::Maven => maven::MavenAdapter.publish(manifest_path, dry_run, extra_args),
+            Self::Hex => hex::HexAdapter
+                .publish(manifest_path, dry_run, extra_args)
+                .map(|()| PublishOutcome::Ran),
+            Self::PyPI => pypi::PyPIAdapter
+                .publish(manifest_path, dry_run, extra_args)
+                .map(|()| PublishOutcome::Ran),
+            Self::Packagist => packagist::PackagistAdapter
+                .publish(manifest_path, dry_run, extra_args)
+                .map(|()| PublishOutcome::Ran),
+            Self::Maven => maven::MavenAdapter
+                .publish(manifest_path, dry_run, extra_args)
+                .map(|()| PublishOutcome::Ran),
         }
     }
 
     /// Execute dry-run publish validation for the provided packages.
     /// Adapters can choose the most appropriate strategy (workspace-level or per-package).
+    /// Returns the packages it could not validate, as kind-qualified
+    /// [`PackageInfo::display_name`] values.
     pub fn publish_dry_run(
         &self,
         workspace_root: &Path,
         packages: &[(&PackageInfo, &Path)],
         extra_args: &[String],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         match self {
             Self::Cargo => cargo::publish_dry_run(workspace_root, packages, extra_args),
             Self::Npm => npm::publish_dry_run(packages, extra_args),

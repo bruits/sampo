@@ -177,7 +177,7 @@ fn enforce_maven_rate_limit() {
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     for (package, manifest) in packages {
         MavenAdapter
             .publish(manifest, true, extra_args)
@@ -191,7 +191,7 @@ pub(super) fn publish_dry_run(
             })?;
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 /// Update a Maven POM with a new package version and refreshed dependency references.

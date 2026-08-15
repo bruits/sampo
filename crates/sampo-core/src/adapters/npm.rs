@@ -1,4 +1,4 @@
-use crate::adapters::{format_command_display, has_flag, require_on_path};
+use crate::adapters::{PublishOutcome, format_command_display, has_flag, require_on_path};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -93,7 +93,7 @@ impl NpmAdapter {
         manifest_path: &Path,
         dry_run: bool,
         extra_args: &[String],
-    ) -> Result<()> {
+    ) -> Result<PublishOutcome> {
         let manifest_dir = manifest_path.parent().ok_or_else(|| {
             SampoError::Publish(format!(
                 "Manifest {} does not have a parent directory",
@@ -131,7 +131,7 @@ impl NpmAdapter {
                 "Warning: skipping dry-run publish for '{}': {gap}. This package was not validated.",
                 info.name
             );
-            return Ok(());
+            return Ok(PublishOutcome::DryRunSkipped);
         }
 
         let mut cmd = command(manager_name);
@@ -169,7 +169,7 @@ impl NpmAdapter {
             )));
         }
 
-        Ok(())
+        Ok(PublishOutcome::Ran)
     }
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
@@ -617,9 +617,11 @@ fn is_wildcard(s: &str) -> bool {
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut skipped = Vec::new();
+
     for (package, manifest) in packages {
-        NpmAdapter
+        let outcome = NpmAdapter
             .publish(manifest, true, extra_args)
             .map_err(|err| match err {
                 SampoError::Publish(message) => SampoError::Publish(format!(
@@ -629,9 +631,13 @@ pub(super) fn publish_dry_run(
                 )),
                 other => other,
             })?;
+
+        if outcome == PublishOutcome::DryRunSkipped {
+            skipped.push(package.display_name(true));
+        }
     }
 
-    Ok(())
+    Ok(skipped)
 }
 
 /// A passthrough `--dry-run=false` must never talk a requested dry run into a real publish.
