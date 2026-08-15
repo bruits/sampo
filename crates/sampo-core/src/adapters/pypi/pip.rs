@@ -9,6 +9,18 @@ use toml_edit::{DocumentMut, Item, Value};
 
 const PYPROJECT_MANIFEST: &str = "pyproject.toml";
 
+/// Scan excludes beyond the shared set: virtual environments, caches, build
+/// output, and test fixtures.
+const PYTHON_EXCLUDED_DIRS: &[&str] = &[
+    "venv",
+    "env",
+    "__pycache__",
+    "dist",
+    "site-packages",
+    "test",
+    "tests",
+];
+
 /// PEP 508 version comparison operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VersionOperator {
@@ -49,45 +61,11 @@ impl VersionOperator {
 }
 
 pub(super) fn can_discover(root: &Path) -> bool {
-    root.join(PYPROJECT_MANIFEST).exists()
+    root.join(PYPROJECT_MANIFEST).exists() || !scan_for_manifest_dirs(root).is_empty()
 }
 
 pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
-    let manifest_path = root.join(PYPROJECT_MANIFEST);
-    if !manifest_path.exists() {
-        return Err(WorkspaceError::ManifestNotFound {
-            manifest: PYPROJECT_MANIFEST,
-            path: root.to_path_buf(),
-        });
-    }
-
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|e| WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path)))?;
-    let project_meta = parse_project_metadata(&manifest_text);
-
-    let mut package_dirs: BTreeSet<PathBuf> = BTreeSet::new();
-
-    // Check if this is a valid package (has name)
-    if project_meta.name.is_some() {
-        package_dirs.insert(normalize_path(root));
-    }
-
-    // Check for uv workspace members in [tool.uv.workspace]
-    let workspace_config = parse_uv_workspace_config(&manifest_text);
-    if let Some(ref members) = workspace_config.members {
-        for pattern in members {
-            expand_uv_member_pattern(root, pattern, &mut package_dirs)?;
-        }
-    }
-
-    // Apply exclude patterns
-    if let Some(ref excludes) = workspace_config.exclude {
-        let mut excluded_dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        for pattern in excludes {
-            expand_uv_member_pattern(root, pattern, &mut excluded_dirs)?;
-        }
-        package_dirs.retain(|dir| !excluded_dirs.contains(dir));
-    }
+    let (package_dirs, declared) = collect_package_dirs(root)?;
 
     let mut manifests = Vec::new();
     // PEP 503: package names are case-insensitive and treat `.`, `-`, `_` as equivalent
@@ -98,14 +76,43 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         let text = fs::read_to_string(&manifest_path).map_err(|e| {
             WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
         })?;
-        let meta = parse_project_metadata(&text);
+        // One unusable manifest must not abort discovery for the rest of the
+        // workspace or for other ecosystems.
+        let doc: DocumentMut = match text.parse() {
+            Ok(doc) => doc,
+            Err(err) => {
+                eprintln!(
+                    "Warning: skipping {}: invalid TOML: {err}",
+                    manifest_path.display()
+                );
+                continue;
+            }
+        };
+        let meta = project_metadata(&doc);
         let dynamic_version = meta.dynamic_version;
-        let name = meta.name.ok_or_else(|| {
-            WorkspaceError::InvalidManifest(format!(
-                "missing project.name in {}",
-                manifest_path.display()
-            ))
-        })?;
+        let Some(name) = meta.name else {
+            if meta.has_project_table {
+                eprintln!(
+                    "Warning: skipping {}: `[project]` has no `name` field",
+                    manifest_path.display()
+                );
+            } else if has_poetry_table(&doc) {
+                eprintln!(
+                    "Warning: skipping {}: it declares only legacy Poetry metadata; \
+                     Sampo reads PEP 621 `[project]` (supported since Poetry 2.0)",
+                    manifest_path.display()
+                );
+            } else if declared {
+                eprintln!(
+                    "Warning: skipping {}: listed in `[tool.uv.workspace]` but has no \
+                     `[project]` table",
+                    manifest_path.display()
+                );
+            }
+            // A scanned file without `[project]` is tool configuration, not a
+            // package manifest: nothing to report.
+            continue;
+        };
         let version = match meta.version {
             Some(version) => version,
             // Sampo owns the version in the manifest and cannot bump a
@@ -172,6 +179,97 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
     }
 
     Ok(packages)
+}
+
+/// Directories that may hold a Python package, and whether they come from an
+/// explicit declaration.
+///
+/// A root `pyproject.toml` that is itself a package (`[project].name`) or
+/// declares `[tool.uv.workspace]` is authoritative, exactly as uv resolves
+/// it; only a repository without such a root is scanned for per-directory
+/// manifests.
+fn collect_package_dirs(
+    root: &Path,
+) -> std::result::Result<(BTreeSet<PathBuf>, bool), WorkspaceError> {
+    let manifest_path = root.join(PYPROJECT_MANIFEST);
+    if manifest_path.exists() {
+        let text = fs::read_to_string(&manifest_path).map_err(|e| {
+            WorkspaceError::Io(crate::errors::io_error_with_path(e, &manifest_path))
+        })?;
+        match text.parse::<DocumentMut>() {
+            Ok(doc) => {
+                let meta = project_metadata(&doc);
+                let workspace_config = uv_workspace_config(&doc);
+                if meta.name.is_some() || workspace_config.declared {
+                    let mut package_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+                    if meta.name.is_some() {
+                        package_dirs.insert(normalize_path(root));
+                    }
+                    if let Some(ref members) = workspace_config.members {
+                        for pattern in members {
+                            expand_uv_member_pattern(root, pattern, &mut package_dirs)?;
+                        }
+                    }
+                    if let Some(ref excludes) = workspace_config.exclude {
+                        let mut excluded_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+                        for pattern in excludes {
+                            expand_uv_member_pattern(root, pattern, &mut excluded_dirs)?;
+                        }
+                        package_dirs.retain(|dir| !excluded_dirs.contains(dir));
+                    }
+                    return Ok((package_dirs, true));
+                }
+            }
+            Err(err) => {
+                // Other ecosystems in the repository must keep working, so
+                // fall back to the scan rather than abort.
+                eprintln!(
+                    "Warning: {} is invalid TOML: {err}",
+                    manifest_path.display()
+                );
+                let mut package_dirs = scan_for_manifest_dirs(root);
+                // Warned just above; drop the root so it is not reported twice.
+                package_dirs.remove(&normalize_path(root));
+                return Ok((package_dirs, false));
+            }
+        }
+    }
+    Ok((scan_for_manifest_dirs(root), false))
+}
+
+/// Fail before any manifest is written when a planned package cannot take its
+/// new version: a `pyproject.toml` without a static `[project].version` would
+/// otherwise be changelogged and tagged while the manifest never changes.
+pub(super) fn validate_release_plan(
+    members: &[PackageInfo],
+    new_version_by_id: &BTreeMap<String, String>,
+) -> Result<()> {
+    for member in members.iter().filter(|m| m.kind == PackageKind::PyPI) {
+        if !new_version_by_id.contains_key(&member.identifier) {
+            continue;
+        }
+        // Discovery records an empty version exactly when the manifest has no
+        // static `[project].version` (dynamic versions are never discovered).
+        if member.version.is_empty() {
+            return Err(SampoError::Release(format!(
+                "Cannot release '{}': {} has no `[project].version` field. Add a static \
+                 `version` for Sampo to manage it.",
+                member.name,
+                manifest_path(&member.path).display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn scan_for_manifest_dirs(root: &Path) -> BTreeSet<PathBuf> {
+    let mut dirs = BTreeSet::new();
+    crate::adapters::scan::walk_package_dirs(root, PYTHON_EXCLUDED_DIRS, |dir| {
+        if dir.join(PYPROJECT_MANIFEST).is_file() {
+            dirs.insert(normalize_path(dir));
+        }
+    });
+    dirs
 }
 
 pub(super) fn manifest_path(package_dir: &Path) -> PathBuf {
@@ -319,40 +417,73 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
     Ok(())
 }
 
+/// Directories whose `uv.lock` a release must refresh. A declared workspace
+/// shares a single root uv.lock; scanned packages each own one. Never
+/// creates a lockfile the user has not generated.
+fn uv_lock_dirs(workspace_root: &Path) -> Result<Vec<PathBuf>> {
+    let (package_dirs, declared) = collect_package_dirs(workspace_root)
+        .map_err(|err| SampoError::Release(format!("cannot regenerate lockfile; {err}")))?;
+
+    let candidates: Vec<PathBuf> = if declared {
+        vec![workspace_root.to_path_buf()]
+    } else {
+        package_dirs.into_iter().collect()
+    };
+    Ok(candidates
+        .into_iter()
+        .filter(|dir| dir.join("uv.lock").exists())
+        .filter(|dir| {
+            // A lock next to a manifest discovery rejected cannot be
+            // refreshed: `uv lock` would fail against that manifest and abort
+            // the release after versions were already written.
+            let manifest_path = dir.join(PYPROJECT_MANIFEST);
+            let usable = fs::read_to_string(&manifest_path)
+                .ok()
+                .and_then(|text| text.parse::<DocumentMut>().ok())
+                .is_some_and(|doc| {
+                    project_metadata(&doc).name.is_some() || uv_workspace_config(&doc).declared
+                });
+            if !usable {
+                eprintln!(
+                    "Warning: not regenerating {}: {} is not a manageable package manifest",
+                    dir.join("uv.lock").display(),
+                    manifest_path.display()
+                );
+            }
+            usable
+        })
+        .collect())
+}
+
 pub(super) fn regenerate_lockfile(workspace_root: &Path) -> Result<()> {
-    let manifest_path = workspace_root.join(PYPROJECT_MANIFEST);
-    if !manifest_path.exists() {
-        return Err(SampoError::Release(format!(
-            "cannot regenerate lockfile; {} not found in {}",
-            PYPROJECT_MANIFEST,
-            workspace_root.display()
-        )));
-    }
+    for dir in uv_lock_dirs(workspace_root)? {
+        println!("Regenerating uv.lock…");
+        let mut cmd = Command::new("uv");
+        cmd.arg("lock").current_dir(&dir);
 
-    println!("Regenerating uv.lock…");
-    let mut cmd = Command::new("uv");
-    cmd.arg("lock").current_dir(workspace_root);
+        println!("Running: {}", format_command_display(&cmd));
 
-    println!("Running: {}", format_command_display(&cmd));
+        let status = cmd.status().map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                SampoError::Release(
+                    "uv not found in PATH; install uv to regenerate uv.lock".to_string(),
+                )
+            } else {
+                SampoError::Io(err)
+            }
+        })?;
 
-    let status = cmd.status().map_err(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
-            SampoError::Release(
-                "uv not found in PATH; install uv to regenerate uv.lock".to_string(),
-            )
-        } else {
-            SampoError::Io(err)
+        if !status.success() {
+            return Err(SampoError::Release(format!(
+                "uv lock failed in {} with status {}",
+                dir.display(),
+                status
+            )));
         }
-    })?;
 
-    if !status.success() {
-        return Err(SampoError::Release(format!(
-            "uv lock failed with status {}",
-            status
-        )));
+        println!("uv.lock updated.");
     }
 
-    println!("uv.lock updated.");
     Ok(())
 }
 
@@ -372,10 +503,18 @@ pub(super) fn update_manifest_versions(
     let mut applied: Vec<(String, String)> = Vec::new();
 
     // Update the package version in [project] table
-    if let Some(target_version) = new_pkg_version
-        && let Some(project) = doc.get_mut("project").and_then(Item::as_table_mut)
-        && let Some(version_item) = project.get_mut("version")
-    {
+    if let Some(target_version) = new_pkg_version {
+        let version_item = doc
+            .get_mut("project")
+            .and_then(Item::as_table_mut)
+            .and_then(|project| project.get_mut("version"))
+            .ok_or_else(|| {
+                SampoError::Release(format!(
+                    "Cannot write version {target_version} to {}: `[project]` has no `version` \
+                     field. Add a static `version` for Sampo to manage it.",
+                    manifest_path.display()
+                ))
+            })?;
         let current = version_item
             .as_value()
             .and_then(Value::as_str)
@@ -434,18 +573,25 @@ struct ProjectMetadata {
     version: Option<String>,
     /// Whether `version` is declared in PEP 621 `dynamic` rather than set statically.
     dynamic_version: bool,
+    /// Distinguishes a malformed package manifest from a file holding only
+    /// tool configuration.
+    has_project_table: bool,
 }
 
 /// Parse PEP 621 [project] table metadata from pyproject.toml
 fn parse_project_metadata(source: &str) -> ProjectMetadata {
-    let doc: DocumentMut = match source.parse() {
-        Ok(d) => d,
-        Err(_) => return ProjectMetadata::default(),
-    };
+    match source.parse::<DocumentMut>() {
+        Ok(doc) => project_metadata(&doc),
+        Err(_) => ProjectMetadata::default(),
+    }
+}
 
+/// PEP 621 [project] table metadata of a parsed pyproject.toml
+fn project_metadata(doc: &DocumentMut) -> ProjectMetadata {
     let mut metadata = ProjectMetadata::default();
 
     if let Some(project) = doc.get("project").and_then(Item::as_table) {
+        metadata.has_project_table = true;
         if let Some(name) = project.get("name").and_then(Item::as_str) {
             metadata.name = Some(name.to_string());
         }
@@ -462,19 +608,36 @@ fn parse_project_metadata(source: &str) -> ProjectMetadata {
     metadata
 }
 
+/// Whether the manifest carries a `[tool.poetry]` table (Poetry < 2.0 metadata).
+fn has_poetry_table(doc: &DocumentMut) -> bool {
+    doc.get("tool")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("poetry"))
+        .is_some()
+}
+
 /// Configuration parsed from [tool.uv.workspace]
 #[derive(Default)]
 struct UvWorkspaceConfig {
+    /// Whether the manifest carries a `[tool.uv.workspace]` table at all,
+    /// even an empty one — declaring a workspace and declaring no members
+    /// are different statements.
+    declared: bool,
     members: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
 }
 
 /// Parse uv workspace configuration from [tool.uv.workspace]
+#[cfg(test)]
 fn parse_uv_workspace_config(source: &str) -> UvWorkspaceConfig {
-    let Ok(doc) = source.parse::<DocumentMut>() else {
-        return UvWorkspaceConfig::default();
-    };
+    match source.parse::<DocumentMut>() {
+        Ok(doc) => uv_workspace_config(&doc),
+        Err(_) => UvWorkspaceConfig::default(),
+    }
+}
 
+/// uv workspace configuration of a parsed pyproject.toml
+fn uv_workspace_config(doc: &DocumentMut) -> UvWorkspaceConfig {
     let Some(workspace) = doc
         .get("tool")
         .and_then(|t| t.as_table())
@@ -506,7 +669,11 @@ fn parse_uv_workspace_config(source: &str) -> UvWorkspaceConfig {
         })
         .filter(|v: &Vec<String>| !v.is_empty());
 
-    UvWorkspaceConfig { members, exclude }
+    UvWorkspaceConfig {
+        declared: true,
+        members,
+        exclude,
+    }
 }
 
 /// Which uv index `sampo publish` should target, derived from `[[tool.uv.index]]`

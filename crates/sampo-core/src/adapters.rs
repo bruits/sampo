@@ -5,6 +5,7 @@ pub mod maven;
 pub mod npm;
 pub mod packagist;
 pub mod pypi;
+pub(crate) mod scan;
 
 use crate::errors::{Result, WorkspaceError};
 use crate::types::{ConstraintCheckResult, PackageInfo, PackageKind, Workspace};
@@ -283,6 +284,15 @@ impl PackageAdapter {
 
         if has_maven {
             maven::validate_release_plan(&workspace.members, new_version_by_id)?;
+        }
+
+        let has_pypi = workspace
+            .members
+            .iter()
+            .any(|pkg| pkg.kind == PackageKind::PyPI);
+
+        if has_pypi {
+            pypi::validate_release_plan(&workspace.members, new_version_by_id)?;
         }
 
         Ok(())

@@ -17,10 +17,6 @@ const REBAR_CONFIG: &str = "rebar.config";
 /// may omit.
 const APP_SRC_SUFFIX: &str = ".app.src";
 
-/// Bound the recursive scan so it stays cheap on unrelated repos and never descends
-/// into build output or fetched dependencies.
-const MAX_SCAN_DEPTH: usize = 4;
-
 pub(super) fn can_discover(root: &Path) -> bool {
     !find_app_srcs(root).is_empty()
 }
@@ -570,54 +566,19 @@ fn find_app_src(package_dir: &Path) -> Option<PathBuf> {
 
 fn find_app_srcs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    collect_app_srcs(root, 0, &mut out);
+    crate::adapters::scan::walk_package_dirs(root, &[], |dir| {
+        // A directory with `mix.exs` (Mix) or `gleam.toml` (Gleam) may also carry a generated
+        // `.app.src`; those ecosystems own their identity, so skip it here to avoid
+        // double-discovery.
+        if !dir.join("mix.exs").exists()
+            && !dir.join("gleam.toml").exists()
+            && let Some(app_src) = find_app_src(dir)
+        {
+            out.push(app_src);
+        }
+    });
     out.sort();
     out
-}
-
-fn collect_app_srcs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > MAX_SCAN_DEPTH {
-        return;
-    }
-
-    // A directory with `mix.exs` (Mix) or `gleam.toml` (Gleam) may also carry a generated
-    // `.app.src`; those ecosystems own their identity, so skip it here to avoid
-    // double-discovery.
-    if !dir.join("mix.exs").exists()
-        && !dir.join("gleam.toml").exists()
-        && let Some(app_src) = find_app_src(dir)
-    {
-        out.push(app_src);
-    }
-
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        if is_excluded_dir(&path) {
-            continue;
-        }
-        collect_app_srcs(&path, depth + 1, out);
-    }
-}
-
-/// Skip BEAM build output, fetched dependencies, and hidden directories so the scan
-/// stays cheap and never treats a vendored `.app.src` as a workspace member.
-fn is_excluded_dir(path: &Path) -> bool {
-    match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) => {
-            name.starts_with('.')
-                || matches!(
-                    name,
-                    "_build" | "build" | "deps" | "node_modules" | "target"
-                )
-        }
-        None => true,
-    }
 }
 
 #[cfg(test)]

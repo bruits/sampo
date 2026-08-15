@@ -1,8 +1,10 @@
+use sampo_core::adapters::PackageAdapter;
 use sampo_core::discover_packages_at;
 use sampo_core::errors::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
 pub struct InitReport {
     pub root: PathBuf,
     pub created_dir: bool,
@@ -19,9 +21,18 @@ pub fn init_from_cwd(cwd: &Path) -> Result<InitReport> {
     // Check if there's a package manifest in cwd for any supported ecosystem.
     let packages = discover_packages_at(cwd)?;
     if packages.is_empty() {
-        return Err(sampo_core::errors::SampoError::Workspace(
-            sampo_core::errors::WorkspaceError::NotFound,
-        ));
+        let manifest_present = PackageAdapter::all()
+            .iter()
+            .any(|adapter| adapter.can_discover(cwd));
+        let error = if manifest_present {
+            sampo_core::errors::WorkspaceError::InvalidWorkspace(
+                "a package manifest exists here, but no packages could be discovered from it"
+                    .to_string(),
+            )
+        } else {
+            sampo_core::errors::WorkspaceError::NotFound
+        };
+        return Err(sampo_core::errors::SampoError::Workspace(error));
     }
     init_at_root(cwd)
 }
@@ -109,6 +120,56 @@ version = 1
 #[cfg(test)]
 mod tests {
     use std::fs;
+
+    #[test]
+    fn init_discovers_python_packages_in_subdirectories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("package1")).unwrap();
+        fs::write(
+            root.join("package1/pyproject.toml"),
+            "[project]\nname = \"package1\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("group1/package2")).unwrap();
+        fs::write(
+            root.join("group1/package2/pyproject.toml"),
+            "[project]\nname = \"package2\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+
+        let report = super::init_from_cwd(root).unwrap();
+        assert_eq!(report.root, root);
+        assert!(root.join(".sampo/config.toml").exists());
+    }
+
+    #[test]
+    fn init_error_names_the_supported_manifests() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let err = super::init_from_cwd(temp.path()).unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.contains("pyproject.toml") && message.contains("Cargo.toml"),
+            "error should enumerate what Sampo looks for: {message}"
+        );
+    }
+
+    #[test]
+    fn init_reports_manifest_without_packages() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+
+        let err = super::init_from_cwd(root).unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.contains("no packages could be discovered"),
+            "a manifest without packages is not a missing manifest: {message}"
+        );
+    }
 
     #[test]
     fn init_creates_dir_and_files_idempotently() {

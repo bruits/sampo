@@ -384,4 +384,39 @@ dependencies = []
         let packages = discover_packages_at(root).unwrap();
         assert!(packages.is_empty());
     }
+
+    #[test]
+    fn discovery_survives_broken_manifest_in_another_ecosystem() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("crates/pkg-a")).unwrap();
+        fs::write(
+            root.join("crates/pkg-a/Cargo.toml"),
+            "[package]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("legacy")).unwrap();
+        fs::write(
+            root.join("legacy/pyproject.toml"),
+            "[tool.poetry]\nname = \"legacy\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("pkg-py")).unwrap();
+        fs::write(
+            root.join("pkg-py/pyproject.toml"),
+            "[project]\nname = \"pkg-py\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+
+        let packages = discover_packages_at(root).unwrap();
+        let mut names: Vec<_> = packages.iter().map(|p| p.identifier.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["cargo/pkg-a", "pypi/pkg-py"]);
+    }
 }

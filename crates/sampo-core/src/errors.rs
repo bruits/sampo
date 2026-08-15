@@ -51,7 +51,11 @@ pub enum WorkspaceError {
     Io(#[from] io::Error),
     #[error("Sampo not initialized. Run `sampo init` first.")]
     NotInitialized,
-    #[error("No supported workspace manifest found in current directory")]
+    #[error(
+        "No supported package manifest found (Sampo looks for Cargo.toml, package.json, \
+         pnpm-workspace.yaml, mix.exs, gleam.toml, src/*.app.src, pyproject.toml, \
+         composer.json, or pom.xml)"
+    )]
     NotFound,
     #[error("Expected manifest '{manifest}' not found in {path}")]
     ManifestNotFound {
