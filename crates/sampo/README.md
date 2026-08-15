@@ -39,9 +39,6 @@ This command creates a `.sampo` directory at your repository root:
 └─ README.md <- Quick links to the online documentation
 ```
 
-> [!NOTE]
-> Run `sampo init` at the repository root. Sampo finds packages by following the workspace declaration in a root manifest when the ecosystem has one, and by scanning subdirectories for package manifests (a few levels deep, skipping build output and the like) when it does not. If nothing is found, the error lists the manifest files Sampo looks for.
-
 ### Main concepts
 
 #### Versioning
