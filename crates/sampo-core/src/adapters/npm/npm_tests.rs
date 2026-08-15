@@ -1019,3 +1019,209 @@ fn detect_workspace_package_manager_fails_when_no_indicators() {
     let err_msg = result.unwrap_err().to_string();
     assert!(err_msg.contains("cannot detect package manager"));
 }
+
+fn manifest_info(name: &str) -> NpmManifestInfo {
+    NpmManifestInfo {
+        name: name.to_string(),
+        version: Some("1.0.0".to_string()),
+        private: false,
+        package_manager: None,
+        publish_config: NpmPublishConfig::default(),
+    }
+}
+
+#[test]
+fn parse_bare_version_keeps_the_patch_and_trims_prereleases() {
+    for (reported, expected) in [
+        ("4.18.0\n", Some(("4.18.0", (4, 18, 0)))),
+        ("4.9.3-rc.1", Some(("4.9.3-rc.1", (4, 9, 3)))),
+        ("1.2.0+build.5", Some(("1.2.0+build.5", (1, 2, 0)))),
+        ("1.22", Some(("1.22", (1, 22, 0)))),
+        ("", None),
+        ("1", None),
+        ("yarn 4.18.0", None),
+    ] {
+        assert_eq!(
+            super::parse_bare_version(reported),
+            expected,
+            "{reported:?}"
+        );
+    }
+}
+
+#[test]
+fn classify_yarn_splits_classic_from_berry_and_finds_the_dry_run_floor() {
+    let berry = |version: &str, dry_run: bool| {
+        Some(YarnPublish::Berry {
+            version: version.to_string(),
+            dry_run,
+        })
+    };
+
+    for (reported, expected) in [
+        ("1.22.22", Some(YarnPublish::Classic)),
+        ("2.4.3", berry("2.4.3", false)),
+        ("3.8.7", berry("3.8.7", false)),
+        ("4.9.2", berry("4.9.2", false)),
+        ("4.9.3", berry("4.9.3", true)),
+        ("4.18.0\n", berry("4.18.0", true)),
+        ("not a version", None),
+    ] {
+        assert_eq!(super::classify_yarn(reported), expected, "{reported:?}");
+    }
+}
+
+#[test]
+fn dry_run_gap_is_reported_only_when_yarn_cannot_simulate() {
+    let classic = YarnPublish::Classic
+        .dry_run_gap()
+        .expect("classic has no dry run");
+    assert!(classic.contains("Classic"), "{classic}");
+
+    let old_berry = YarnPublish::Berry {
+        version: "4.9.2".to_string(),
+        dry_run: false,
+    }
+    .dry_run_gap()
+    .expect("berry below the floor has no dry run");
+    assert!(
+        old_berry.contains("4.9.2") && old_berry.contains("4.9.3"),
+        "must name the version found and the one required: {old_berry}"
+    );
+
+    assert_eq!(
+        YarnPublish::Berry {
+            version: "4.18.0".to_string(),
+            dry_run: true,
+        }
+        .dry_run_gap(),
+        None
+    );
+}
+
+#[test]
+fn publish_command_args_namespace_publishing_under_npm_on_berry_only() {
+    let info = manifest_info("pkg");
+    let berry = YarnPublish::Berry {
+        version: "4.18.0".to_string(),
+        dry_run: true,
+    };
+
+    assert_eq!(
+        super::publish_command_args(Some(&berry), true, &info, &[]),
+        ["npm", "publish", "--dry-run"]
+    );
+    assert_eq!(
+        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        ["publish"]
+    );
+    assert_eq!(
+        super::publish_command_args(None, true, &info, &[]),
+        ["publish", "--dry-run"]
+    );
+}
+
+#[test]
+fn publish_command_args_keep_the_existing_flag_handling() {
+    let mut info = manifest_info("@scope/pkg");
+    info.publish_config.registry = Some("https://example.test/".to_string());
+    info.publish_config.tag = Some("next".to_string());
+
+    assert_eq!(
+        super::publish_command_args(None, true, &info, &[]),
+        [
+            "publish",
+            "--dry-run",
+            "--registry",
+            "https://example.test/",
+            "--access",
+            "public",
+            "--tag",
+            "next",
+        ]
+    );
+
+    let overrides = ["--tag".to_string(), "beta".to_string()];
+    assert_eq!(
+        super::publish_command_args(None, false, &info, &overrides),
+        [
+            "publish",
+            "--registry",
+            "https://example.test/",
+            "--access",
+            "public",
+            "--tag",
+            "beta",
+        ]
+    );
+}
+
+#[test]
+fn publish_command_args_omit_registry_on_berry_which_rejects_the_flag() {
+    let mut info = manifest_info("@scope/pkg");
+    info.publish_config.registry = Some("https://example.test/".to_string());
+    info.publish_config.tag = Some("next".to_string());
+    let berry = YarnPublish::Berry {
+        version: "4.18.0".to_string(),
+        dry_run: true,
+    };
+
+    assert_eq!(
+        super::publish_command_args(Some(&berry), true, &info, &[]),
+        [
+            "npm",
+            "publish",
+            "--dry-run",
+            "--access",
+            "public",
+            "--tag",
+            "next"
+        ]
+    );
+    assert_eq!(
+        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        [
+            "publish",
+            "--registry",
+            "https://example.test/",
+            "--access",
+            "public",
+            "--tag",
+            "next"
+        ]
+    );
+}
+
+#[test]
+fn wants_dry_run_covers_the_ecosystem_passthrough() {
+    let negated = ["--dry-run=false".to_string()];
+    assert!(super::wants_dry_run(true, &[]));
+    assert!(super::wants_dry_run(false, &["--dry-run".to_string()]));
+    assert!(super::wants_dry_run(false, &["--dry-run=true".to_string()]));
+    assert!(!super::wants_dry_run(false, &[]));
+    assert!(!super::wants_dry_run(false, &["--access".to_string()]));
+    assert!(!super::wants_dry_run(false, &["--dry-runner".to_string()]));
+
+    assert!(!super::wants_dry_run(false, &negated));
+    assert!(!super::wants_dry_run(false, &["--dry-run=0".to_string()]));
+    assert!(super::wants_dry_run(true, &negated));
+}
+
+#[test]
+fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
+    let info = manifest_info("pkg");
+    let passthrough = ["--dry-run".to_string()];
+
+    assert_eq!(
+        super::publish_command_args(None, true, &info, &passthrough),
+        ["publish", "--dry-run"]
+    );
+    let berry = YarnPublish::Berry {
+        version: "4.18.0".to_string(),
+        dry_run: true,
+    };
+    assert_eq!(
+        super::publish_command_args(Some(&berry), true, &info, &passthrough),
+        ["npm", "publish", "--dry-run"]
+    );
+}
