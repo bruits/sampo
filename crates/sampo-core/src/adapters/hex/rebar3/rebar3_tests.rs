@@ -201,6 +201,42 @@ fn discover_ignores_build_output_and_deps() {
 }
 
 #[test]
+fn discover_skips_gitignored_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("apps/a/src/a.app.src"),
+        &app_src("a", "1.0.0"),
+    );
+    write_file(&temp.path().join(".gitignore"), "generated/\n");
+    write_file(
+        &temp.path().join("apps/generated/src/gen.app.src"),
+        &app_src("gen", "9.9.9"),
+    );
+
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "a");
+}
+
+#[test]
+fn discover_skips_app_when_src_is_gitignored() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("apps/a/src/a.app.src"),
+        &app_src("a", "1.0.0"),
+    );
+    write_file(&temp.path().join("apps/b/.gitignore"), "src/\n");
+    write_file(
+        &temp.path().join("apps/b/src/b.app.src"),
+        &app_src("b", "9.9.9"),
+    );
+
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "a");
+}
+
+#[test]
 fn discover_skips_mix_owned_directories() {
     let temp = tempfile::tempdir().unwrap();
     // A Mix project can carry a generated `.app.src`; Mix owns it, so rebar3 discovery

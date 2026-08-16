@@ -187,6 +187,31 @@ fn discover_scan_skips_virtualenvs_caches_and_fixtures() {
 }
 
 #[test]
+fn discover_scan_honours_gitignore() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pkg_a/pyproject.toml"),
+        "[project]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join(".gitignore"), "vendored/\n");
+    write_file(
+        &root.join("vendored/pyproject.toml"),
+        "[project]\nname = \"vendored-pkg\"\nversion = \"9.9.9\"\n",
+    );
+    // The catch-all `.gitignore` is the virtual-environment shape.
+    write_file(&root.join("myenv/.gitignore"), "*\n");
+    write_file(
+        &root.join("myenv/pyproject.toml"),
+        "[project]\nname = \"env-pkg\"\nversion = \"9.9.9\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg-a"]);
+}
+
+#[test]
 fn discover_scan_ignores_tool_config_only_manifests() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

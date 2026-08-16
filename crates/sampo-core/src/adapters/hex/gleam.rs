@@ -379,12 +379,14 @@ fn collect_dependencies(doc: &toml::Value, manifest_dir: &Path) -> Vec<ParsedDep
 
 fn find_manifests(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    crate::adapters::scan::walk_package_dirs(root, &[], |dir| {
+    crate::adapters::scan::walk_package_dirs(root, &[], |dir, gitignore| {
         let manifest = dir.join(GLEAM_MANIFEST);
-        // A directory carrying both manifests is a Mix project that also holds Gleam
-        // sources (the mix_gleam interop): Mix owns its identity and publish path, so the
-        // Gleam scan skips it to avoid discovering the same package twice.
-        if manifest.is_file() && !dir.join("mix.exs").exists() {
+        // A `mix.exs` alongside is the mix_gleam interop: Mix owns the
+        // package, so skip it to avoid double discovery.
+        if manifest.is_file()
+            && !dir.join("mix.exs").exists()
+            && !gitignore.is_ignored(dir, &manifest)
+        {
             out.push(manifest);
         }
     });

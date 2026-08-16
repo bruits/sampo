@@ -566,13 +566,13 @@ fn find_app_src(package_dir: &Path) -> Option<PathBuf> {
 
 fn find_app_srcs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    crate::adapters::scan::walk_package_dirs(root, &[], |dir| {
-        // A directory with `mix.exs` (Mix) or `gleam.toml` (Gleam) may also carry a generated
-        // `.app.src`; those ecosystems own their identity, so skip it here to avoid
-        // double-discovery.
+    crate::adapters::scan::walk_package_dirs(root, &[], |dir, gitignore| {
+        // Mix and Gleam projects may carry a generated `.app.src` too; those
+        // ecosystems own the package, so skip to avoid double discovery.
         if !dir.join("mix.exs").exists()
             && !dir.join("gleam.toml").exists()
             && let Some(app_src) = find_app_src(dir)
+            && !gitignore.is_ignored(dir, &app_src)
         {
             out.push(app_src);
         }

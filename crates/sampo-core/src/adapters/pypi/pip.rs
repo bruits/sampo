@@ -264,8 +264,9 @@ pub(super) fn validate_release_plan(
 
 fn scan_for_manifest_dirs(root: &Path) -> BTreeSet<PathBuf> {
     let mut dirs = BTreeSet::new();
-    crate::adapters::scan::walk_package_dirs(root, PYTHON_EXCLUDED_DIRS, |dir| {
-        if dir.join(PYPROJECT_MANIFEST).is_file() {
+    crate::adapters::scan::walk_package_dirs(root, PYTHON_EXCLUDED_DIRS, |dir, gitignore| {
+        let manifest = dir.join(PYPROJECT_MANIFEST);
+        if manifest.is_file() && !gitignore.is_ignored(dir, &manifest) {
             dirs.insert(normalize_path(dir));
         }
     });
