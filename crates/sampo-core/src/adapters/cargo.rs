@@ -230,9 +230,9 @@ pub(super) fn publish_dry_run(
     workspace_root: &Path,
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     if packages.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let has_dependent_packages = packages
@@ -250,6 +250,7 @@ pub(super) fn publish_dry_run(
                     .map(|(package, _)| package.name.as_str())
                     .collect();
                 return workspace_publish_dry_run(workspace_root, &package_names, extra_args)
+                    .map(|()| Vec::new())
                     .map_err(|err| match err {
                         SampoError::Publish(message) => SampoError::Publish(format!(
                             "Cargo workspace dry-run failed: {}",
@@ -284,19 +285,22 @@ pub(super) fn publish_dry_run(
         }
     }
 
+    let mut skipped = Vec::new();
+
     for (package, manifest) in packages {
         if skip_dependent_packages && !package.internal_deps.is_empty() {
             println!(
                 "  - Skipping dry-run for {} (requires workspace-aware Cargo to validate dependencies)",
                 package.display_name(true)
             );
+            skipped.push(package.display_name(true));
             continue;
         }
 
         run_cargo_dry_run(package, manifest, extra_args)?;
     }
 
-    Ok(())
+    Ok(skipped)
 }
 
 fn run_cargo_dry_run(

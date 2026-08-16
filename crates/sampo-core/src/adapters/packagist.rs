@@ -319,7 +319,7 @@ impl PackagistAdapter {
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     for (package, manifest) in packages {
         PackagistAdapter
             .publish(manifest, true, extra_args)
@@ -333,7 +333,7 @@ pub(super) fn publish_dry_run(
             })?;
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 pub(super) fn check_dependency_constraint(

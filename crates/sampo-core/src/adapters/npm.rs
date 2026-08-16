@@ -1,4 +1,4 @@
-use crate::adapters::{format_command_display, has_flag, require_on_path};
+use crate::adapters::{PublishOutcome, format_command_display, has_flag, require_on_path};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -93,7 +93,7 @@ impl NpmAdapter {
         manifest_path: &Path,
         dry_run: bool,
         extra_args: &[String],
-    ) -> Result<()> {
+    ) -> Result<PublishOutcome> {
         let manifest_dir = manifest_path.parent().ok_or_else(|| {
             SampoError::Publish(format!(
                 "Manifest {} does not have a parent directory",
@@ -110,6 +110,8 @@ impl NpmAdapter {
             )));
         }
 
+        let dry_run = wants_dry_run(dry_run, extra_args);
+
         let manager = detect_package_manager(manifest_dir, &info);
         let manager_name = match manager {
             PackageManager::Npm => "npm",
@@ -117,37 +119,29 @@ impl NpmAdapter {
             PackageManager::Yarn => "yarn",
             PackageManager::Bun => "bun",
         };
+
+        let yarn = match manager {
+            PackageManager::Yarn => Some(detect_yarn_publish(manifest_dir)?),
+            _ => None,
+        };
+
+        // Skipping loses validation; running the command anyway would publish for real.
+        if dry_run && let Some(gap) = yarn.as_ref().and_then(YarnPublish::dry_run_gap) {
+            eprintln!(
+                "Warning: skipping dry-run publish for '{}': {gap}. This package was not validated.",
+                info.name
+            );
+            return Ok(PublishOutcome::DryRunSkipped);
+        }
+
         let mut cmd = command(manager_name);
-        cmd.arg("publish");
+        cmd.args(publish_command_args(
+            yarn.as_ref(),
+            dry_run,
+            &info,
+            extra_args,
+        ));
         cmd.current_dir(manifest_dir);
-
-        if dry_run && !has_flag(extra_args, "--dry-run") {
-            cmd.arg("--dry-run");
-        }
-
-        if let Some(registry) = info.publish_config.registry.as_deref()
-            && !has_flag(extra_args, "--registry")
-        {
-            cmd.arg("--registry").arg(registry);
-        }
-
-        if !has_flag(extra_args, "--access") {
-            if let Some(access) = info.publish_config.access.as_deref() {
-                cmd.arg("--access").arg(access);
-            } else if info.name.starts_with('@') {
-                cmd.arg("--access").arg("public");
-            }
-        }
-
-        if let Some(tag) = info.publish_config.tag.as_deref()
-            && !has_flag(extra_args, "--tag")
-        {
-            cmd.arg("--tag").arg(tag);
-        }
-
-        if !extra_args.is_empty() {
-            cmd.args(extra_args);
-        }
 
         println!("Running: {}", format_command_display(&cmd));
 
@@ -162,16 +156,20 @@ impl NpmAdapter {
             }
         })?;
         if !status.success() {
+            let attempted = match yarn {
+                Some(YarnPublish::Berry { .. }) => "yarn npm publish".to_string(),
+                _ => format!("{manager_name} publish"),
+            };
             return Err(SampoError::Publish(format!(
-                "{} publish failed for {} (package '{}') with status {}",
-                manager_name,
+                "{} failed for {} (package '{}') with status {}",
+                attempted,
                 manifest_path.display(),
                 info.name,
                 status
             )));
         }
 
-        Ok(())
+        Ok(PublishOutcome::Ran)
     }
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
@@ -619,9 +617,11 @@ fn is_wildcard(s: &str) -> bool {
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut skipped = Vec::new();
+
     for (package, manifest) in packages {
-        NpmAdapter
+        let outcome = NpmAdapter
             .publish(manifest, true, extra_args)
             .map_err(|err| match err {
                 SampoError::Publish(message) => SampoError::Publish(format!(
@@ -631,9 +631,151 @@ pub(super) fn publish_dry_run(
                 )),
                 other => other,
             })?;
+
+        if outcome == PublishOutcome::DryRunSkipped {
+            skipped.push(package.display_name(true));
+        }
     }
 
-    Ok(())
+    Ok(skipped)
+}
+
+/// A passthrough `--dry-run=false` must never talk a requested dry run into a real publish.
+fn wants_dry_run(dry_run: bool, extra_args: &[String]) -> bool {
+    dry_run
+        || extra_args
+            .iter()
+            .any(|arg| match arg.strip_prefix("--dry-run") {
+                Some("") => true,
+                Some(rest) => {
+                    matches!(rest.strip_prefix('='), Some(value) if !matches!(value, "false" | "0"))
+                }
+                None => false,
+            })
+}
+
+fn publish_command_args(
+    yarn: Option<&YarnPublish>,
+    dry_run: bool,
+    info: &NpmManifestInfo,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+
+    // A bare `yarn publish` on Berry falls through to `yarn run publish`, running a user script.
+    if matches!(yarn, Some(YarnPublish::Berry { .. })) {
+        args.push("npm".to_string());
+    }
+    args.push("publish".to_string());
+
+    if dry_run && !has_flag(extra_args, "--dry-run") {
+        args.push("--dry-run".to_string());
+    }
+
+    // Berry rejects `--registry`, but reads `publishConfig.registry` from the manifest this
+    // value came from, so it still applies.
+    if let Some(registry) = info.publish_config.registry.as_deref()
+        && !matches!(yarn, Some(YarnPublish::Berry { .. }))
+        && !has_flag(extra_args, "--registry")
+    {
+        args.push("--registry".to_string());
+        args.push(registry.to_string());
+    }
+
+    if !has_flag(extra_args, "--access") {
+        if let Some(access) = info.publish_config.access.as_deref() {
+            args.push("--access".to_string());
+            args.push(access.to_string());
+        } else if info.name.starts_with('@') {
+            args.push("--access".to_string());
+            args.push("public".to_string());
+        }
+    }
+
+    if let Some(tag) = info.publish_config.tag.as_deref()
+        && !has_flag(extra_args, "--tag")
+    {
+        args.push("--tag".to_string());
+        args.push(tag.to_string());
+    }
+
+    args.extend_from_slice(extra_args);
+    args
+}
+
+/// `yarn npm publish` gained `--dry-run` in 4.9.3 (yarnpkg/berry#6850).
+const YARN_DRY_RUN_FLOOR: (u32, u32, u32) = (4, 9, 3);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum YarnPublish {
+    /// Yarn 1.x: no dry run, and drops unknown flags instead of rejecting them, so
+    /// `--dry-run` publishes for real.
+    Classic,
+    /// Yarn 2+.
+    Berry { version: String, dry_run: bool },
+}
+
+impl YarnPublish {
+    fn dry_run_gap(&self) -> Option<String> {
+        match self {
+            Self::Classic => Some("Yarn Classic has no dry-run publish".to_string()),
+            Self::Berry {
+                version,
+                dry_run: false,
+            } => Some(format!(
+                "`yarn npm publish` gained --dry-run in 4.9.3, and this is {version}"
+            )),
+            Self::Berry { .. } => None,
+        }
+    }
+}
+
+/// Run from the package directory: Classic re-execs into a project's `yarn-path`, so this
+/// reports the yarn that will really publish rather than the shim on `PATH`.
+fn detect_yarn_publish(dir: &Path) -> Result<YarnPublish> {
+    let output = command("yarn")
+        .arg("--version")
+        .current_dir(dir)
+        .output()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                SampoError::Publish(
+                    "yarn not found in PATH; ensure yarn is installed to publish packages"
+                        .to_string(),
+                )
+            } else {
+                SampoError::Io(err)
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let snippet: String = stderr.trim().chars().take(400).collect();
+        return Err(SampoError::Publish(format!(
+            "`yarn --version` failed with status {}: {snippet}",
+            output.status
+        )));
+    }
+
+    let reported = String::from_utf8_lossy(&output.stdout);
+    classify_yarn(&reported).ok_or_else(|| {
+        SampoError::Publish(format!(
+            "cannot read a version from `yarn --version` (got {:?}); Sampo needs it to tell \
+             Yarn Classic from Berry, which publish with different commands",
+            reported.trim()
+        ))
+    })
+}
+
+fn classify_yarn(reported: &str) -> Option<YarnPublish> {
+    let (version, parsed) = parse_bare_version(reported)?;
+    if parsed.0 < 2 {
+        return Some(YarnPublish::Classic);
+    }
+    Some(YarnPublish::Berry {
+        version: version.to_string(),
+        dry_run: parsed >= YARN_DRY_RUN_FLOOR,
+    })
 }
 
 fn parse_manifest_info(manifest_path: &Path, manifest: &JsonValue) -> Result<NpmManifestInfo> {
@@ -1066,16 +1208,22 @@ fn lockfile_regen_command(
     }
 }
 
-/// Anchored on the whole output: bun prints one bare version and nothing else, so a version
-/// read out of anything longer could be a date or a build stamp.
-fn parse_bun_version(reported: &str) -> Option<(&str, (u32, u32))> {
+/// Anchored on the whole output: bun and yarn each print one bare version and nothing else,
+/// so a version read out of anything longer could be a date or a build stamp.
+fn parse_bare_version(reported: &str) -> Option<(&str, (u32, u32, u32))> {
     let token = reported.trim();
     if token.split_whitespace().count() != 1 {
         return None;
     }
-    let mut parts = token.split('.');
+    let mut parts = token.split(['-', '+']).next()?.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((token, (major, minor, patch)))
+}
+
+fn parse_bun_version(reported: &str) -> Option<(&str, (u32, u32))> {
+    let (token, (major, minor, _)) = parse_bare_version(reported)?;
     Some((token, (major, minor)))
 }
 

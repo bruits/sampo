@@ -187,7 +187,7 @@ pub(super) fn check_dependency_constraint(
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
     extra_args: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     for (package, manifest) in packages {
         PyPIAdapter
             .publish(manifest, true, extra_args)
@@ -201,7 +201,7 @@ pub(super) fn publish_dry_run(
             })?;
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 fn enforce_pypi_rate_limit() {
