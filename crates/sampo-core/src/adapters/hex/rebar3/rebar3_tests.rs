@@ -544,3 +544,22 @@ fn discover_skips_directory_with_gleam_manifest() {
 
     assert!(discover(temp.path()).unwrap().is_empty());
 }
+
+#[test]
+fn discover_reads_sibling_when_first_app_src_is_gitignored() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("src/aaa.app.src"),
+        &app_src("aaa", "1.0.0"),
+    );
+    write_file(
+        &temp.path().join("src/bbb.app.src"),
+        &app_src("bbb", "2.0.0"),
+    );
+    write_file(&temp.path().join(".gitignore"), "aaa.app.src\n");
+
+    let packages = discover(temp.path()).unwrap();
+    assert_eq!(packages.len(), 1);
+    assert_eq!(packages[0].name, "bbb");
+    assert_eq!(packages[0].version, "2.0.0");
+}

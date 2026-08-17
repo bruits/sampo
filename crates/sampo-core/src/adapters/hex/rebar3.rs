@@ -123,6 +123,8 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
     Ok(packages)
 }
 
+/// Resolved without gitignore context, so it can pick an ignored `.app.src`
+/// that discovery skipped for a visible sibling.
 pub(super) fn manifest_path(package_dir: &Path) -> PathBuf {
     find_app_src(package_dir).unwrap_or_else(|| {
         // Unreachable for discovered packages (discovery found the file). Fall back to
@@ -554,11 +556,15 @@ fn is_app_src_file(path: &Path) -> bool {
 /// The single `src/*.app.src` under `package_dir`, if any (the first, sorted, when a
 /// directory unusually holds several).
 fn find_app_src(package_dir: &Path) -> Option<PathBuf> {
+    find_app_src_matching(package_dir, |_| true)
+}
+
+fn find_app_src_matching(package_dir: &Path, keep: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = fs::read_dir(package_dir.join("src"))
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| is_app_src_file(p))
+        .filter(|p| is_app_src_file(p) && keep(p))
         .collect();
     candidates.sort();
     candidates.into_iter().next()
@@ -571,8 +577,7 @@ fn find_app_srcs(root: &Path) -> Vec<PathBuf> {
         // ecosystems own the package, so skip to avoid double discovery.
         if !dir.join("mix.exs").exists()
             && !dir.join("gleam.toml").exists()
-            && let Some(app_src) = find_app_src(dir)
-            && !gitignore.is_ignored(dir, &app_src)
+            && let Some(app_src) = find_app_src_matching(dir, |p| !gitignore.is_ignored(dir, p))
         {
             out.push(app_src);
         }
