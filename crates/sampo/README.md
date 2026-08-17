@@ -123,9 +123,6 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > [!TIP]
 > Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
 
-> [!NOTE]
-> Sampo cannot ask a private registry whether a version is already published, so packages configured for one are re-attempted on every publish run. This is harmless unless the registry refuses redeploys, then the failed package also stops the ones queued behind it.
-
 #### Pre-release versions
 
 Run `sampo pre` to manage pre-release versions for one or more packages.
