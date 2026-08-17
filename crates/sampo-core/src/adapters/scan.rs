@@ -9,8 +9,9 @@
 
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use std::cell::OnceCell;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Keeps the scan cheap on unrelated repos and out of deep vendored trees.
 pub(crate) const MAX_SCAN_DEPTH: usize = 4;
@@ -92,24 +93,19 @@ impl GitignoreChain {
 
 /// Visit `root` and its subdirectories up to [`MAX_SCAN_DEPTH`] levels deep,
 /// calling `visit` once per directory with the `.gitignore` rules in force
-/// there. Hidden directories, build/dependency output, `extra_excluded`
-/// names, and gitignored directories are skipped; symlinked directories are
-/// never followed. Callers must check candidate manifests against the chain:
-/// a directory's own `.gitignore` can exclude its files (how virtual
-/// environments self-exclude) while the directory itself is still visited.
-pub(crate) fn walk_package_dirs<F: FnMut(&Path, &GitignoreChain)>(
-    root: &Path,
-    extra_excluded: &[&str],
-    mut visit: F,
-) {
+/// there. Hidden directories, build/dependency output, and gitignored
+/// directories are skipped; symlinked directories are never followed.
+/// Callers must check candidate manifests against the chain: a directory's
+/// own `.gitignore` can exclude its files (how virtual environments
+/// self-exclude) while the directory itself is still visited.
+pub(crate) fn walk_package_dirs<F: FnMut(&Path, &GitignoreChain)>(root: &Path, mut visit: F) {
     let mut chain = GitignoreChain::default();
-    walk(root, 0, extra_excluded, &mut chain, &mut visit);
+    walk(root, 0, &mut chain, &mut visit);
 }
 
 fn walk<F: FnMut(&Path, &GitignoreChain)>(
     dir: &Path,
     depth: usize,
-    extra_excluded: &[&str],
     chain: &mut GitignoreChain,
     visit: &mut F,
 ) {
@@ -124,10 +120,10 @@ fn walk<F: FnMut(&Path, &GitignoreChain)>(
             if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
-            if is_excluded_dir(&path, extra_excluded) || chain.is_ignored_dir(&path) {
+            if is_excluded_dir(&path) || chain.is_ignored_dir(&path) {
                 continue;
             }
-            walk(&path, depth + 1, extra_excluded, chain, visit);
+            walk(&path, depth + 1, chain, visit);
         }
     }
     if pushed {
@@ -135,15 +131,121 @@ fn walk<F: FnMut(&Path, &GitignoreChain)>(
     }
 }
 
-fn is_excluded_dir(path: &Path, extra_excluded: &[&str]) -> bool {
+fn is_excluded_dir(path: &Path) -> bool {
     match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) => {
-            name.starts_with('.')
-                || EXCLUDED_DIR_NAMES.contains(&name)
-                || extra_excluded.contains(&name)
-        }
+        Some(name) => name.starts_with('.') || EXCLUDED_DIR_NAMES.contains(&name),
         None => true,
     }
+}
+
+/// What one visited directory holds, gitignore rules already applied.
+/// Ownership vetoes (a `mix.exs` silencing a Gleam manifest, …) are left to
+/// each consumer: the vetoes differ per ecosystem, the facts do not.
+pub(crate) struct DirFacts {
+    pub(crate) dir: PathBuf,
+    /// `mix.exs` exists — even gitignored, it still marks Mix ownership.
+    pub(crate) has_mix_exs: bool,
+    /// `gleam.toml` exists in any form; the veto rebar3 applies
+    /// (`Path::exists`, not gitignore-aware).
+    pub(crate) has_gleam_toml: bool,
+    /// `gleam.toml` is a real file and not gitignored: a Gleam candidate.
+    pub(crate) gleam_manifest: bool,
+    /// First non-gitignored `src/*.app.src` (sorted), one level below `dir`.
+    pub(crate) app_src: Option<PathBuf>,
+    /// `pyproject.toml` is a real file and not gitignored.
+    pub(crate) pyproject: bool,
+}
+
+impl DirFacts {
+    fn collect(dir: &Path, chain: &GitignoreChain) -> Self {
+        let gleam_toml = dir.join("gleam.toml");
+        let gleam_meta = fs::metadata(&gleam_toml);
+        let gleam_is_file = gleam_meta.as_ref().map(|m| m.is_file()).unwrap_or(false);
+        let pyproject = dir.join("pyproject.toml");
+        DirFacts {
+            has_mix_exs: dir.join("mix.exs").exists(),
+            has_gleam_toml: gleam_meta.is_ok(),
+            gleam_manifest: gleam_is_file && !chain.is_ignored(dir, &gleam_toml),
+            app_src: find_app_src_matching(dir, |path| !chain.is_ignored(dir, path)),
+            pyproject: pyproject.is_file() && !chain.is_ignored(dir, &pyproject),
+            dir: dir.to_path_buf(),
+        }
+    }
+}
+
+/// The facts of every directory one bounded walk visits, shared by all
+/// scanning ecosystems. Python's extra excluded names are not pruned here:
+/// pip filters them out afterwards, so the walk stays common.
+pub(crate) struct ScanIndex {
+    dirs: Vec<DirFacts>,
+}
+
+impl ScanIndex {
+    pub(crate) fn build(root: &Path) -> Self {
+        let mut dirs = Vec::new();
+        walk_package_dirs(root, |dir, chain| {
+            dirs.push(DirFacts::collect(dir, chain));
+        });
+        ScanIndex { dirs }
+    }
+
+    pub(crate) fn dirs(&self) -> impl Iterator<Item = &DirFacts> {
+        self.dirs.iter()
+    }
+}
+
+/// A [`ScanIndex`] built on first use and shared for the rest of a discovery
+/// pass: the tree is walked at most once, and callers that never consult the
+/// index skip the walk entirely.
+pub(crate) struct LazyScan<'a> {
+    root: &'a Path,
+    index: OnceCell<ScanIndex>,
+}
+
+impl<'a> LazyScan<'a> {
+    pub(crate) fn new(root: &'a Path) -> Self {
+        LazyScan {
+            root,
+            index: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn root(&self) -> &'a Path {
+        self.root
+    }
+
+    pub(crate) fn index(&self) -> &ScanIndex {
+        self.index.get_or_init(|| ScanIndex::build(self.root))
+    }
+}
+
+/// `src/<name>.app.src` is the authoritative rebar3 manifest; a
+/// `<name>.app.src.script` sibling ends in `.script`, so it is naturally
+/// excluded.
+const APP_SRC_SUFFIX: &str = ".app.src";
+
+fn is_app_src_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.ends_with(APP_SRC_SUFFIX))
+        .unwrap_or(false)
+        && path.is_file()
+}
+
+/// The first `src/*.app.src` under `package_dir` satisfying `keep` (sorted,
+/// when a directory unusually holds several).
+pub(crate) fn find_app_src_matching(
+    package_dir: &Path,
+    keep: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = fs::read_dir(package_dir.join("src"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_app_src_file(p) && keep(p))
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 #[cfg(test)]
@@ -153,9 +255,9 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    fn visited_dirs(root: &Path, extra_excluded: &[&str]) -> BTreeSet<PathBuf> {
+    fn visited_dirs(root: &Path) -> BTreeSet<PathBuf> {
         let mut out = BTreeSet::new();
-        walk_package_dirs(root, extra_excluded, |dir, _| {
+        walk_package_dirs(root, |dir, _| {
             out.insert(dir.to_path_buf());
         });
         out
@@ -169,7 +271,7 @@ mod tests {
         let beyond_limit = at_limit.join("e");
         fs::create_dir_all(&beyond_limit).unwrap();
 
-        let visited = visited_dirs(root, &[]);
+        let visited = visited_dirs(root);
 
         assert!(visited.contains(root));
         assert!(visited.contains(&at_limit));
@@ -177,18 +279,18 @@ mod tests {
     }
 
     #[test]
-    fn skips_hidden_shared_and_extra_excluded_dirs() {
+    fn skips_hidden_and_shared_excluded_dirs() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        for dir in [".git", "node_modules", "target", "venv", "kept"] {
+        for dir in [".git", "node_modules", "target", "kept"] {
             fs::create_dir_all(root.join(dir).join("inner")).unwrap();
         }
 
-        let visited = visited_dirs(root, &["venv"]);
+        let visited = visited_dirs(root);
 
         assert!(visited.contains(&root.join("kept")));
         assert!(visited.contains(&root.join("kept/inner")));
-        for dir in [".git", "node_modules", "target", "venv"] {
+        for dir in [".git", "node_modules", "target"] {
             assert!(
                 !visited.contains(&root.join(dir)),
                 "{dir} should be skipped"
@@ -204,7 +306,7 @@ mod tests {
         fs::create_dir_all(root.join("real/inner")).unwrap();
         std::os::unix::fs::symlink(root.join("real"), root.join("linked")).unwrap();
 
-        let visited = visited_dirs(root, &[]);
+        let visited = visited_dirs(root);
 
         assert!(visited.contains(&root.join("real")));
         assert!(!visited.contains(&root.join("linked")));
@@ -218,7 +320,7 @@ mod tests {
         fs::create_dir_all(root.join("kept")).unwrap();
         fs::write(root.join(".gitignore"), "vendored/\n").unwrap();
 
-        let visited = visited_dirs(root, &[]);
+        let visited = visited_dirs(root);
 
         assert!(visited.contains(&root.join("kept")));
         assert!(!visited.contains(&root.join("vendored")));
@@ -233,7 +335,7 @@ mod tests {
         fs::create_dir_all(root.join("sub/gen")).unwrap();
         fs::write(root.join("sub/.gitignore"), "gen/\n").unwrap();
 
-        let visited = visited_dirs(root, &[]);
+        let visited = visited_dirs(root);
 
         assert!(visited.contains(&root.join("gen")));
         assert!(!visited.contains(&root.join("sub/gen")));
@@ -248,7 +350,7 @@ mod tests {
         fs::write(root.join(".gitignore"), "keep/\n").unwrap();
         fs::write(root.join("sub/.gitignore"), "!keep/\n").unwrap();
 
-        let visited = visited_dirs(root, &[]);
+        let visited = visited_dirs(root);
 
         assert!(!visited.contains(&root.join("keep")));
         assert!(visited.contains(&root.join("sub/keep")));
@@ -267,7 +369,7 @@ mod tests {
         fs::write(root.join("pkg/pyproject.toml"), "").unwrap();
 
         let mut with_manifest = BTreeSet::new();
-        walk_package_dirs(root, &[], |dir, chain| {
+        walk_package_dirs(root, |dir, chain| {
             let manifest = dir.join("pyproject.toml");
             if manifest.is_file() && !chain.is_ignored(dir, &manifest) {
                 with_manifest.insert(dir.to_path_buf());
@@ -275,7 +377,7 @@ mod tests {
         });
 
         assert!(with_manifest.contains(&root.join("pkg")));
-        assert!(visited_dirs(root, &[]).contains(&root.join("myenv")));
+        assert!(visited_dirs(root).contains(&root.join("myenv")));
         assert!(!with_manifest.contains(&root.join("myenv")));
     }
 
@@ -290,7 +392,7 @@ mod tests {
         fs::write(root.join("app/src/thing.app.src"), "").unwrap();
 
         let mut ignored = None;
-        walk_package_dirs(root, &[], |dir, chain| {
+        walk_package_dirs(root, |dir, chain| {
             if dir.ends_with("app") {
                 ignored = Some(chain.is_ignored(dir, &dir.join("src/thing.app.src")));
             }
@@ -311,14 +413,14 @@ mod tests {
         fs::write(root.join("sub/config/pyproject.toml"), "").unwrap();
 
         let mut with_manifest = BTreeSet::new();
-        walk_package_dirs(root, &[], |dir, chain| {
+        walk_package_dirs(root, |dir, chain| {
             let manifest = dir.join("pyproject.toml");
             if manifest.is_file() && !chain.is_ignored(dir, &manifest) {
                 with_manifest.insert(dir.to_path_buf());
             }
         });
 
-        assert!(visited_dirs(root, &[]).contains(&root.join("sub/config")));
+        assert!(visited_dirs(root).contains(&root.join("sub/config")));
         assert!(!with_manifest.contains(&root.join("sub/config")));
     }
 }

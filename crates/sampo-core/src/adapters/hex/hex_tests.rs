@@ -503,6 +503,44 @@ mod rebar3_dispatch {
         assert!(applied.is_empty());
     }
 
+    /// Documents a current gap, not desired behaviour: an Elixir "poncho" repo
+    /// (sibling apps each with their own `mix.exs`, no root `mix.exs`) is invisible
+    /// to discovery.
+    #[test]
+    fn poncho_layout_is_invisible_to_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for (app, version) in [("app_a", "0.1.0"), ("app_b", "0.2.0")] {
+            let dir = root.join(app);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("mix.exs"),
+                format!(
+                    "defmodule {app}.MixProject do\n  use Mix.Project\n  def project do\n    [app: :{app}, version: \"{version}\", deps: deps()]\n  end\n  defp deps, do: []\nend\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let packages = crate::workspace::discover_packages_at(root).unwrap();
+        assert!(
+            packages.is_empty(),
+            "expected poncho apps to be invisible, got {:?}",
+            packages.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+
+        fs::write(root.join("rebar.config"), "{deps, []}.\n").unwrap();
+        write_erlang_app(&root.join("apps").join("erl_app"), "erl_app", "3.0.0");
+
+        let packages = crate::workspace::discover_packages_at(root).unwrap();
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["erl_app"],
+            "expected only the Erlang app; poncho Mix apps must remain undiscovered"
+        );
+    }
+
     #[test]
     fn discovers_mix_and_erlang_packages_together() {
         let temp = tempfile::tempdir().unwrap();
