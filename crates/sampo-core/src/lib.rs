@@ -24,8 +24,8 @@ pub use changeset::{
 };
 pub use config::Config;
 pub use enrichment::{
-    CommitInfo, GitHubUserInfo, detect_github_repo_slug, detect_github_repo_slug_with_config,
-    enrich_changeset_message, get_commit_hash_for_path,
+    AcknowledgmentStyle, CommitInfo, GitHubUserInfo, detect_github_repo_slug,
+    detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
 };
 pub use errors::{Result, SampoError, WorkspaceError};
 pub use filters::{filter_members, list_visible_packages, should_ignore_package, wildcard_match};

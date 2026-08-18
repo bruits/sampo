@@ -17,6 +17,22 @@ pub struct CommitInfo {
     pub author_name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcknowledgmentStyle {
+    /// Subscribes the person to wherever it appears.
+    Mention,
+    Link,
+}
+
+impl AcknowledgmentStyle {
+    fn render(self, login: &str) -> String {
+        match self {
+            Self::Mention => format!("@{login}"),
+            Self::Link => format!("[@{login}](https://github.com/{login})"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubUserInfo {
     /// GitHub username (login)
@@ -134,7 +150,7 @@ pub fn enrich_changeset_message(
     repo_slug: Option<&str>,
     github_token: Option<&str>,
     show_commit_hash: bool,
-    show_acknowledgments: bool,
+    acknowledgments: Option<AcknowledgmentStyle>,
 ) -> String {
     // Create a tokio runtime for this blocking call
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -148,7 +164,7 @@ pub fn enrich_changeset_message(
         repo_slug,
         github_token,
         show_commit_hash,
-        show_acknowledgments,
+        acknowledgments,
     ))
 }
 
@@ -160,7 +176,7 @@ async fn enrich_changeset_message_async(
     repo_slug: Option<&str>,
     github_token: Option<&str>,
     show_commit_hash: bool,
-    show_acknowledgments: bool,
+    acknowledgments: Option<AcknowledgmentStyle>,
 ) -> String {
     let commit = get_commit_info_for_hash(workspace, commit_hash);
 
@@ -170,10 +186,9 @@ async fn enrich_changeset_message_async(
         String::new()
     };
 
-    let acknowledgment_suffix = if show_acknowledgments {
-        build_acknowledgment_suffix(&commit, repo_slug, github_token).await
-    } else {
-        String::new()
+    let acknowledgment_suffix = match acknowledgments {
+        Some(style) => build_acknowledgment_suffix(&commit, repo_slug, github_token, style).await,
+        None => String::new(),
     };
 
     crate::markdown::compose_markdown_with_affixes(message, &commit_prefix, &acknowledgment_suffix)
@@ -227,6 +242,7 @@ async fn build_acknowledgment_suffix(
     commit: &Option<CommitInfo>,
     repo_slug: Option<&str>,
     github_token: Option<&str>,
+    style: AcknowledgmentStyle,
 ) -> String {
     let Some(commit) = commit else {
         return String::new();
@@ -236,13 +252,11 @@ async fn build_acknowledgment_suffix(
     if let (Some(slug), Some(token)) = (repo_slug, github_token)
         && let Some(github_user) = get_github_user_for_commit(slug, &commit.sha, token).await
     {
+        let handle = style.render(&github_user.login);
         return if github_user.is_first_contribution {
-            format!(
-                " — Thanks @{} for your first contribution 🎉!",
-                github_user.login
-            )
+            format!(" — Thanks {handle} for your first contribution 🎉!")
         } else {
-            format!(" — Thanks @{}!", github_user.login)
+            format!(" — Thanks {handle}!")
         };
     }
 
@@ -251,7 +265,7 @@ async fn build_acknowledgment_suffix(
     if let Some(slug) = repo_slug
         && let Some(github_user) = get_github_user_for_commit_public(slug, &commit.sha).await
     {
-        return format!(" — Thanks @{}!", github_user.login);
+        return format!(" — Thanks {}!", style.render(&github_user.login));
     }
 
     // Fallback to just the Git author name
@@ -513,7 +527,7 @@ mod tests {
             Some("owner/repo"),
             None, // no GitHub token for this test
             true, // show commit hash
-            true, // show acknowledgments
+            Some(AcknowledgmentStyle::Mention),
         );
 
         // Should contain the commit hash link and author thanks
@@ -538,7 +552,7 @@ mod tests {
             Some("owner/repo"),
             None,
             false, // no commit hash
-            false, // no acknowledgments
+            None,
         );
 
         assert_eq!(
@@ -789,11 +803,18 @@ mod tests {
         });
 
         // Test without GitHub repo/token (should use Git author)
-        let result = build_acknowledgment_suffix(&commit, None, None).await;
+        let result =
+            build_acknowledgment_suffix(&commit, None, None, AcknowledgmentStyle::Mention).await;
         assert_eq!(result, " — Thanks Local Developer!");
 
         // Test with empty commit
-        let result = build_acknowledgment_suffix(&None, Some("owner/repo"), Some("token")).await;
+        let result = build_acknowledgment_suffix(
+            &None,
+            Some("owner/repo"),
+            Some("token"),
+            AcknowledgmentStyle::Mention,
+        )
+        .await;
         assert_eq!(result, "");
     }
 
@@ -830,6 +851,15 @@ mod tests {
         assert!(result.is_none(), "Should return None for invalid requests");
     }
 
+    #[test]
+    fn link_style_credits_without_mentioning() {
+        assert_eq!(AcknowledgmentStyle::Mention.render("octocat"), "@octocat");
+        assert_eq!(
+            AcknowledgmentStyle::Link.render("octocat"),
+            "[@octocat](https://github.com/octocat)"
+        );
+    }
+
     #[tokio::test]
     async fn test_build_acknowledgment_suffix_with_public_repo() {
         let commit = Some(CommitInfo {
@@ -839,11 +869,18 @@ mod tests {
         });
 
         // Test with repo_slug but no token (should try public API, fall back to Git author)
-        let result = build_acknowledgment_suffix(&commit, Some("invalid/repo"), None).await;
+        let result = build_acknowledgment_suffix(
+            &commit,
+            Some("invalid/repo"),
+            None,
+            AcknowledgmentStyle::Mention,
+        )
+        .await;
         assert_eq!(result, " — Thanks Test Author!");
 
         // Test with neither repo nor token
-        let result = build_acknowledgment_suffix(&commit, None, None).await;
+        let result =
+            build_acknowledgment_suffix(&commit, None, None, AcknowledgmentStyle::Mention).await;
         assert_eq!(result, " — Thanks Test Author!");
     }
 

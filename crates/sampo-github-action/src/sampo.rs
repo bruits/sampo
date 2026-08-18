@@ -4,10 +4,11 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    Config, PublishExtraArgs, PublishOutput, detect_all_dependency_explanations,
-    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
-    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
-    run_release as core_release, run_stabilize_release as core_stabilize_release,
+    AcknowledgmentStyle, Config, PublishExtraArgs, PublishOutput,
+    detect_all_dependency_explanations, detect_github_repo_slug_with_config, discover_workspace,
+    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    run_publish as core_publish, run_release as core_release,
+    run_stabilize_release as core_stabilize_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -168,6 +169,8 @@ pub fn build_release_pr_body(
             if releases.contains_key(&identifier) {
                 let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
                 let enriched = if let Some(hash) = commit_hash {
+                    // This branch is rewritten on every push, so crediting someone
+                    // must not subscribe them to it.
                     enrich_changeset_message(
                         &cs.message,
                         &hash,
@@ -175,7 +178,9 @@ pub fn build_release_pr_body(
                         repo_slug.as_deref(),
                         github_token.as_deref(),
                         config.changelog_show_commit_hash,
-                        config.changelog_show_acknowledgments,
+                        config
+                            .changelog_show_acknowledgments
+                            .then_some(AcknowledgmentStyle::Link),
                     )
                 } else {
                     cs.message.clone()
