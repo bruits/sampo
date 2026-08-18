@@ -187,6 +187,77 @@ fn discover_scan_skips_virtualenvs_caches_and_fixtures() {
 }
 
 #[test]
+fn discover_scan_skips_manifests_nested_under_excluded_dirs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pkg/pyproject.toml"),
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(
+        &root.join("venv/sub/vendored/pyproject.toml"),
+        "[project]\nname = \"vendored\"\nversion = \"9.9.9\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg"]);
+}
+
+#[test]
+fn discover_uv_workspace_members_deeper_than_scan_depth() {
+    // Declared members resolve through glob/path expansion, never through the
+    // depth-bounded scan.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pyproject.toml"),
+        r#"
+[project]
+name = "root"
+version = "1.0.0"
+
+[tool.uv.workspace]
+members = ["a/b/c/d/e/pkg-deep"]
+"#,
+    );
+    write_file(
+        &root.join("a/b/c/d/e/pkg-deep/pyproject.toml"),
+        "[project]\nname = \"pkg-deep\"\nversion = \"0.1.0\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert!(names.contains(&"root"));
+    assert!(names.contains(&"pkg-deep"));
+}
+
+#[test]
+fn discover_scan_honours_gitignore() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write_file(
+        &root.join("pkg_a/pyproject.toml"),
+        "[project]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+    );
+    write_file(&root.join(".gitignore"), "vendored/\n");
+    write_file(
+        &root.join("vendored/pyproject.toml"),
+        "[project]\nname = \"vendored-pkg\"\nversion = \"9.9.9\"\n",
+    );
+    // The catch-all `.gitignore` is the virtual-environment shape.
+    write_file(&root.join("myenv/.gitignore"), "*\n");
+    write_file(
+        &root.join("myenv/pyproject.toml"),
+        "[project]\nname = \"env-pkg\"\nversion = \"9.9.9\"\n",
+    );
+
+    let packages = discover(root).unwrap();
+    let names: Vec<_> = packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["pkg-a"]);
+}
+
+#[test]
 fn discover_scan_ignores_tool_config_only_manifests() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

@@ -1,3 +1,4 @@
+use crate::adapters::scan::LazyScan;
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::PackageInfo;
 use reqwest::StatusCode;
@@ -34,11 +35,22 @@ impl PyPIAdapter {
         pip::can_discover(root)
     }
 
+    pub(super) fn can_discover_scanned(&self, scan: &LazyScan) -> bool {
+        pip::can_discover_scanned(scan)
+    }
+
     pub(super) fn discover(
         &self,
         root: &Path,
     ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
         pip::discover(root)
+    }
+
+    pub(super) fn discover_scanned(
+        &self,
+        scan: &LazyScan,
+    ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+        pip::discover_scanned(scan)
     }
 
     pub(super) fn manifest_path(&self, package_dir: &Path) -> PathBuf {

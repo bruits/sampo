@@ -57,6 +57,17 @@ impl PackageAdapter {
         }
     }
 
+    /// [`Self::can_discover`] sharing one discovery pass's scan.
+    pub(crate) fn can_discover_scanned(&self, scan: &scan::LazyScan) -> bool {
+        match self {
+            Self::Hex => hex::HexAdapter.can_discover_scanned(scan),
+            Self::PyPI => pypi::PyPIAdapter.can_discover_scanned(scan),
+            Self::Cargo | Self::Npm | Self::Packagist | Self::Maven => {
+                self.can_discover(scan.root())
+            }
+        }
+    }
+
     /// Discover all packages in the workspace.
     pub fn discover(&self, root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
         match self {
@@ -66,6 +77,18 @@ impl PackageAdapter {
             Self::PyPI => pypi::PyPIAdapter.discover(root),
             Self::Packagist => packagist::PackagistAdapter.discover(root),
             Self::Maven => maven::MavenAdapter.discover(root),
+        }
+    }
+
+    /// [`Self::discover`] sharing one discovery pass's scan.
+    pub(crate) fn discover_scanned(
+        &self,
+        scan: &scan::LazyScan,
+    ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+        match self {
+            Self::Hex => hex::HexAdapter.discover_scanned(scan),
+            Self::PyPI => pypi::PyPIAdapter.discover_scanned(scan),
+            Self::Cargo | Self::Npm | Self::Packagist | Self::Maven => self.discover(scan.root()),
         }
     }
 

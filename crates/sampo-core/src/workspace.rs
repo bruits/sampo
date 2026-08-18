@@ -1,4 +1,5 @@
 use crate::adapters::PackageAdapter;
+use crate::adapters::scan::LazyScan;
 use crate::errors::WorkspaceError;
 use crate::types::Workspace;
 use std::path::{Path, PathBuf};
@@ -57,9 +58,10 @@ pub fn discover_workspace(start_dir: &Path) -> Result<Workspace> {
 pub fn discover_packages_at(root: &Path) -> Result<Vec<crate::types::PackageInfo>> {
     let mut all_members = Vec::new();
 
+    let scan = LazyScan::new(root);
     for adapter in PackageAdapter::all() {
-        if adapter.can_discover(root) {
-            let packages = adapter.discover(root)?;
+        if adapter.can_discover_scanned(&scan) {
+            let packages = adapter.discover_scanned(&scan)?;
             all_members.extend(packages);
         }
     }

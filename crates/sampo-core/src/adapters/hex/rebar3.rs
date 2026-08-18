@@ -1,3 +1,4 @@
+use crate::adapters::scan::{LazyScan, ScanIndex};
 use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
@@ -12,13 +13,14 @@ use tree_sitter::{Language, Node, Parser, Tree};
 /// Holds `{deps, [...]}` at the application root; umbrella sub-apps may not carry a copy.
 const REBAR_CONFIG: &str = "rebar.config";
 
-/// `src/<name>.app.src` is the authoritative manifest (name + version), and the only
-/// file every app is guaranteed to have — unlike `rebar.config`, which umbrella members
-/// may omit.
-const APP_SRC_SUFFIX: &str = ".app.src";
-
+/// Test-only entry: production discovery always shares the pass's [`LazyScan`].
+#[cfg(test)]
 pub(super) fn can_discover(root: &Path) -> bool {
-    !find_app_srcs(root).is_empty()
+    can_discover_scanned(&LazyScan::new(root))
+}
+
+pub(super) fn can_discover_scanned(scan: &LazyScan) -> bool {
+    !find_app_srcs(scan.index()).is_empty()
 }
 
 /// Whether `package_dir` is an Erlang application root, i.e. it holds a `src/<name>.app.src`.
@@ -26,7 +28,15 @@ pub(super) fn has_app_src(package_dir: &Path) -> bool {
     find_app_src(package_dir).is_some()
 }
 
+/// Test-only entry: production discovery always shares the pass's [`LazyScan`].
+#[cfg(test)]
 pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+    discover_scanned(&LazyScan::new(root))
+}
+
+pub(super) fn discover_scanned(
+    scan: &LazyScan,
+) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
     struct Member {
         name: String,
         version: String,
@@ -34,10 +44,11 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
         applications: Vec<String>,
     }
 
+    let root = scan.root();
     let mut members: Vec<Member> = Vec::new();
     let mut member_names: BTreeSet<String> = BTreeSet::new();
 
-    for app_src in find_app_srcs(root) {
+    for app_src in find_app_srcs(scan.index()) {
         // `<app_root>/src/<name>.app.src` → the application root is the grandparent.
         let app_root = app_src
             .parent()
@@ -123,6 +134,8 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
     Ok(packages)
 }
 
+/// Resolved without gitignore context, so it can pick an ignored `.app.src`
+/// that discovery skipped for a visible sibling.
 pub(super) fn manifest_path(package_dir: &Path) -> PathBuf {
     find_app_src(package_dir).unwrap_or_else(|| {
         // Unreachable for discovered packages (discovery found the file). Fall back to
@@ -542,41 +555,20 @@ fn script_sibling_exists(app_src: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_app_src_file(path: &Path) -> bool {
-    // `<name>.app.src.script` ends in `.script`, so it is naturally excluded.
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(APP_SRC_SUFFIX))
-        .unwrap_or(false)
-        && path.is_file()
-}
-
 /// The single `src/*.app.src` under `package_dir`, if any (the first, sorted, when a
 /// directory unusually holds several).
 fn find_app_src(package_dir: &Path) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = fs::read_dir(package_dir.join("src"))
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_app_src_file(p))
-        .collect();
-    candidates.sort();
-    candidates.into_iter().next()
+    crate::adapters::scan::find_app_src_matching(package_dir, |_| true)
 }
 
-fn find_app_srcs(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    crate::adapters::scan::walk_package_dirs(root, &[], |dir| {
-        // A directory with `mix.exs` (Mix) or `gleam.toml` (Gleam) may also carry a generated
-        // `.app.src`; those ecosystems own their identity, so skip it here to avoid
-        // double-discovery.
-        if !dir.join("mix.exs").exists()
-            && !dir.join("gleam.toml").exists()
-            && let Some(app_src) = find_app_src(dir)
-        {
-            out.push(app_src);
-        }
-    });
+fn find_app_srcs(index: &ScanIndex) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = index
+        .dirs()
+        // Mix and Gleam projects may carry a generated `.app.src` too; those
+        // ecosystems own the package, so skip to avoid double discovery.
+        .filter(|facts| !facts.has_mix_exs && !facts.has_gleam_toml)
+        .filter_map(|facts| facts.app_src.clone())
+        .collect();
     out.sort();
     out
 }

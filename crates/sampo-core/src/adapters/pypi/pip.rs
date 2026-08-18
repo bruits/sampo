@@ -1,4 +1,5 @@
 use crate::adapters::format_command_display;
+use crate::adapters::scan::{LazyScan, ScanIndex};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,8 +10,8 @@ use toml_edit::{DocumentMut, Item, Value};
 
 const PYPROJECT_MANIFEST: &str = "pyproject.toml";
 
-/// Scan excludes beyond the shared set: virtual environments, caches, build
-/// output, and test fixtures.
+/// Names that exclude a whole subtree from pip's scan, beyond the shared set:
+/// virtual environments, caches, build output, and test fixtures.
 const PYTHON_EXCLUDED_DIRS: &[&str] = &[
     "venv",
     "env",
@@ -61,11 +62,22 @@ impl VersionOperator {
 }
 
 pub(super) fn can_discover(root: &Path) -> bool {
-    root.join(PYPROJECT_MANIFEST).exists() || !scan_for_manifest_dirs(root).is_empty()
+    can_discover_scanned(&LazyScan::new(root))
+}
+
+pub(super) fn can_discover_scanned(scan: &LazyScan) -> bool {
+    scan.root().join(PYPROJECT_MANIFEST).exists()
+        || !scan_for_manifest_dirs(scan.root(), scan.index()).is_empty()
 }
 
 pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
-    let (package_dirs, declared) = collect_package_dirs(root)?;
+    discover_scanned(&LazyScan::new(root))
+}
+
+pub(super) fn discover_scanned(
+    scan: &LazyScan,
+) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+    let (package_dirs, declared) = collect_package_dirs(scan)?;
 
     let mut manifests = Vec::new();
     // PEP 503: package names are case-insensitive and treat `.`, `-`, `_` as equivalent
@@ -189,8 +201,9 @@ pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, Wor
 /// it; only a repository without such a root is scanned for per-directory
 /// manifests.
 fn collect_package_dirs(
-    root: &Path,
+    scan: &LazyScan,
 ) -> std::result::Result<(BTreeSet<PathBuf>, bool), WorkspaceError> {
+    let root = scan.root();
     let manifest_path = root.join(PYPROJECT_MANIFEST);
     if manifest_path.exists() {
         let text = fs::read_to_string(&manifest_path).map_err(|e| {
@@ -227,14 +240,14 @@ fn collect_package_dirs(
                     "Warning: {} is invalid TOML: {err}",
                     manifest_path.display()
                 );
-                let mut package_dirs = scan_for_manifest_dirs(root);
+                let mut package_dirs = scan_for_manifest_dirs(root, scan.index());
                 // Warned just above; drop the root so it is not reported twice.
                 package_dirs.remove(&normalize_path(root));
                 return Ok((package_dirs, false));
             }
         }
     }
-    Ok((scan_for_manifest_dirs(root), false))
+    Ok((scan_for_manifest_dirs(root, scan.index()), false))
 }
 
 /// Fail before any manifest is written when a planned package cannot take its
@@ -262,14 +275,24 @@ pub(super) fn validate_release_plan(
     Ok(())
 }
 
-fn scan_for_manifest_dirs(root: &Path) -> BTreeSet<PathBuf> {
-    let mut dirs = BTreeSet::new();
-    crate::adapters::scan::walk_package_dirs(root, PYTHON_EXCLUDED_DIRS, |dir| {
-        if dir.join(PYPROJECT_MANIFEST).is_file() {
-            dirs.insert(normalize_path(dir));
-        }
-    });
-    dirs
+fn scan_for_manifest_dirs(root: &Path, index: &ScanIndex) -> BTreeSet<PathBuf> {
+    index
+        .dirs()
+        .filter(|facts| facts.pyproject && !has_python_excluded_component(root, &facts.dir))
+        .map(|facts| normalize_path(&facts.dir))
+        .collect()
+}
+
+fn has_python_excluded_component(root: &Path, dir: &Path) -> bool {
+    let Ok(rel) = dir.strip_prefix(root) else {
+        return false;
+    };
+    rel.components().any(|component| match component {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|name| PYTHON_EXCLUDED_DIRS.contains(&name)),
+        _ => false,
+    })
 }
 
 pub(super) fn manifest_path(package_dir: &Path) -> PathBuf {
@@ -421,7 +444,7 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
 /// shares a single root uv.lock; scanned packages each own one. Never
 /// creates a lockfile the user has not generated.
 fn uv_lock_dirs(workspace_root: &Path) -> Result<Vec<PathBuf>> {
-    let (package_dirs, declared) = collect_package_dirs(workspace_root)
+    let (package_dirs, declared) = collect_package_dirs(&LazyScan::new(workspace_root))
         .map_err(|err| SampoError::Release(format!("cannot regenerate lockfile; {err}")))?;
 
     let candidates: Vec<PathBuf> = if declared {

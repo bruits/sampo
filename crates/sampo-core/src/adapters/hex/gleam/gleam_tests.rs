@@ -79,6 +79,27 @@ fn discover_skips_build_output() {
 }
 
 #[test]
+fn discover_skips_gitignored_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(
+        &temp.path().join("app/gleam.toml"),
+        "name = \"app\"\nversion = \"1.0.0\"\n",
+    );
+    write_file(&temp.path().join(".gitignore"), "generated/\n");
+    write_file(
+        &temp.path().join("generated/gleam.toml"),
+        "name = \"generated\"\nversion = \"9.9.9\"\n",
+    );
+
+    let names: Vec<String> = discover(temp.path())
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["app"]);
+}
+
+#[test]
 fn discover_links_internal_path_dependency() {
     let temp = tempfile::tempdir().unwrap();
     write_file(

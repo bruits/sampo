@@ -1,3 +1,4 @@
+use crate::adapters::scan::{LazyScan, ScanIndex};
 use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
@@ -13,15 +14,28 @@ use super::{GLEAM_MANIFEST, compute_requirement, normalize_path};
 const GLEAM_LOCKFILE: &str = "manifest.toml";
 
 pub(super) fn can_discover(root: &Path) -> bool {
-    !find_manifests(root).is_empty()
+    can_discover_scanned(&LazyScan::new(root))
 }
 
+pub(super) fn can_discover_scanned(scan: &LazyScan) -> bool {
+    !find_manifests(scan.index()).is_empty()
+}
+
+/// Test-only entry: production discovery always shares the pass's [`LazyScan`].
+#[cfg(test)]
 pub(super) fn discover(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+    discover_scanned(&LazyScan::new(root))
+}
+
+pub(super) fn discover_scanned(
+    scan: &LazyScan,
+) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+    let root = scan.root();
     let mut name_to_path: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut normalized_to_name: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut parsed = Vec::new();
 
-    for manifest_path in find_manifests(root) {
+    for manifest_path in find_manifests(scan.index()) {
         let dir = manifest_path
             .parent()
             .map(Path::to_path_buf)
@@ -187,18 +201,20 @@ pub(super) fn publish(manifest_path: &Path, dry_run: bool, extra_args: &[String]
 /// Narrower than [`can_discover`]: a `gleam.toml` with no lockfile yet is discovered but
 /// never regenerated.
 pub(super) fn has_lockfile_to_regenerate(workspace_root: &Path) -> bool {
-    find_manifests(workspace_root).iter().any(|manifest_path| {
-        manifest_path
-            .parent()
-            .is_some_and(|dir| dir.join(GLEAM_LOCKFILE).exists())
-    })
+    find_manifests(&ScanIndex::build(workspace_root))
+        .iter()
+        .any(|manifest_path| {
+            manifest_path
+                .parent()
+                .is_some_and(|dir| dir.join(GLEAM_LOCKFILE).exists())
+        })
 }
 
 pub(super) fn regenerate_lockfile(workspace_root: &Path) -> Result<()> {
     // Each Gleam package owns its `manifest.toml`; refresh every one that already
     // exists. Like the other adapters, we never create a lockfile the user has not
     // generated yet by running gleam.
-    for manifest_path in find_manifests(workspace_root) {
+    for manifest_path in find_manifests(&ScanIndex::build(workspace_root)) {
         let dir = match manifest_path.parent() {
             Some(dir) => dir,
             None => continue,
@@ -377,17 +393,14 @@ fn collect_dependencies(doc: &toml::Value, manifest_dir: &Path) -> Vec<ParsedDep
     deps
 }
 
-fn find_manifests(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    crate::adapters::scan::walk_package_dirs(root, &[], |dir| {
-        let manifest = dir.join(GLEAM_MANIFEST);
-        // A directory carrying both manifests is a Mix project that also holds Gleam
-        // sources (the mix_gleam interop): Mix owns its identity and publish path, so the
-        // Gleam scan skips it to avoid discovering the same package twice.
-        if manifest.is_file() && !dir.join("mix.exs").exists() {
-            out.push(manifest);
-        }
-    });
+fn find_manifests(index: &ScanIndex) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = index
+        .dirs()
+        // A `mix.exs` alongside is the mix_gleam interop: Mix owns the
+        // package, so skip it to avoid double discovery.
+        .filter(|facts| facts.gleam_manifest && !facts.has_mix_exs)
+        .map(|facts| facts.dir.join(GLEAM_MANIFEST))
+        .collect();
     out.sort();
     out
 }

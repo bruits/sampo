@@ -1,4 +1,5 @@
 use crate::adapters::require_on_path;
+use crate::adapters::scan::LazyScan;
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::PackageInfo;
 use reqwest::StatusCode;
@@ -25,24 +26,37 @@ pub(super) struct HexAdapter;
 
 impl HexAdapter {
     pub(super) fn can_discover(&self, root: &Path) -> bool {
-        mix::can_discover(root) || gleam::can_discover(root) || rebar3::can_discover(root)
+        self.can_discover_scanned(&LazyScan::new(root))
+    }
+
+    pub(super) fn can_discover_scanned(&self, scan: &LazyScan) -> bool {
+        mix::can_discover(scan.root())
+            || gleam::can_discover_scanned(scan)
+            || rebar3::can_discover_scanned(scan)
     }
 
     pub(super) fn discover(
         &self,
         root: &Path,
     ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
+        self.discover_scanned(&LazyScan::new(root))
+    }
+
+    pub(super) fn discover_scanned(
+        &self,
+        scan: &LazyScan,
+    ) -> std::result::Result<Vec<PackageInfo>, WorkspaceError> {
         // Elixir, Gleam, and Erlang packages can live side by side in a BEAM monorepo;
         // each build tool discovers its own members and they merge into one Hex workspace.
         let mut packages = Vec::new();
-        if mix::can_discover(root) {
-            packages.extend(mix::discover(root)?);
+        if mix::can_discover(scan.root()) {
+            packages.extend(mix::discover(scan.root())?);
         }
-        if gleam::can_discover(root) {
-            packages.extend(gleam::discover(root)?);
+        if gleam::can_discover_scanned(scan) {
+            packages.extend(gleam::discover_scanned(scan)?);
         }
-        if rebar3::can_discover(root) {
-            packages.extend(rebar3::discover(root)?);
+        if rebar3::can_discover_scanned(scan) {
+            packages.extend(rebar3::discover_scanned(scan)?);
         }
         Ok(packages)
     }
