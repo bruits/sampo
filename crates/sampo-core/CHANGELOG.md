@@ -1,5 +1,20 @@
 # sampo-core
 
+## 0.17.0 — 2026-08-20
+
+### Minor changes
+
+- [5a63ad4](https://github.com/bruits/sampo/commit/5a63ad45a9a140ccee575e9675764a3c6776a489) In Python (PyPI) projects, added package discovery without a root `pyproject.toml`, and an explicit root `[project]` or `[tool.uv.workspace]` still wins. Also, releasing a package without a static `[project].version` now fails before anything is written, instead of recording a bump the manifest never received. — Thanks @goulvenclech!
+- [9674009](https://github.com/bruits/sampo/commit/9674009d747be408412ea86a548b5ef6fdd98dac) In Python (PyPI), Gleam (Hex), and Erlang (Hex) projects, package scanning now honours `.gitignore` files: gitignored manifests are skipped, and virtual environments self-exclude through the catch-all `.gitignore` written by uv and `python -m venv` (Python 3.13+). Only `.gitignore` files inside the repository are read — never your personal global gitignore (`core.excludesFile`) — so local and CI scans agree. — Thanks @goulvenclech!
+- [2d2b75e](https://github.com/bruits/sampo/commit/2d2b75eb10b3fdf46b4bdae9eb6ab6a745bedb8b) **⚠️ breaking change:** Sampo now fails a release when it cannot regenerate a lockfile, instead of warning and committing a stale one. Tooling is checked before anything is written, so a refused `sampo release` or `sampo pre` leaves the workspace untouched.
+  
+  In JavaScript/TypeScript (npm) projects, fixed Bun lockfile regeneration, which ran an invalid command and left the released package stale in `bun.lock`. Bun 1.2 or later is now required. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [ba90194](https://github.com/bruits/sampo/commit/ba90194edc07ad3b5f40811a9590b49a8bf947ef) In JavaScript/TypeScript (npm) projects, fixed a dry-run publish that published for real on Yarn Classic, and publishing on Yarn Berry, which never reached the registry. Where yarn cannot simulate a publish, the dry run is now skipped with a warning. — Thanks @goulvenclech!
+- [7d2a3fa](https://github.com/bruits/sampo/commit/7d2a3fa96737810e299c58d0d013c57ff3585a6c) Fixed the release pull request subscribing every contributor it credits. They are now linked to their profile instead of `@mentioned`, while generated changelogs keep the real `@mention`. — Thanks @goulvenclech!
+
 ## 0.16.0 — 2026-08-13
 
 ### Minor changes
