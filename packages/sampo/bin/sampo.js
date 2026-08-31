@@ -2,6 +2,7 @@
 const { spawnSync } = require("node:child_process");
 const { createRequire } = require("node:module");
 const path = require("node:path");
+const process = require("node:process");
 
 const PLATFORM_PACKAGES = {
   "linux x64": "@bruits/sampo-linux-x64",
