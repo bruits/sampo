@@ -18,11 +18,11 @@
     "node": ">=22"
   },
   "optionalDependencies": {
-    "@bruits/sampo-linux-x64": "0.20.0",
-    "@bruits/sampo-linux-arm64": "0.20.0",
-    "@bruits/sampo-darwin-x64": "0.20.0",
-    "@bruits/sampo-darwin-arm64": "0.20.0",
-    "@bruits/sampo-win32-x64": "0.20.0"
+    "@bruits/sampo-linux-x64": "0.21.0",
+    "@bruits/sampo-linux-arm64": "0.21.0",
+    "@bruits/sampo-darwin-x64": "0.21.0",
+    "@bruits/sampo-darwin-arm64": "0.21.0",
+    "@bruits/sampo-win32-x64": "0.21.0"
   },
   "publishConfig": {
     "access": "public"
