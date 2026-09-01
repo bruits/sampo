@@ -30,9 +30,27 @@ mod exit {
     pub fn no_changes() -> ExitCode {
         ExitCode::from(2)
     }
+
+    /// Terminated by Ctrl-C (128 + SIGINT).
+    pub const INTERRUPTED: i32 = 130;
+}
+
+/// Dialoguer leaves the cursor hidden when SIGINT kills a prompt (console-rs/dialoguer#77).
+fn restore_cursor_on_interrupt() {
+    let _ = ctrlc::set_handler(|| exit_interrupted());
+}
+
+fn exit_interrupted() -> ! {
+    let term = dialoguer::console::Term::stderr();
+    if term.is_term() {
+        let _ = term.show_cursor();
+    }
+    std::process::exit(exit::INTERRUPTED);
 }
 
 fn main() -> ExitCode {
+    restore_cursor_on_interrupt();
+
     let cli = Cli::parse();
 
     check_and_notify_update();

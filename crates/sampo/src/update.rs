@@ -102,7 +102,7 @@ fn confirm_update() -> Result<bool> {
         .with_prompt("Do you want to update?")
         .default(true)
         .interact()
-        .map_err(|e| SampoError::Io(std::io::Error::other(e)))
+        .map_err(|e| SampoError::Io(crate::ui::prompt_io_error(e)))
 }
 
 /// Performs the actual update by downloading and replacing the binary.
