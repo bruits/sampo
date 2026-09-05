@@ -32,6 +32,7 @@ self_update = { version = "0.44", optional = true, default-features = false, fea
     "reqwest",
     "rustls",
 ] }
+ctrlc = "3.5.2"
 
 [dev-dependencies]
 tempfile = "3"

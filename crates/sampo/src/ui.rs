@@ -162,9 +162,15 @@ pub fn normalize_nonempty_string(input: Option<&str>) -> Option<String> {
     })
 }
 
+/// An `Interrupted` read is Ctrl-C: exits instead of returning.
 pub fn prompt_io_error(error: dialoguer::Error) -> io::Error {
     match error {
-        dialoguer::Error::IO(err) => err,
+        dialoguer::Error::IO(err) => {
+            if err.kind() == io::ErrorKind::Interrupted {
+                crate::exit_interrupted();
+            }
+            err
+        }
     }
 }
 
