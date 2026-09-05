@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
 const { createRequire } = require("node:module");
+const os = require("node:os");
 const path = require("node:path");
 const process = require("node:process");
 
@@ -52,10 +53,9 @@ try {
 const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
 if (result.error) {
   console.error(`sampo: failed to execute binary: ${result.error.message}`);
-  process.exit(1);
 }
 if (result.signal) {
-  process.kill(process.pid, result.signal);
-} else {
-  process.exit(result.status ?? 1);
+  console.error(`sampo: binary received signal ${result.signal}`);
+  process.exit(128 + os.constants.signals[result.signal]);
 }
+process.exit(result.status ?? 1);
