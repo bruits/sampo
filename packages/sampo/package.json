@@ -11,6 +11,9 @@
   "bin": {
     "sampo": "bin/sampo.js"
   },
+  "scripts": {
+    "dev-sampo": "node ./bin/sampo.js"
+  },
   "files": [
     "bin/sampo.js"
   ],
