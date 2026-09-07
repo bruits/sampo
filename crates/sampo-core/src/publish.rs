@@ -2045,6 +2045,37 @@ edition = "2021"
     }
 
     #[test]
+    fn private_classifier_pypi_packages_are_tagged_without_publishing() {
+        let workspace = TestWorkspace::new();
+        let root = &workspace.root;
+
+        let versioned = root.join("tools/internal-tool");
+        fs::create_dir_all(&versioned).unwrap();
+        fs::write(
+            versioned.join("pyproject.toml"),
+            "[project]\nname = \"internal-tool\"\nversion = \"1.0.0\"\nclassifiers = [\"Private :: Do Not Upload\"]\n",
+        )
+        .unwrap();
+
+        let versionless = root.join("tools/internal-container");
+        fs::create_dir_all(&versionless).unwrap();
+        fs::write(
+            versionless.join("pyproject.toml"),
+            "[project]\nname = \"internal-container\"\nclassifiers = [\"Private :: Do Not Upload\"]\n",
+        )
+        .unwrap();
+
+        init_git_repo_for_test(root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let output = workspace
+            .run_publish(false)
+            .expect("private PyPI packages must be skipped, not built and uploaded");
+
+        assert_eq!(output.tags, vec!["internal-tool-v1.0.0".to_string()]);
+    }
+
+    #[test]
     fn two_versionless_members_no_spurious_conflict() {
         // Two versionless members with a tag_format omitting {package_name} both
         // render "npm-v", which would make check_tag_conflicts abort the whole

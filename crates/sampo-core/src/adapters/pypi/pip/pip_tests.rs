@@ -680,6 +680,64 @@ version = "0.1.0"
 }
 
 #[test]
+fn is_publishable_rejects_private_classifier() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pyproject.toml");
+
+    write_file(
+        &manifest,
+        r#"
+[project]
+name = "example"
+version = "0.1.0"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Private :: Do Not Upload",
+]
+"#,
+    );
+    assert!(!is_publishable(&manifest).unwrap());
+
+    write_file(
+        &manifest,
+        r#"
+[project]
+name = "example"
+version = "0.1.0"
+classifiers = ["Private :: Internal Tooling"]
+"#,
+    );
+    assert!(!is_publishable(&manifest).unwrap());
+
+    write_file(
+        &manifest,
+        r#"
+[project]
+name = "example"
+version = "0.1.0"
+classifiers = ["Programming Language :: Python :: 3"]
+"#,
+    );
+    assert!(is_publishable(&manifest).unwrap());
+}
+
+#[test]
+fn is_publishable_skips_private_packages_without_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("pyproject.toml");
+
+    write_file(
+        &manifest,
+        r#"
+[project]
+name = "example"
+classifiers = ["Private :: Do Not Upload"]
+"#,
+    );
+    assert!(!is_publishable(&manifest).unwrap());
+}
+
+#[test]
 fn regenerate_lockfile_is_a_no_op_without_lockfiles() {
     let temp = tempfile::tempdir().unwrap();
     regenerate_lockfile(temp.path()).expect("no lockfile means nothing to regenerate");
