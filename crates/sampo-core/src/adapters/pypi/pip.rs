@@ -10,6 +10,9 @@ use toml_edit::{DocumentMut, Item, Value};
 
 const PYPROJECT_MANIFEST: &str = "pyproject.toml";
 
+/// PyPI rejects any upload carrying a classifier under this reserved namespace.
+const PRIVATE_CLASSIFIER_PREFIX: &str = "Private ::";
+
 /// Names that exclude a whole subtree from pip's scan, beyond the shared set:
 /// virtual environments, caches, build output, and test fixtures.
 const PYTHON_EXCLUDED_DIRS: &[&str] = &[
@@ -302,7 +305,12 @@ pub(super) fn manifest_path(package_dir: &Path) -> PathBuf {
 pub(super) fn is_publishable(manifest_path: &Path) -> Result<bool> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let ProjectMetadata { name, version, .. } = parse_project_metadata(&text);
+    let ProjectMetadata {
+        name,
+        version,
+        private_classifier,
+        ..
+    } = parse_project_metadata(&text);
 
     let Some(name) = name else {
         return Err(SampoError::Publish(format!(
@@ -315,6 +323,11 @@ pub(super) fn is_publishable(manifest_path: &Path) -> Result<bool> {
             "Manifest {} declares an empty project name",
             manifest_path.display()
         )));
+    }
+
+    // Before the version check: versionless private packages are skipped, not errors.
+    if private_classifier {
+        return Ok(false);
     }
 
     let Some(version) = version else {
@@ -596,6 +609,7 @@ struct ProjectMetadata {
     version: Option<String>,
     /// Whether `version` is declared in PEP 621 `dynamic` rather than set statically.
     dynamic_version: bool,
+    private_classifier: bool,
     /// Distinguishes a malformed package manifest from a file holding only
     /// tool configuration.
     has_project_table: bool,
@@ -626,6 +640,15 @@ fn project_metadata(doc: &DocumentMut) -> ProjectMetadata {
             .and_then(Item::as_array)
             .map(|arr| arr.iter().any(|v| v.as_str() == Some("version")))
             .unwrap_or(false);
+        metadata.private_classifier = project
+            .get("classifiers")
+            .and_then(Item::as_array)
+            .is_some_and(|arr| {
+                arr.iter().any(|v| {
+                    v.as_str()
+                        .is_some_and(|classifier| classifier.starts_with(PRIVATE_CLASSIFIER_PREFIX))
+                })
+            });
     }
 
     metadata
