@@ -1,6 +1,6 @@
 {
   "name": "sampo",
-  "version": "0.21.0",
+  "version": "0.21.1",
   "description": "Sampo CLI: automate changelogs, versioning, and publishing",
   "homepage": "https://github.com/bruits/sampo",
   "repository": {

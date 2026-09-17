@@ -1,5 +1,11 @@
 # sampo
 
+## 0.21.1 — 2026-09-05
+
+### Patch changes
+
+- [5649fd6](https://github.com/bruits/sampo/commit/5649fd6db9269595dd1a2ff612f0f4555726c86b) Fixed interactive prompts (`sampo add`, `sampo pre`, `sampo update`) leaving the terminal cursor hidden after Ctrl-C. Previously the cursor stayed hidden until running `reset`. — Thanks @goulvenclech!
+
 ## 0.21.0 — 2026-08-20
 
 ### Minor changes
