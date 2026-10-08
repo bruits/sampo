@@ -4,8 +4,10 @@
 documentation:
   - changed-files:
       - any-glob-to-any-file:
-          - "**/*.md"
           - "docs/**"
+      # A negated glob only excludes inside `all-globs-to-*` matchers.
+      - all-globs-to-any-file:
+          - "**/*.md"
           - "!.sampo/changesets/**"
 
 devops:

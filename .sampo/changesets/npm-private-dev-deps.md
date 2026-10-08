@@ -4,4 +4,4 @@ cargo/sampo-core: patch
 cargo/sampo-github-action: patch
 ---
 
-In npm projects, fixed publishing failing when a package has a non-publishable internal package in `devDependencies`. Previously these were treated as regular dependencies.
+In JavaScript/TypeScript (npm) projects, fixed `sampo publish` failing when a package's `devDependencies` include a non-publishable workspace package or close a dependency cycle.
