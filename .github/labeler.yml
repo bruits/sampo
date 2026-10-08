@@ -6,6 +6,7 @@ documentation:
       - any-glob-to-any-file:
           - "**/*.md"
           - "docs/**"
+          - "!.sampo/changesets/**"
 
 devops:
   - changed-files:
