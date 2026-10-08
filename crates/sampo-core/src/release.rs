@@ -31,12 +31,8 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
         return None;
     }
 
-    let mut parsed_updates: Vec<(
-        Option<PackageSpecifier>,
-        Option<String>,
-        String,
-        &DependencyUpdate,
-    )> = Vec::with_capacity(updates.len());
+    let mut parsed_updates: Vec<(Option<PackageSpecifier>, String, &DependencyUpdate)> =
+        Vec::with_capacity(updates.len());
     let mut labels_by_name: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for dep in updates {
@@ -50,18 +46,11 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
             } else {
                 labels_by_name.entry(base_name.clone()).or_default();
             }
-            parsed_updates.push((Some(spec), None, base_name, dep));
-        } else if let Some((prefix, name)) = dep.name.split_once('/') {
-            let base_name = name.to_string();
-            labels_by_name
-                .entry(base_name.clone())
-                .or_default()
-                .insert(prefix.to_ascii_lowercase());
-            parsed_updates.push((None, Some(prefix.to_string()), base_name, dep));
+            parsed_updates.push((Some(spec), base_name, dep));
         } else {
             let base_name = dep.name.clone();
             labels_by_name.entry(base_name.clone()).or_default();
-            parsed_updates.push((None, None, base_name, dep));
+            parsed_updates.push((None, base_name, dep));
         }
     }
 
@@ -78,7 +67,7 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
 
     let dep_list = parsed_updates
         .into_iter()
-        .map(|(spec_opt, raw_prefix, base_name, dep)| {
+        .map(|(spec_opt, base_name, dep)| {
             let is_ambiguous = ambiguous_names.contains(&base_name);
             let display_label = if let Some(spec) = spec_opt.as_ref() {
                 if let Some(kind) = spec.kind {
@@ -89,12 +78,6 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
                     }
                 } else {
                     spec.display_name(false)
-                }
-            } else if let Some(prefix) = raw_prefix.as_ref() {
-                if is_ambiguous {
-                    format!("{}/{}", prefix.to_ascii_lowercase(), base_name)
-                } else {
-                    base_name.clone()
                 }
             } else {
                 base_name.clone()
