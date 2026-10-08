@@ -1723,14 +1723,14 @@ fn discover_npm(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceE
     let mut packages = Vec::new();
     for (name, version, path, manifest) in manifests {
         let identifier = PackageInfo::dependency_identifier(PackageKind::Npm, &name);
-        let internal_deps = collect_internal_deps(&manifest, &name_to_path);
+        let (internal_deps, internal_dev_deps) = collect_internal_deps(&manifest, &name_to_path);
         packages.push(PackageInfo {
             name,
             version,
             path,
             identifier,
             internal_deps,
-            internal_dev_deps: BTreeSet::new(),
+            internal_dev_deps,
             kind: PackageKind::Npm,
         });
     }
@@ -1865,11 +1865,15 @@ fn expand_npm_member_pattern(
     Ok(())
 }
 
+/// Returns (internal_deps, internal_dev_deps). `devDependencies` are tracked
+/// separately because they are never installed from a published tarball, so they
+/// don't constrain publishing, but their versions still need updating during releases.
 fn collect_internal_deps(
     manifest: &JsonValue,
     name_to_path: &BTreeMap<String, PathBuf>,
-) -> BTreeSet<String> {
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut internal = BTreeSet::new();
+    let mut internal_dev = BTreeSet::new();
 
     for key in [
         "dependencies",
@@ -1878,9 +1882,14 @@ fn collect_internal_deps(
         "optionalDependencies",
     ] {
         if let Some(deps) = manifest.get(key).and_then(JsonValue::as_object) {
+            let target = if key == "devDependencies" {
+                &mut internal_dev
+            } else {
+                &mut internal
+            };
             for dep_name in deps.keys() {
                 if name_to_path.contains_key(dep_name.as_str()) {
-                    internal.insert(PackageInfo::dependency_identifier(
+                    target.insert(PackageInfo::dependency_identifier(
                         PackageKind::Npm,
                         dep_name,
                     ));
@@ -1906,7 +1915,7 @@ fn collect_internal_deps(
         }
     }
 
-    internal
+    (internal, internal_dev)
 }
 
 fn clean_path(path: &Path) -> PathBuf {

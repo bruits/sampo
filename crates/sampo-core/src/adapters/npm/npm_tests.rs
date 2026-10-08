@@ -394,6 +394,46 @@ fn npm_adapter_discovers_workspace_members_and_internal_deps() {
 }
 
 #[test]
+fn npm_discover_separates_dev_deps() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+    )
+    .unwrap();
+
+    let packages_dir = root.join("packages");
+    for name in ["pkg-a", "pkg-b", "pkg-c"] {
+        fs::create_dir_all(packages_dir.join(name)).unwrap();
+    }
+    // pkg-a: regular dep on pkg-b, dev-dep on pkg-c
+    fs::write(
+        packages_dir.join("pkg-a/package.json"),
+        r#"{"name":"pkg-a","version":"0.1.0","dependencies":{"pkg-b":"^0.1.0"},"devDependencies":{"pkg-c":"^0.1.0"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        packages_dir.join("pkg-b/package.json"),
+        r#"{"name":"pkg-b","version":"0.1.0"}"#,
+    )
+    .unwrap();
+    fs::write(
+        packages_dir.join("pkg-c/package.json"),
+        r#"{"name":"pkg-c","version":"0.1.0","private":true}"#,
+    )
+    .unwrap();
+
+    let packages = NpmAdapter.discover(root).unwrap();
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+
+    assert!(pkg_a.internal_deps.contains("npm/pkg-b"));
+    assert!(!pkg_a.internal_deps.contains("npm/pkg-c"));
+    assert!(pkg_a.internal_dev_deps.contains("npm/pkg-c"));
+}
+
+#[test]
 fn npm_discover_excludes_private_versionless_root() {
     // A discovered container would render a malformed versionless tag like
     // "npm-root-monorepo-v" and get released.
