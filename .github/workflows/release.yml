@@ -77,6 +77,11 @@ jobs:
     needs: build-artifacts
     runs-on: ubuntu-latest
     environment: sampo
+    permissions:
+      contents: write
+      pull-requests: write
+      # npm trusted publishing
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -92,23 +97,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-
-      - name: Configure npm auth
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "Error: NPM_TOKEN secret is not configured on the sampo environment." >&2
-            echo "Add it before running this workflow, or remove the npm publish steps." >&2
-            exit 1
-          fi
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-          npm_user="$(npm whoami --registry https://registry.npmjs.org 2>/dev/null || true)"
-          if [ -z "${npm_user}" ]; then
-            echo "Error: NPM_TOKEN is not a valid npm credential — regenerate it on the sampo environment." >&2
-            exit 1
-          fi
-          echo "npm authenticated as ${npm_user}"
 
       # Must run before the shim publish so its optionalDependencies resolve.
       - name: Publish npm platform packages
@@ -152,7 +140,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Check if sampo-github-bot was updated
         id: check-bot-update

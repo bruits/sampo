@@ -128,7 +128,7 @@ EOF
   # `[@]+` avoids aborting on an empty array under `set -u` (bash < 4.4, e.g. macOS).
   if ! ( cd "$pkg_dir" && npm publish ${dry_run_flag[@]+"${dry_run_flag[@]}"} ); then
     echo "error: failed to publish ${name}@${version} (see npm error above)" >&2
-    echo "A first publish needs a token allowed to create new packages (e.g. a classic Automation token)." >&2
+    echo "CI publishes through npm trusted publishing: ${name} must already exist on npm with a trusted publisher (workflow release.yml, environment sampo) that allows npm publish." >&2
     exit 1
   fi
 done
