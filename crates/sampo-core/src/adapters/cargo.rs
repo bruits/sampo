@@ -481,16 +481,15 @@ fn version_exists_on_crates_io(crate_name: &str, version: &str) -> Result<bool> 
     }
 }
 
-/// Run `cargo generate-lockfile` to rebuild the lockfile with updated versions.
 fn regenerate_cargo_lockfile(root: &Path) -> Result<()> {
     let mut cmd = Command::new("cargo");
-    cmd.arg("generate-lockfile").current_dir(root);
+    cmd.args(["update", "--workspace"]).current_dir(root);
 
     println!("Regenerating Cargo.lock…");
     let status = cmd.status().map_err(SampoError::Io)?;
     if !status.success() {
         return Err(SampoError::Release(format!(
-            "cargo generate-lockfile failed with status {}",
+            "cargo update --workspace failed with status {}",
             status
         )));
     }

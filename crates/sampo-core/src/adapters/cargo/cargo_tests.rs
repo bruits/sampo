@@ -1130,3 +1130,85 @@ mod private_registries {
         assert!(packages.iter().any(|p| p.name == "private-lib"));
     }
 }
+
+mod lockfile_regeneration {
+    use super::*;
+
+    fn write_file(path: &Path, contents: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+
+    fn write_members(root: &Path, version: &str) {
+        write_file(
+            &root.join("a/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"a\"\nversion = \"{version}\"\nedition = \"2021\"\n\n[dependencies]\ndep = \"1\"\n"
+            ),
+        );
+        write_file(
+            &root.join("b/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"b\"\nversion = \"{version}\"\nedition = \"2021\"\n\n[dependencies]\na = {{ path = \"../a\", version = \"{version}\" }}\n"
+            ),
+        );
+        write_file(&root.join("a/src/lib.rs"), "");
+        write_file(&root.join("b/src/lib.rs"), "");
+    }
+
+    fn vendor_dep(root: &Path, version: &str) {
+        let dir = root.join(format!("vendor/dep-{version}"));
+        write_file(
+            &dir.join("Cargo.toml"),
+            &format!("[package]\nname = \"dep\"\nversion = \"{version}\"\nedition = \"2021\"\n"),
+        );
+        write_file(&dir.join("src/lib.rs"), "");
+        write_file(
+            &dir.join(".cargo-checksum.json"),
+            r#"{"files":{},"package":null}"#,
+        );
+    }
+
+    fn locked_version(root: &Path, name: &str) -> String {
+        let lock: toml::Value =
+            toml::from_str(&fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap();
+        lock["package"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|package| package["name"].as_str() == Some(name))
+            .and_then(|package| package["version"].as_str())
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn regenerating_lockfile_keeps_external_dependencies_pinned() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_file(
+            &root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\nresolver = \"2\"\n",
+        );
+        write_file(
+            &root.join(".cargo/config.toml"),
+            "[net]\noffline = true\n\n[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"vendor\"\n",
+        );
+        write_members(root, "0.1.0");
+        vendor_dep(root, "1.0.0");
+        let status = Command::new("cargo")
+            .arg("generate-lockfile")
+            .current_dir(root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        vendor_dep(root, "1.0.1");
+        write_members(root, "0.2.0");
+        regenerate_cargo_lockfile(root).unwrap();
+
+        assert_eq!(locked_version(root, "a"), "0.2.0");
+        assert_eq!(locked_version(root, "b"), "0.2.0");
+        assert_eq!(locked_version(root, "dep"), "1.0.0");
+    }
+}
