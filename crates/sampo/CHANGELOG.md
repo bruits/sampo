@@ -1,5 +1,19 @@
 # sampo
 
+## 0.22.0 — 2026-10-09
+
+### Minor changes
+
+- [e976f8a](https://github.com/bruits/sampo/commit/e976f8a2089ffe94ee9bf508c0b6f1df5e0f108e) In Python (PyPI) projects, added support for the `Private :: Do Not Upload` classifier, which marks a package as not publishable. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [7b1c740](https://github.com/bruits/sampo/commit/7b1c7408ae6bdba13fb0054a9a369d9525d65758) In Rust (Cargo) projects, fixed `sampo release` and `sampo pre` upgrading every dependency in `Cargo.lock`: they now only update the workspace's own crates. — Thanks @goulvenclech!
+- [5649fd6](https://github.com/bruits/sampo/commit/5649fd6db9269595dd1a2ff612f0f4555726c86b) Fixed interactive prompts (`sampo add`, `sampo pre`, `sampo update`) leaving the terminal cursor hidden after Ctrl-C. Previously the cursor stayed hidden until running `reset`. — Thanks @goulvenclech!
+- [d192f28](https://github.com/bruits/sampo/commit/d192f28242f872dddcbe317b8954a52520fa9a63) Fixed "Updated dependencies" changelog entries dropping the npm scope (`@scope/`) or the Maven group ID (`groupId/`) from dependency names. — Thanks @goulvenclech!
+- [eb74474](https://github.com/bruits/sampo/commit/eb7447483a0d2ef5ba57a324dd78dac351a98c06) In JavaScript/TypeScript (npm) projects, fixed `sampo publish` failing when a package's `devDependencies` include a non-publishable workspace package or close a dependency cycle. — Thanks @davidroeca!
+- Updated dependencies: sampo-core (Cargo)@0.18.0
+
 ## 0.21.0 — 2026-08-20
 
 ### Minor changes

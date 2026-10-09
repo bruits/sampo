@@ -1,5 +1,11 @@
 # sampo-github-bot
 
+## 0.4.12 — 2026-10-09
+
+### Patch changes
+
+- Updated dependencies: sampo-core (Cargo)@0.18.0
+
 ## 0.4.11 — 2026-08-20
 
 ### Patch changes

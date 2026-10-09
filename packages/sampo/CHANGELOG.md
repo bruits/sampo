@@ -1,5 +1,12 @@
 # sampo
 
+## 0.22.0 — 2026-10-09
+
+### Patch changes
+
+- [eda3c06](https://github.com/bruits/sampo/commit/eda3c06a246430106cf0c05eb3bca2856d7e71dd) Changed `sampo` to print `sampo: binary received signal <SIGNAL>` and exit with status 128 plus the signal number when its native binary is killed by a signal. — Thanks @pjonsson!
+- Updated dependencies: @bruits/sampo-darwin-arm64 (npm)@0.22.0, @bruits/sampo-darwin-x64 (npm)@0.22.0, @bruits/sampo-linux-arm64 (npm)@0.22.0, @bruits/sampo-linux-x64 (npm)@0.22.0, @bruits/sampo-win32-x64 (npm)@0.22.0
+
 ## 0.21.0 — 2026-08-20
 
 ### Minor changes
