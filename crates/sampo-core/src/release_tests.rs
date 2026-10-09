@@ -1442,6 +1442,22 @@ tempfile = "3.0"
     }
 
     #[test]
+    fn formats_dependency_updates_keeping_slashes_that_belong_to_the_name() {
+        let updates = build_dependency_updates(&[
+            ("@scope/single-kind".to_string(), "1.1.0".to_string()),
+            ("@scope/mixed-kinds (npm)".to_string(), "1.2.0".to_string()),
+            ("npm/@scope/canonical".to_string(), "1.3.0".to_string()),
+            ("com.example/app (Maven)".to_string(), "2.0.0".to_string()),
+        ]);
+        let msg = format_dependency_updates_message(&updates).unwrap();
+        assert_eq!(
+            msg,
+            "Updated dependencies: @scope/single-kind@1.1.0, @scope/mixed-kinds (npm)@1.2.0, \
+             @scope/canonical@1.3.0, com.example/app (Maven)@2.0.0"
+        );
+    }
+
+    #[test]
     fn builds_dependency_updates_from_tuples() {
         let tuples = vec![
             ("pkg1".to_string(), "1.2.0".to_string()),
@@ -2094,6 +2110,96 @@ bar = { version = "1.0.0", path = "crates/bar" }
         // pkg-b 1.0.0 -> 1.1.0 violates `~1.0.0` (1.0.x only) on pkg-a; the
         // fixed group must hard-error rather than rewrite the manifest.
         assert_constraint_violation_blocks(run_release(root, true));
+    }
+
+    #[test]
+    fn fixed_group_releases_scoped_npm_carriers_and_rewrites_the_shim_pins() {
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let carriers = ["@bruits/sampo-linux-x64", "@bruits/sampo-win32-x64"];
+        let carrier_dir = |carrier: &str| {
+            root.join("packages")
+                .join(carrier.trim_start_matches("@bruits/"))
+        };
+        let read_json = |path: &std::path::Path| -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+        };
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("crates/sampo/src")).unwrap();
+        fs::write(
+            root.join("crates/sampo/Cargo.toml"),
+            "[package]\nname = \"sampo\"\nversion = \"0.21.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/sampo/src/lib.rs"), "").unwrap();
+
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("packages/sampo")).unwrap();
+        fs::write(
+            root.join("packages/sampo/package.json"),
+            r#"{
+  "name": "sampo",
+  "version": "0.21.0",
+  "optionalDependencies": {
+    "@bruits/sampo-linux-x64": "0.21.0",
+    "@bruits/sampo-win32-x64": "0.21.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+        for carrier in carriers {
+            fs::create_dir_all(carrier_dir(carrier)).unwrap();
+            fs::write(
+                carrier_dir(carrier).join("package.json"),
+                format!(r#"{{"name":"{carrier}","version":"0.21.0"}}"#),
+            )
+            .unwrap();
+        }
+
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"cargo/sampo\", \
+             \"npm/sampo\", \"npm/@bruits/sampo-linux-x64\", \"npm/@bruits/sampo-win32-x64\"]]\n",
+        )
+        .unwrap();
+        TestWorkspace::write_changeset_to_dir(
+            &root.join(".sampo/changesets"),
+            &["cargo/sampo"],
+            Bump::Minor,
+            "feat: a CLI change",
+        );
+
+        run_release(root, false).unwrap();
+
+        let shim = read_json(&root.join("packages/sampo/package.json"));
+        assert_eq!(shim["version"], "0.22.0");
+        for carrier in carriers {
+            assert_eq!(shim["optionalDependencies"][carrier], "0.22.0", "{carrier}");
+            assert_eq!(
+                read_json(&carrier_dir(carrier).join("package.json"))["version"],
+                "0.22.0"
+            );
+        }
+        let changelog = fs::read_to_string(root.join("packages/sampo/CHANGELOG.md")).unwrap();
+        assert!(
+            changelog.contains(
+                "Updated dependencies: @bruits/sampo-linux-x64 (npm)@0.22.0, \
+                 @bruits/sampo-win32-x64 (npm)@0.22.0"
+            ),
+            "{changelog}"
+        );
     }
 
     #[test]
