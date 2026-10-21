@@ -270,6 +270,8 @@ pub fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
 /// - Packages bumped due to internal dependency updates ("Updated dependencies: ...")
 /// - Packages bumped due to fixed dependency group policy ("Bumped due to fixed dependency group policy")
 ///
+/// Returns no explanations when `changelog.show_automatic_entries` is disabled.
+///
 /// # Arguments
 /// * `changesets` - The changesets being processed
 /// * `workspace` - The workspace containing all packages
@@ -285,6 +287,9 @@ pub fn detect_all_dependency_explanations(
     releases: &BTreeMap<String, (String, String)>,
 ) -> Result<BTreeMap<String, Vec<(String, ChangelogCategory)>>> {
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
+    if !config.changelog_show_automatic_entries {
+        return Ok(messages_by_pkg);
+    }
     let include_kind = workspace.has_multiple_package_kinds();
 
     // 1. Detect packages bumped due to fixed dependency group policy
@@ -2195,6 +2200,11 @@ fn apply_releases(
         fs::write(&manifest_path, updated)?;
 
         let messages = messages_by_pkg.get(name).cloned().unwrap_or_default();
+        // With automatic entries hidden, a package bumped only to follow others has nothing
+        // to say, and an empty section would read as a release with no changes.
+        if messages.is_empty() && !cfg.changelog_show_automatic_entries {
+            continue;
+        }
         update_changelog(
             &info.path,
             &info.name,
@@ -2470,7 +2480,9 @@ fn split_intro_and_versions(body: &str) -> (&str, &str) {
     (body, "")
 }
 
-fn header_matches_release_version(header_text: &str, version: &str) -> bool {
+/// Whether a changelog `## ` heading text (without the `## ` prefix) is the section for
+/// `version`, with or without a release date suffix.
+pub fn header_matches_release_version(header_text: &str, version: &str) -> bool {
     if header_text == version {
         return true;
     }

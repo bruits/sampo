@@ -18,3 +18,6 @@ repository = "owner/repo"
 show_commit_hash = true
 # Whether to include author acknowledgments in changelog entries (default: true)
 show_acknowledgments = true
+# Whether to include entries for packages bumped without a changeset, such as
+# "Updated dependencies: ..." (default: true)
+show_automatic_entries = true

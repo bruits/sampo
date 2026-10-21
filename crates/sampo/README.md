@@ -209,6 +209,8 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `show_release_date`: Whether to append a release date to each changelog heading (default: `true`).
 
+`show_automatic_entries`: Whether to include the entries Sampo writes for packages bumped without a changeset, such as "Updated dependencies: ..." or "Bumped due to fixed dependency group policy" (default: `true`). When disabled, those packages are still bumped, but a release with no other entry adds no changelog section, and the release pull request opened by the GitHub Action lists them in a collapsed block.
+
 `release_date_format`: [`chrono` strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) pattern used for the heading date (default: `%Y-%m-%d`).
 
 `release_date_timezone`: Optional timezone for the stamp. Accepts `local`, `UTC`, numeric offsets such as `+02:00`, or any IANA name (for example, `Europe/Paris`).

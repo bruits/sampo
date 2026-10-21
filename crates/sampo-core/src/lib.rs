@@ -40,8 +40,8 @@ pub use release::{
     build_dependency_updates, bump_version, create_dependency_update_entry,
     create_fixed_dependency_policy_entry, create_structural_version_coupling_entry,
     detect_all_dependency_explanations, detect_fixed_dependency_policy_packages,
-    format_dependency_updates_message, infer_bump_from_versions, run_release,
-    run_stabilize_release,
+    format_dependency_updates_message, header_matches_release_version, infer_bump_from_versions,
+    run_release, run_stabilize_release,
 };
 pub use types::{
     Bump, ChangelogCategory, ConstraintCheckResult, ConstraintViolation, DependencyUpdate,

@@ -1312,6 +1312,75 @@ tempfile = "3.0"
     }
 
     #[test]
+    fn hidden_automatic_entries_skip_changelogs_but_still_bump() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("core", "1.0.0")
+            .add_crate("cli", "1.0.0")
+            .add_crate("other", "1.0.0")
+            .add_dependency("cli", "core", "1.0.0")
+            .set_config(
+                "[changelog]\nshow_automatic_entries = false\n\n[packages]\nfixed = [[\"core\", \"cli\", \"other\"]]\n",
+            )
+            .add_existing_changelog("other", "# other\n\n## 1.0.0\n\n### Patch changes\n\n- Old entry\n")
+            .add_changeset(&["core"], Bump::Minor, "feat: core feature");
+
+        let output = workspace.run_release(false).unwrap();
+
+        let released: BTreeSet<&str> = output
+            .released_packages
+            .iter()
+            .map(|pkg| pkg.identifier.as_str())
+            .collect();
+        assert_eq!(
+            released,
+            BTreeSet::from(["cargo/cli", "cargo/core", "cargo/other"])
+        );
+        workspace.assert_crate_version("core", "1.1.0");
+        workspace.assert_crate_version("cli", "1.1.0");
+        workspace.assert_crate_version("other", "1.1.0");
+        workspace.assert_dependency_version("cli", "core", "1.1.0");
+
+        let core_changelog = workspace.read_changelog("core");
+        assert!(core_changelog.contains("## 1.1.0"));
+        assert!(core_changelog.contains("- feat: core feature"));
+
+        assert!(
+            !workspace.crates["cli"].join("CHANGELOG.md").exists(),
+            "cli changelog should not be created, but was:\n{}",
+            workspace.read_changelog("cli")
+        );
+        assert_eq!(
+            workspace.read_changelog("other"),
+            "# other\n\n## 1.0.0\n\n### Patch changes\n\n- Old entry\n"
+        );
+    }
+
+    #[test]
+    fn hidden_automatic_entries_keep_changeset_entries() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency("a", "b", "0.1.0")
+            .set_config("[changelog]\nshow_automatic_entries = false\n")
+            .add_changeset(&["a"], Bump::Minor, "feat: a adds new feature")
+            .add_changeset(&["b"], Bump::Patch, "fix: b bug fix");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("a", "0.2.0");
+        workspace.assert_dependency_version("a", "b", "0.1.1");
+        let changelog = workspace.read_changelog("a");
+        assert!(changelog.contains("## 0.2.0"));
+        assert!(changelog.contains("- feat: a adds new feature"));
+        assert!(
+            !changelog.contains("Updated dependencies"),
+            "unexpected automatic entry in:\n{changelog}"
+        );
+    }
+
+    #[test]
     fn package_with_both_changeset_and_dependency_update() {
         // Test case: package has its own changeset AND gets dependency updates
         let mut workspace = TestWorkspace::new();
