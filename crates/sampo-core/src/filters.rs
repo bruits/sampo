@@ -219,6 +219,47 @@ mod tests {
     }
 
     #[test]
+    fn ignore_unpublished_skips_crate_inheriting_publish_false() {
+        use crate::types::PackageKind;
+        use std::fs;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\npublish = false\n",
+        )
+        .unwrap();
+        let crate_dir = root.join("crates/app");
+        fs::create_dir_all(&crate_dir).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"1.0.0\"\npublish.workspace = true\n",
+        )
+        .unwrap();
+
+        let info = PackageInfo {
+            name: "app".into(),
+            identifier: "cargo/app".into(),
+            version: "1.0.0".into(),
+            path: crate_dir,
+            internal_deps: BTreeSet::new(),
+            internal_dev_deps: BTreeSet::new(),
+            kind: PackageKind::Cargo,
+        };
+        let ws = Workspace {
+            root: root.to_path_buf(),
+            members: vec![info.clone()],
+        };
+        let cfg = Config {
+            ignore_unpublished: true,
+            ..Default::default()
+        };
+
+        assert!(should_ignore_package(&cfg, &ws, &info).unwrap());
+    }
+
+    #[test]
     fn wildcard_match_edge_cases() {
         // Empty pattern matches empty text
         assert!(wildcard_match("", ""));
