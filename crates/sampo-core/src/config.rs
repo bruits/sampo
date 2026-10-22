@@ -12,6 +12,18 @@ pub const DEFAULT_TAG_FORMAT: &str = "{package_name}-v{version}";
 /// Used by packages selected via `git.short_tags` (Packagist requires `vX.Y.Z`).
 pub const DEFAULT_SHORT_TAGS_FORMAT: &str = "v{version}";
 
+/// How changelogs render the entries Sampo writes for packages bumped by other packages
+/// ("Updated dependencies: ...", fixed group policy, structural coupling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutomaticEntries {
+    /// Each release lists its automatic entries.
+    #[default]
+    List,
+    /// Releases keep only their changeset entries, and consecutive releases with nothing
+    /// else share one section noting the version bump.
+    Collapse,
+}
+
 /// Configuration for Sampo
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -21,9 +33,7 @@ pub struct Config {
     pub changelog_show_commit_hash: bool,
     pub changelog_show_acknowledgments: bool,
     pub changelog_show_release_date: bool,
-    /// Whether changelogs get the entries Sampo writes on its own for packages bumped by
-    /// a dependency update or a fixed group, rather than by a changeset.
-    pub changelog_show_automatic_entries: bool,
+    pub changelog_automatic_entries: AutomaticEntries,
     pub changelog_release_date_format: String,
     pub changelog_release_date_timezone: Option<String>,
     /// Custom tags for changelog categorization (e.g., "Added", "Fixed", "Changed").
@@ -49,7 +59,7 @@ impl Default for Config {
             changelog_show_commit_hash: true,
             changelog_show_acknowledgments: true,
             changelog_show_release_date: true,
-            changelog_show_automatic_entries: true,
+            changelog_automatic_entries: AutomaticEntries::default(),
             changelog_release_date_format: "%Y-%m-%d".to_string(),
             changelog_release_date_timezone: None,
             changesets_tags: Vec::new(),
@@ -111,10 +121,19 @@ impl Config {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let changelog_show_automatic_entries = changelog_table
-            .and_then(|t| t.get("show_automatic_entries"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let changelog_automatic_entries =
+            match changelog_table.and_then(|t| t.get("automatic_entries")) {
+                Some(value) => match value.as_str() {
+                    Some("list") => AutomaticEntries::List,
+                    Some("collapse") => AutomaticEntries::Collapse,
+                    _ => {
+                        return Err(SampoError::Config(
+                            "changelog.automatic_entries must be \"list\" or \"collapse\"".into(),
+                        ));
+                    }
+                },
+                None => AutomaticEntries::default(),
+            };
 
         let changelog_release_date_format = changelog_table
             .and_then(|t| t.get("release_date_format"))
@@ -349,7 +368,7 @@ impl Config {
             changelog_show_commit_hash,
             changelog_show_acknowledgments,
             changelog_show_release_date,
-            changelog_show_automatic_entries,
+            changelog_automatic_entries,
             changelog_release_date_format,
             changelog_release_date_timezone,
             changesets_tags,
@@ -445,7 +464,7 @@ mod tests {
         assert!(config.changelog_show_commit_hash);
         assert!(config.changelog_show_acknowledgments);
         assert!(config.changelog_show_release_date);
-        assert!(config.changelog_show_automatic_entries);
+        assert_eq!(config.changelog_automatic_entries, AutomaticEntries::List);
         assert_eq!(config.changelog_release_date_format, "%Y-%m-%d");
         assert!(config.changelog_release_date_timezone.is_none());
         assert!(config.changesets_tags.is_empty());
@@ -461,7 +480,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nshow_release_date = false\nshow_automatic_entries = false\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
+            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nshow_release_date = false\nautomatic_entries = \"collapse\"\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
         )
         .unwrap();
 
@@ -469,11 +488,32 @@ mod tests {
         assert!(!config.changelog_show_commit_hash);
         assert!(!config.changelog_show_acknowledgments);
         assert!(!config.changelog_show_release_date);
-        assert!(!config.changelog_show_automatic_entries);
+        assert_eq!(
+            config.changelog_automatic_entries,
+            AutomaticEntries::Collapse
+        );
         assert_eq!(config.changelog_release_date_format, "%d/%m/%Y");
         assert_eq!(
             config.changelog_release_date_timezone.as_deref(),
             Some("+02:30")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_automatic_entries_value() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[changelog]\nautomatic_entries = \"hide\"\n",
+        )
+        .unwrap();
+
+        let err = Config::load(temp.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("changelog.automatic_entries must be \"list\" or \"collapse\""),
+            "unexpected error: {err}"
         );
     }
 

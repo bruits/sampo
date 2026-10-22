@@ -958,8 +958,8 @@ fn tag_is_prerelease_with_config(tag: &str, config: Option<&SampoConfig>) -> boo
 /// Extract the section that follows the `##` heading for `version` until the next `##` or EOF.
 ///
 /// The leading heading itself is stripped because the GitHub release title already
-/// conveys the version. Returns `None` when no section matches `version` (a release with
-/// only hidden automatic entries writes none), so the previous release's notes are not reused.
+/// conveys the version. A collapsed range heading (`1.0.0 ... 1.2.0`) matches every version
+/// it spans. Returns `None` when no section matches, so another release's notes are not reused.
 fn extract_changelog_section(path: &Path, version: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut collecting = false;
@@ -1675,9 +1675,33 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("CHANGELOG.md");
-        fs::write(&file, "# my-crate\n\n## 1.9.0 — 2023-12-01\n\n- Previous").unwrap();
+        fs::write(
+            &file,
+            "# my-crate\n\n## 1.0.0-rc.1 — 2023-12-02\n\n- Candidate\n\n## 0.9.0 — 2023-12-01\n\n- Previous",
+        )
+        .unwrap();
 
-        assert_eq!(extract_changelog_section(&file, "2.0.0"), None);
+        assert_eq!(extract_changelog_section(&file, "1.0.0"), None);
+    }
+
+    #[test]
+    fn test_extract_changelog_section_for_version_inside_collapsed_range() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("CHANGELOG.md");
+        let content = "# my-crate\n\n## 1.3.0 — 2024-06-20\n\n### Minor changes\n\n- New feature\n\n## 1.0.1 ... 1.2.0 — 2024-06-19\n\nVersion bump only, to follow other packages.\n\n## 1.0.0\n\n- Initial";
+        fs::write(&file, content).unwrap();
+
+        assert_eq!(
+            extract_changelog_section(&file, "1.1.0").as_deref(),
+            Some("Version bump only, to follow other packages.")
+        );
+        assert_eq!(
+            extract_changelog_section(&file, "1.3.0").as_deref(),
+            Some("### Minor changes\n\n- New feature")
+        );
     }
 
     #[test]

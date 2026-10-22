@@ -1312,58 +1312,83 @@ tempfile = "3.0"
     }
 
     #[test]
-    fn hidden_automatic_entries_skip_changelogs_but_still_bump() {
+    fn collapsed_automatic_entries_share_one_section_per_run_of_bumps() {
+        const BUMP_ONLY: &str = "Version bump only, to follow other packages.";
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("core", "1.0.0")
             .add_crate("cli", "1.0.0")
             .add_crate("other", "1.0.0")
             .add_dependency("cli", "core", "1.0.0")
+            // A format without specifiers renders as-is, keeping the headings deterministic.
             .set_config(
-                "[changelog]\nshow_automatic_entries = false\n\n[packages]\nfixed = [[\"core\", \"cli\", \"other\"]]\n",
+                "[changelog]\nautomatic_entries = \"collapse\"\nrelease_date_format = \"DATE\"\n\n[packages]\nfixed = [[\"core\", \"cli\", \"other\"]]\n",
             )
-            .add_existing_changelog("other", "# other\n\n## 1.0.0\n\n### Patch changes\n\n- Old entry\n")
-            .add_changeset(&["core"], Bump::Minor, "feat: core feature");
+            .add_existing_changelog("other", "# other\n\n## 1.0.0\n\n### Patch changes\n\n- Old entry\n");
+        let old_entry = "## 1.0.0\n\n### Patch changes\n\n- Old entry\n";
 
+        workspace.add_changeset(&["core"], Bump::Minor, "feat: one");
         let output = workspace.run_release(false).unwrap();
-
-        let released: BTreeSet<&str> = output
-            .released_packages
-            .iter()
-            .map(|pkg| pkg.identifier.as_str())
-            .collect();
-        assert_eq!(
-            released,
-            BTreeSet::from(["cargo/cli", "cargo/core", "cargo/other"])
-        );
-        workspace.assert_crate_version("core", "1.1.0");
-        workspace.assert_crate_version("cli", "1.1.0");
+        assert_eq!(output.released_packages.len(), 3);
         workspace.assert_crate_version("other", "1.1.0");
         workspace.assert_dependency_version("cli", "core", "1.1.0");
-
-        let core_changelog = workspace.read_changelog("core");
-        assert!(core_changelog.contains("## 1.1.0"));
-        assert!(core_changelog.contains("- feat: core feature"));
-
-        assert!(
-            !workspace.crates["cli"].join("CHANGELOG.md").exists(),
-            "cli changelog should not be created, but was:\n{}",
-            workspace.read_changelog("cli")
+        assert_eq!(
+            workspace.read_changelog("cli"),
+            format!("# cli\n\n## 1.1.0 — DATE\n\n{BUMP_ONLY}\n\n")
         );
         assert_eq!(
             workspace.read_changelog("other"),
-            "# other\n\n## 1.0.0\n\n### Patch changes\n\n- Old entry\n"
+            format!("# other\n\n## 1.1.0 — DATE\n\n{BUMP_ONLY}\n\n{old_entry}")
+        );
+
+        workspace.add_changeset(&["core"], Bump::Patch, "fix: two");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("other", "1.1.1");
+        assert_eq!(
+            workspace.read_changelog("other"),
+            format!("# other\n\n## 1.1.0 ... 1.1.1 — DATE\n\n{BUMP_ONLY}\n\n{old_entry}")
+        );
+
+        workspace.add_changeset(&["other"], Bump::Patch, "fix: three");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("other", "1.1.2");
+        assert_eq!(
+            workspace.read_changelog("other"),
+            format!(
+                "# other\n\n## 1.1.2 — DATE\n\n### Patch changes\n\n- fix: three\n\n## 1.1.0 ... 1.1.1 — DATE\n\n{BUMP_ONLY}\n\n{old_entry}"
+            )
+        );
+        assert!(
+            workspace
+                .read_changelog("core")
+                .starts_with(&format!(
+                    "# core\n\n## 1.1.2 — DATE\n\n{BUMP_ONLY}\n\n## 1.1.1 — DATE\n\n### Patch changes\n\n- fix: two\n\n"
+                )),
+            "unexpected core changelog:\n{}",
+            workspace.read_changelog("core")
+        );
+
+        workspace.add_changeset(&["core"], Bump::Patch, "fix: four");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("other", "1.1.3");
+        assert_eq!(
+            workspace.read_changelog("other"),
+            format!(
+                "# other\n\n## 1.1.3 — DATE\n\n{BUMP_ONLY}\n\n## 1.1.2 — DATE\n\n### Patch changes\n\n- fix: three\n\n## 1.1.0 ... 1.1.1 — DATE\n\n{BUMP_ONLY}\n\n{old_entry}"
+            )
         );
     }
 
     #[test]
-    fn hidden_automatic_entries_keep_changeset_entries() {
+    fn collapsed_automatic_entries_keep_only_changeset_entries() {
         let mut workspace = TestWorkspace::new();
         workspace
             .add_crate("a", "0.1.0")
             .add_crate("b", "0.1.0")
             .add_dependency("a", "b", "0.1.0")
-            .set_config("[changelog]\nshow_automatic_entries = false\n")
+            .set_config(
+                "[changelog]\nautomatic_entries = \"collapse\"\nshow_release_date = false\n",
+            )
             .add_changeset(&["a"], Bump::Minor, "feat: a adds new feature")
             .add_changeset(&["b"], Bump::Patch, "fix: b bug fix");
 
@@ -1371,12 +1396,9 @@ tempfile = "3.0"
 
         workspace.assert_crate_version("a", "0.2.0");
         workspace.assert_dependency_version("a", "b", "0.1.1");
-        let changelog = workspace.read_changelog("a");
-        assert!(changelog.contains("## 0.2.0"));
-        assert!(changelog.contains("- feat: a adds new feature"));
-        assert!(
-            !changelog.contains("Updated dependencies"),
-            "unexpected automatic entry in:\n{changelog}"
+        assert_eq!(
+            workspace.read_changelog("a"),
+            "# a\n\n## 0.2.0\n\n### Minor changes\n\n- feat: a adds new feature\n\n"
         );
     }
 

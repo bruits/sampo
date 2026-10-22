@@ -18,6 +18,7 @@ repository = "owner/repo"
 show_commit_hash = true
 # Whether to include author acknowledgments in changelog entries (default: true)
 show_acknowledgments = true
-# Whether to include entries for packages bumped without a changeset, such as
-# "Updated dependencies: ..." (default: true)
-show_automatic_entries = true
+# How to render entries for packages bumped by other packages, such as
+# "Updated dependencies: ..." (default: "list")
+# "collapse" keeps one section per run of releases with nothing else
+automatic_entries = "list"

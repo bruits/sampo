@@ -4,7 +4,7 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    AcknowledgmentStyle, Config, PublishExtraArgs, PublishOutput,
+    AcknowledgmentStyle, AutomaticEntries, Config, PublishExtraArgs, PublishOutput,
     detect_all_dependency_explanations, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
     run_publish as core_publish, run_release as core_release,
@@ -226,8 +226,9 @@ pub fn build_release_pr_body(
     output.push_str(" When you're ready to do a release, you can merge this and the packages will be published automatically. ");
     output.push_str("Not ready yet? Just keep adding changesets to the default branch, and this PR will stay up to date.\n\n");
 
-    // Packages bumped without changelog entries, collapsed so they don't bury the real ones.
-    let mut without_entries: Vec<String> = Vec::new();
+    // Packages bumped only to follow others, listed compactly so they don't bury the real
+    // entries, as their changelogs do in collapse mode.
+    let mut bump_only: Vec<String> = Vec::new();
 
     // Deterministic crate order by name
     let mut crate_ids: Vec<_> = releases.keys().cloned().collect();
@@ -235,10 +236,10 @@ pub fn build_release_pr_body(
     for identifier in crate_ids {
         let (fallback_name, old_version, new_version) = &releases[&identifier];
         let pretty_name = display_label_for_release(&ws, &identifier, include_kind, fallback_name);
-        if !config.changelog_show_automatic_entries
+        if config.changelog_automatic_entries == AutomaticEntries::Collapse
             && messages_by_pkg.get(&identifier).is_none_or(Vec::is_empty)
         {
-            without_entries.push(format!(
+            bump_only.push(format!(
                 "{} {} -> {}",
                 pretty_name, old_version, new_version
             ));
@@ -279,7 +280,7 @@ pub fn build_release_pr_body(
         }
     }
 
-    append_packages_without_entries(&mut output, &without_entries);
+    append_bump_only_packages(&mut output, &bump_only);
 
     Ok(output)
 }
@@ -342,8 +343,8 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
     }
 }
 
-/// Append a collapsed list of the packages bumped without changelog entries, if any
-fn append_packages_without_entries(output: &mut String, packages: &[String]) {
+/// Append a collapsed list of the packages bumped only to follow other packages, if any
+fn append_bump_only_packages(output: &mut String, packages: &[String]) {
     if packages.is_empty() {
         return;
     }
@@ -353,7 +354,7 @@ fn append_packages_without_entries(output: &mut String, packages: &[String]) {
         "packages"
     };
     output.push_str(&format!(
-        "<details>\n<summary>{} {} bumped with no changelog entries</summary>\n\n",
+        "<details>\n<summary>{} {} bumped only to follow other packages</summary>\n\n",
         packages.len(),
         noun
     ));
@@ -656,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hidden_automatic_entries_collapse_packages_in_pr_body() {
+    fn test_collapsed_automatic_entries_in_pr_body() {
         let _branch = EnvVarGuard::set_branch("main");
         use std::fs;
         let temp = tempfile::tempdir().unwrap();
@@ -685,7 +686,7 @@ mod tests {
         fs::create_dir_all(sampo_dir.join("changesets")).unwrap();
         fs::write(
             sampo_dir.join("config.toml"),
-            "[changelog]\nshow_automatic_entries = false\n\n[packages]\nfixed = [[\"a\", \"b\", \"c\"]]\n",
+            "[changelog]\nautomatic_entries = \"collapse\"\n\n[packages]\nfixed = [[\"a\", \"b\", \"c\"]]\n",
         )
         .unwrap();
         fs::write(
@@ -705,7 +706,7 @@ mod tests {
         );
         assert!(
             pr_body.ends_with(
-                "<details>\n<summary>2 packages bumped with no changelog entries</summary>\n\n- b 1.0.0 -> 1.1.0\n- c 1.0.0 -> 1.1.0\n\n</details>\n"
+                "<details>\n<summary>2 packages bumped only to follow other packages</summary>\n\n- b 1.0.0 -> 1.1.0\n- c 1.0.0 -> 1.1.0\n\n</details>\n"
             ),
             "unexpected PR body:\n{pr_body}"
         );
