@@ -112,7 +112,6 @@ The action supports the following inputs:
 - `dry-run`: if `true`, simulates changes without writing or publishing (default: `false`).
 - `working-directory`: path to workspace root (defaults to `GITHUB_WORKSPACE`).
 - `cargo-token`: crates.io API token for Cargo packages; when set, exported as `CARGO_REGISTRY_TOKEN`.
-- `npm-token`: npm API token for npm packages, or uses `.npmrc` if not set. When provided, it is exported as `NPM_TOKEN` for use by npm/pnpm/yarn/bun during publish.
 - `args`: extra flags forwarded to **all** ecosystem publish commands via `sampo publish -- …`.
 - `cargo-args`: extra arguments forwarded only to `cargo publish`.
 - `npm-args`: extra arguments forwarded only to npm/pnpm/yarn/bun publish.
@@ -134,4 +133,6 @@ The action supports the following inputs:
 
 ## Development
 
-Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#sampo-github-action) for development setup and workflow details.
+The composite action in `action.yml` runs this crate's binary, which shells out to git and calls the GitHub API, so it needs credentials and a clean git workspace. Integration tests simulate a repository in temporary directories, but a full run expects GitHub Actions (its `GITHUB_TOKEN`, a checked-out repository, and sometimes `cargo-binstall`). Testing a change often means pushing a branch to a test repository and watching a real workflow run, and help to make this easier is welcome.
+
+Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#getting-started) for development setup and workflow details.

@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com)), and more [coming soon](https://github.com/bruits/sampo/issues/104).
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
@@ -286,4 +286,6 @@ To our knowledge, no other tool automates versioning, changelogs, and publishing
 
 ## Development
 
-Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#sampo) for development setup and workflow details.
+The CLI wires its commands with [`clap`](https://docs.rs/clap/latest/clap/) and its prompts with [`dialoguer`](https://docs.rs/dialoguer/latest/dialoguer/), so a change to a prompt's choices or flow needs a try by hand. Building it with `cargo build -p sampo`, then running `<repository>/target/debug/sampo init` in a scratch repository, is the quickest check of the `.sampo` layout, the release flow, and any text users read.
+
+Refer to [CONTRIBUTING.md](https://github.com/bruits/sampo/blob/main/CONTRIBUTING.md#getting-started) for development setup and workflow details.
