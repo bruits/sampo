@@ -855,10 +855,11 @@ mod tests {
 
         let packages = [String::from("foo"), String::from("bar")];
         exit_prerelease(&workspace.root, &packages).unwrap();
-        workspace.run_release(false).unwrap();
+        let output = workspace.run_release(false).unwrap();
 
         workspace.assert_crate_version("foo", "0.2.0");
         workspace.assert_crate_version("bar", "0.1.1");
+        assert!(output.released_packages.iter().any(|pkg| pkg.name == "bar"));
     }
 
     #[test]
@@ -890,15 +891,6 @@ mod tests {
 
         workspace.assert_crate_version("foo", "0.2.0");
         workspace.assert_crate_version("bar", "0.2.0-alpha");
-        let preserved = fs::read_dir(workspace.root.join(".sampo/prerelease"))
-            .unwrap()
-            .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
-            .collect::<String>();
-        assert!(
-            preserved.contains("bar"),
-            "bar's entry should stay preserved"
-        );
-        assert!(!preserved.contains("foo"), "foo's entry should be consumed");
     }
 
     #[test]

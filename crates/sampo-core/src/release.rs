@@ -607,7 +607,8 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         )? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
-                // Exited packages' entries belong to their first stable release, even alongside pre-releases.
+                // Exited packages lose their pre-release marker in this release, so their
+                // preserved entries must ship with it.
                 if !preserved_changesets.is_empty()
                     && (!is_prerelease_preview
                         || !all_preserved_targets_in_prerelease(&preserved_changesets, &workspace)?)
