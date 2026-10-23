@@ -211,25 +211,11 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `show_release_date`: Whether to append a release date to each changelog heading (default: `true`).
 
-`automatic_entries`: How to render the entries Sampo writes for packages bumped by other packages, such as "Updated dependencies: ..." or "Bumped due to fixed dependency group policy" (default: `"list"`). With `"list"`, each release lists them. With `"collapse"`, releases keep only their changeset entries, and consecutive releases with nothing else share one section, updated in place, whose heading spans their versions:
-
-```md
-## 1.2.0 — 2026-10-22
-
-### Minor changes
-
-- Added a feature.
-
-## 1.0.1 ... 1.1.0 — 2026-10-15
-
-Version bump only, to follow other packages.
-```
-
-In `"collapse"` mode, the release pull request opened by the GitHub Action lists these packages in a collapsed block.
-
 `release_date_format`: [`chrono` strftime](https://docs.rs/chrono/latest/chrono/format/strftime/index.html) pattern used for the heading date (default: `%Y-%m-%d`).
 
 `release_date_timezone`: Optional timezone for the stamp. Accepts `local`, `UTC`, numeric offsets such as `+02:00`, or any IANA name (for example, `Europe/Paris`).
+
+`automatic_entries`: How to render the entries Sampo writes for packages bumped by other packages, such as "Updated dependencies" (default: `"list"`). With `"collapse"`, releases keep only their changeset entries, and consecutive releases with nothing else share one section, headed by their version range (for example, `## 1.0.1 ... 1.1.0`) and the latest release date.
 
 ### `[packages]` section
 

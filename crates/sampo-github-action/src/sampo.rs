@@ -124,13 +124,12 @@ pub fn run_stabilize_release(
 /// Compute a markdown PR body summarizing the pending release by crate,
 /// grouping changes by semantic bump type, and showing old -> new versions.
 ///
-/// This function builds the PR body using stdout from `sampo release --dry-run`
-/// to infer planned crate version changes, and reads changesets for change messages.
-///
 /// # Arguments
 /// * `workspace` - Path to the workspace root
-/// * `plan_stdout` - Output from `sampo release --dry-run`
+/// * `releases` - Planned releases
 /// * `config` - Configuration reference to use for dependency policies and GitHub settings
+/// * `include_preserved` - Whether the plan also used the changesets preserved by pre-releases,
+///   as stabilization does
 ///
 /// # Returns
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
@@ -138,13 +137,18 @@ pub fn build_release_pr_body(
     workspace: &Path,
     releases: &BTreeMap<String, (String, String, String)>,
     config: &Config,
+    include_preserved: bool,
 ) -> Result<String> {
     if releases.is_empty() {
         return Ok(String::new());
     }
 
     let changesets_dir = workspace.join(".sampo").join("changesets");
-    let changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
+    let mut changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
+    if include_preserved {
+        let prerelease_dir = workspace.join(".sampo").join("prerelease");
+        changesets.extend(load_changesets(&prerelease_dir, &config.changesets_tags)?);
+    }
 
     // Load workspace for dependency explanations
     let ws = discover_workspace(workspace).map_err(|e| ActionError::SampoCommandFailed {
@@ -167,7 +171,9 @@ pub fn build_release_pr_body(
         for (pkg_spec, bump, tag) in &cs.entries {
             let identifier = resolve_specifier_identifier(&ws, pkg_spec)?;
             if releases.contains_key(&identifier) {
-                let commit_hash = get_commit_hash_for_path(workspace, &cs.path);
+                // A pre-release moved preserved changesets, so look them up where they were added.
+                let added_at = changesets_dir.join(cs.path.file_name().unwrap_or_default());
+                let commit_hash = get_commit_hash_for_path(workspace, &added_at);
                 let enriched = if let Some(hash) = commit_hash {
                     // This branch is rewritten on every push, so crediting someone
                     // must not subscribe them to it.
@@ -515,7 +521,7 @@ mod tests {
         let plan = capture_release_plan(root).unwrap();
         assert!(plan.has_changes);
         let config = Config::default();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
 
         // Should contain dependency update information for package a
         assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
@@ -580,7 +586,7 @@ mod tests {
         let plan = capture_release_plan(root).unwrap();
         assert!(plan.has_changes);
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
 
         // Should contain information for both packages with same version
         assert!(pr_body.contains("## a 1.0.0 -> 2.0.0"));
@@ -646,7 +652,7 @@ mod tests {
         let plan = capture_release_plan(root).unwrap();
         assert!(plan.has_changes);
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
 
         println!("PR Body:\n{}", pr_body);
 
@@ -700,7 +706,7 @@ mod tests {
 
         let plan = capture_release_plan(root).unwrap();
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
 
         assert!(
             pr_body.contains(
@@ -717,6 +723,89 @@ mod tests {
         assert!(!pr_body.contains("## c "));
         assert!(!pr_body.contains("Updated dependencies"));
         assert!(!pr_body.contains("Bumped due to fixed dependency group policy"));
+    }
+
+    #[test]
+    fn test_stabilize_pr_body_includes_preserved_changesets() {
+        let _branch = EnvVarGuard::set_branch("main");
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+        let a_dir = root.join("crates/a");
+        fs::create_dir_all(a_dir.join("src")).unwrap();
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"0.2.0-alpha.2\"\n",
+        )
+        .unwrap();
+        fs::write(a_dir.join("src/lib.rs"), "").unwrap();
+
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(sampo_dir.join("changesets")).unwrap();
+        fs::create_dir_all(sampo_dir.join("prerelease")).unwrap();
+        fs::write(
+            sampo_dir.join("config.toml"),
+            "[changelog]\nshow_acknowledgments = false\n",
+        )
+        .unwrap();
+        fs::write(
+            sampo_dir.join("changesets/a-minor.md"),
+            "---\na: minor\n---\n\nfeat: a adds new feature\n",
+        )
+        .unwrap();
+
+        let commit = |message: &str| {
+            crate::git::git(&["add", "-A"], Some(root)).unwrap();
+            crate::git::git(
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-qm",
+                    message,
+                ],
+                Some(root),
+            )
+            .unwrap();
+            let output = std::process::Command::new("git")
+                .args(["rev-parse", "--short=7", "HEAD"])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        crate::git::git(&["init", "-q"], Some(root)).unwrap();
+        let added = commit("add changeset");
+        fs::rename(
+            sampo_dir.join("changesets/a-minor.md"),
+            sampo_dir.join("prerelease/a-minor.md"),
+        )
+        .unwrap();
+        let moved = commit("pre-release");
+
+        let plan = capture_stabilize_plan(root).unwrap();
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, true).unwrap();
+
+        assert!(
+            pr_body.contains("## a 0.2.0-alpha.2 -> 0.2.0\n\n### Minor changes\n\n- "),
+            "unexpected PR body:\n{pr_body}"
+        );
+        assert!(pr_body.contains("feat: a adds new feature"));
+        assert!(pr_body.contains(&added));
+        assert!(!pr_body.contains(&moved));
     }
 
     #[test]
@@ -767,7 +856,7 @@ mod tests {
 
         // Build PR body from the structured plan
         let config = Config::load(root).unwrap_or_default();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
 
         // Ensure PR body uses the changelog layout
         assert!(pr_body.contains("## example 0.1.0 -> 0.2.0"));

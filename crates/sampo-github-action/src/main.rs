@@ -532,7 +532,7 @@ fn prepare_release_pr(
     // Build PR body BEFORE running release (release will consume changesets)
     let pr_body = {
         // Load configuration for dependency explanations
-        let body = sampo::build_release_pr_body(workspace, releases, repo_config)?;
+        let body = sampo::build_release_pr_body(workspace, releases, repo_config, false)?;
         if body.trim().is_empty() {
             println!("No applicable package changes for PR body. Skipping PR creation.");
             return Ok(false);
@@ -645,7 +645,7 @@ fn prepare_stabilize_pr(
     }
 
     let pr_body = {
-        let body = sampo::build_release_pr_body(workspace, &plan.releases, repo_config)?;
+        let body = sampo::build_release_pr_body(workspace, &plan.releases, repo_config, true)?;
         if body.trim().is_empty() {
             println!("No applicable package changes for stabilize PR body. Skipping PR creation.",);
             git::git(
