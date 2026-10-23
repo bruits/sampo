@@ -4,11 +4,13 @@
 
 The following versions of our projects are currently supported with security updates:
 
-| Package             | Version | Supported          |
-| ------------------- | ------- | ------------------ |
-| sampo               | 0.x.x   | :white_check_mark: |
-| sampo-github-bot    | 0.x.x   | :white_check_mark: |
-| sampo-github-action | 0.x.x   | :white_check_mark: |
+| Package                    | Version | Supported          |
+| -------------------------- | ------- | ------------------ |
+| sampo (on crates.io)       | 0.x.x   | :white_check_mark: |
+| sampo (on npm)             | 0.x.x   | :white_check_mark: |
+| sampo-core                 | 0.x.x   | :white_check_mark: |
+| sampo-github-bot           | 0.x.x   | :white_check_mark: |
+| sampo-github-action        | 0.x.x   | :white_check_mark: |
 
 ## What is a Security Vulnerability?
 

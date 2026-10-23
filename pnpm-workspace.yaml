@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+
+# Root scripts run cargo only. An install would write a pnpm-lock.yaml, which
+# Sampo's own release would then regenerate with a pnpm the runner lacks.
+verifyDepsBeforeRun: false
