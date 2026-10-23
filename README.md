@@ -9,6 +9,11 @@ Automate changelogs, versioning, and publishing—even for monorepos across mult
 
 Don't know where to start? Check out Sampo's [documentation](./crates/sampo/README.md) or join us on [Discord](https://discord.com/invite/84pd4QtmzA)!
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/workflow_dark.svg" />
+  <img alt="Sampo's release flow: sampo add describes your changes in a changeset, sampo release bumps versions and writes changelogs, and sampo publish publishes packages and tags the release on crates.io, npm, Hex, PyPI, Packagist, and Maven Central. Sampo's GitHub Action can run the last two from CI, through a release PR it publishes once merged" src="./.github/assets/workflow.svg" />
+</picture>
+
 ## Acknowledgements
 
 Sampo builds on the work of several open-source projects:
