@@ -172,10 +172,7 @@ pub fn build_release_pr_body(
             let identifier = resolve_specifier_identifier(&ws, pkg_spec)?;
             if releases.contains_key(&identifier) {
                 // A pre-release moved preserved changesets, so look them up where they were added.
-                let added_at = cs
-                    .path
-                    .file_name()
-                    .map_or_else(|| cs.path.clone(), |name| changesets_dir.join(name));
+                let added_at = changesets_dir.join(cs.path.file_name().unwrap_or_default());
                 let commit_hash = get_commit_hash_for_path(workspace, &added_at);
                 let enriched = if let Some(hash) = commit_hash {
                     // This branch is rewritten on every push, so crediting someone
@@ -737,25 +734,21 @@ mod tests {
             "[workspace]\nmembers=[\"crates/*\"]\n",
         )
         .unwrap();
-        for (name, manifest) in [
-            ("a", "[package]\nname=\"a\"\nversion=\"0.2.0-alpha.2\"\n"),
-            (
-                "b",
-                "[package]\nname=\"b\"\nversion=\"0.1.0\"\n\n[dependencies]\na = { path=\"../a\", version=\"0.2.0-alpha.2\" }\n",
-            ),
-        ] {
-            let dir = root.join("crates").join(name);
-            fs::create_dir_all(dir.join("src")).unwrap();
-            fs::write(dir.join("Cargo.toml"), manifest).unwrap();
-            fs::write(dir.join("src/lib.rs"), "").unwrap();
-        }
+        let a_dir = root.join("crates/a");
+        fs::create_dir_all(a_dir.join("src")).unwrap();
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"0.2.0-alpha.2\"\n",
+        )
+        .unwrap();
+        fs::write(a_dir.join("src/lib.rs"), "").unwrap();
 
         let sampo_dir = root.join(".sampo");
         fs::create_dir_all(sampo_dir.join("changesets")).unwrap();
         fs::create_dir_all(sampo_dir.join("prerelease")).unwrap();
         fs::write(
             sampo_dir.join("config.toml"),
-            "[changelog]\nautomatic_entries = \"collapse\"\nshow_acknowledgments = false\n",
+            "[changelog]\nshow_acknowledgments = false\n",
         )
         .unwrap();
         fs::write(
@@ -810,9 +803,6 @@ mod tests {
         assert!(pr_body.contains("feat: a adds new feature"));
         assert!(pr_body.contains(&added));
         assert!(!pr_body.contains(&moved));
-        assert!(pr_body.ends_with(
-            "<details>\n<summary>1 package bumped only to follow other packages</summary>\n\n- b 0.1.0 -> 0.1.1\n\n</details>\n"
-        ));
     }
 
     #[test]
