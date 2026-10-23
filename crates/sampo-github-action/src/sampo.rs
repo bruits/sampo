@@ -4,9 +4,9 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    AcknowledgmentStyle, AutomaticEntries, Config, PublishExtraArgs, PublishOutput,
-    detect_all_dependency_explanations, detect_github_repo_slug_with_config, discover_workspace,
-    enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    AcknowledgmentStyle, Acknowledgments, AutomaticEntries, Config, PublishExtraArgs,
+    PublishOutput, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
+    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
     run_publish as core_publish, run_release as core_release,
     run_stabilize_release as core_stabilize_release,
 };
@@ -180,7 +180,10 @@ pub fn build_release_pr_body(
                         config.changelog_show_commit_hash,
                         config
                             .changelog_show_acknowledgments
-                            .then_some(AcknowledgmentStyle::Link),
+                            .then_some(Acknowledgments {
+                                style: AcknowledgmentStyle::Link,
+                                excluded: &config.changelog_exclude_acknowledgments,
+                            }),
                     )
                 } else {
                     cs.message.clone()

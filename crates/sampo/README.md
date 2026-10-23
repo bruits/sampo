@@ -207,6 +207,8 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `show_acknowledgments`: Whether to include author acknowledgments in changelog entries (default: `true`). When enabled, changelog entries include author acknowledgments with special messages for first-time contributors.
 
+`exclude_acknowledgments`: GitHub usernames or Git author names to leave out of acknowledgments, matched case-insensitively (default: `[]`). Sampo thanks the Git author name when it can't resolve the GitHub username, so list both, e.g. `exclude_acknowledgments = ["octocat", "The Octocat"]`.
+
 `show_release_date`: Whether to append a release date to each changelog heading (default: `true`).
 
 `automatic_entries`: How to render the entries Sampo writes for packages bumped by other packages, such as "Updated dependencies: ..." or "Bumped due to fixed dependency group policy" (default: `"list"`). With `"list"`, each release lists them. With `"collapse"`, releases keep only their changeset entries, and consecutive releases with nothing else share one section, updated in place, whose heading spans their versions:

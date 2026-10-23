@@ -32,6 +32,7 @@ pub struct Config {
     pub github_repository: Option<String>,
     pub changelog_show_commit_hash: bool,
     pub changelog_show_acknowledgments: bool,
+    pub changelog_exclude_acknowledgments: Vec<String>,
     pub changelog_show_release_date: bool,
     pub changelog_automatic_entries: AutomaticEntries,
     pub changelog_release_date_format: String,
@@ -58,6 +59,7 @@ impl Default for Config {
             github_repository: None,
             changelog_show_commit_hash: true,
             changelog_show_acknowledgments: true,
+            changelog_exclude_acknowledgments: Vec::new(),
             changelog_show_release_date: true,
             changelog_automatic_entries: AutomaticEntries::default(),
             changelog_release_date_format: "%Y-%m-%d".to_string(),
@@ -115,6 +117,18 @@ impl Config {
             .and_then(|t| t.get("show_acknowledgments"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+
+        let changelog_exclude_acknowledgments = changelog_table
+            .and_then(|t| t.get("exclude_acknowledgments"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
 
         let changelog_show_release_date = changelog_table
             .and_then(|t| t.get("show_release_date"))
@@ -367,6 +381,7 @@ impl Config {
             github_repository,
             changelog_show_commit_hash,
             changelog_show_acknowledgments,
+            changelog_exclude_acknowledgments,
             changelog_show_release_date,
             changelog_automatic_entries,
             changelog_release_date_format,
@@ -463,6 +478,7 @@ mod tests {
         assert!(config.github_repository.is_none());
         assert!(config.changelog_show_commit_hash);
         assert!(config.changelog_show_acknowledgments);
+        assert!(config.changelog_exclude_acknowledgments.is_empty());
         assert!(config.changelog_show_release_date);
         assert_eq!(config.changelog_automatic_entries, AutomaticEntries::List);
         assert_eq!(config.changelog_release_date_format, "%Y-%m-%d");
@@ -480,13 +496,17 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nshow_release_date = false\nautomatic_entries = \"collapse\"\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
+            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nexclude_acknowledgments = [\"@octocat\", \" \", \"Jane Doe\"]\nshow_release_date = false\nautomatic_entries = \"collapse\"\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
         )
         .unwrap();
 
         let config = Config::load(temp.path()).unwrap();
         assert!(!config.changelog_show_commit_hash);
         assert!(!config.changelog_show_acknowledgments);
+        assert_eq!(
+            config.changelog_exclude_acknowledgments,
+            vec!["@octocat", "Jane Doe"]
+        );
         assert!(!config.changelog_show_release_date);
         assert_eq!(
             config.changelog_automatic_entries,
