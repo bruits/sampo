@@ -386,15 +386,9 @@ mod tests {
         workspace
             .run_release(false)
             .expect("initial pre-release should succeed");
+        workspace.assert_crate_version("foo", "2.0.0-alpha");
 
-        // Simulate stabilizing the version before the official release
-        let manifest = workspace
-            .crates
-            .get("foo")
-            .expect("crate should exist")
-            .join("Cargo.toml");
-        fs::write(&manifest, "[package]\nname=\"foo\"\nversion=\"1.0.0\"\n")
-            .expect("should rewrite manifest");
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
 
         workspace
             .run_release(false)
@@ -826,9 +820,10 @@ mod tests {
         exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
         let output = workspace.run_release(false).unwrap();
         assert!(!output.released_packages.is_empty());
+        workspace.assert_crate_version("foo", "1.1.0");
 
         let changelog = workspace.read_changelog("foo");
-        let stable = changelog.find("\n## ").expect("stable section");
+        let stable = changelog.find("\n## 1.1.0 ").expect("stable section");
         let alpha_1 = changelog
             .find("## 1.1.0-alpha.1")
             .expect("alpha.1 section should be kept");
@@ -840,6 +835,146 @@ mod tests {
             "unexpected changelog:\n{changelog}"
         );
         assert!(changelog[alpha_1..alpha].contains("- fix: alpha follow-up"));
+        assert!(changelog[stable..alpha_1].contains("- feat: alpha foundation"));
+
+        workspace.add_changeset(&["foo"], Bump::Patch, "fix: after the stable release");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("foo", "1.1.1");
+    }
+
+    #[test]
+    fn stable_release_after_exit_keeps_dependents_on_their_base() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.1.0-alpha");
+        workspace.add_crate("bar", "0.1.0-alpha");
+        workspace.add_dependency("bar", "foo", "0.1.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("foo", "0.2.0-alpha");
+        workspace.assert_crate_version("bar", "0.1.1-alpha");
+
+        let packages = [String::from("foo"), String::from("bar")];
+        exit_prerelease(&workspace.root, &packages).unwrap();
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("foo", "0.2.0");
+        workspace.assert_crate_version("bar", "0.1.1");
+    }
+
+    #[test]
+    fn stable_release_after_exit_applies_a_larger_bump() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "1.0.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+        workspace.run_release(false).unwrap();
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        workspace.add_changeset(&["foo"], Bump::Major, "breaking: stable redesign");
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("foo", "2.0.0");
+    }
+
+    #[test]
+    fn stable_release_after_partial_exit_leaves_prerelease_packages() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.1.0-alpha");
+        workspace.add_crate("bar", "0.1.0-alpha");
+        workspace.add_changeset(&["foo", "bar"], Bump::Minor, "feat: shared alpha");
+        workspace.run_release(false).unwrap();
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("foo", "0.2.0");
+        workspace.assert_crate_version("bar", "0.2.0-alpha");
+        let preserved = fs::read_dir(workspace.root.join(".sampo/prerelease"))
+            .unwrap()
+            .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect::<String>();
+        assert!(
+            preserved.contains("bar"),
+            "bar's entry should stay preserved"
+        );
+        assert!(!preserved.contains("foo"), "foo's entry should be consumed");
+    }
+
+    #[test]
+    fn prerelease_run_after_partial_exit_releases_exited_dependents_once() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.1.0-alpha");
+        workspace.add_crate("bar", "0.1.0-alpha");
+        workspace.add_dependency("foo", "bar", "0.1.0-alpha");
+        workspace.add_changeset(&["foo", "bar"], Bump::Minor, "feat: alpha foundation");
+        workspace.run_release(false).unwrap();
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        workspace.add_changeset(&["bar"], Bump::Patch, "fix: bar alpha");
+        let planned = workspace.run_release(true).unwrap().released_packages;
+        workspace.run_release(false).unwrap();
+
+        let planned = planned
+            .iter()
+            .map(|pkg| (pkg.name.as_str(), pkg.new_version.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(planned, [("bar", "0.2.0-alpha.1"), ("foo", "0.2.0")]);
+        workspace.assert_crate_version("foo", "0.2.0");
+        workspace.assert_crate_version("bar", "0.2.0-alpha.1");
+        let changelog = workspace.read_changelog("foo");
+        let alpha = changelog.find("\n## 0.2.0-alpha").unwrap();
+        assert!(
+            changelog[..alpha].contains("- feat: alpha foundation"),
+            "unexpected changelog:\n{changelog}"
+        );
+
+        exit_prerelease(&workspace.root, &[String::from("bar")]).unwrap();
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("bar", "0.2.0");
+        workspace.assert_crate_version("foo", "0.2.1");
+    }
+
+    #[test]
+    fn prerelease_run_after_partial_exit_releases_exited_group_members_once() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.1.0-alpha");
+        workspace.add_crate("bar", "0.1.0-alpha");
+        workspace.set_config("[packages]\nfixed = [[\"foo\", \"bar\"]]\n");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+        workspace.run_release(false).unwrap();
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        workspace.add_changeset(&["bar"], Bump::Patch, "fix: bar alpha");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("foo", "0.2.0");
+        let changelog = workspace.read_changelog("foo");
+        let alpha = changelog.find("\n## 0.2.0-alpha").unwrap();
+        assert!(changelog[..alpha].contains("- feat: alpha foundation"));
+
+        exit_prerelease(&workspace.root, &[String::from("bar")]).unwrap();
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("foo", "0.2.1");
+    }
+
+    #[test]
+    fn stabilize_after_partial_exit_keeps_exited_packages_on_their_base() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "0.1.0-alpha");
+        workspace.add_crate("bar", "0.1.0-alpha");
+        workspace.add_changeset(&["foo", "bar"], Bump::Minor, "feat: shared alpha");
+        workspace.run_release(false).unwrap();
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        run_stabilize_release(&workspace.root, false).unwrap();
+
+        workspace.assert_crate_version("foo", "0.2.0");
+        workspace.assert_crate_version("bar", "0.2.0");
     }
 
     #[test]

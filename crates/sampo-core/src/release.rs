@@ -607,7 +607,11 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
         )? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
-                if !is_prerelease_preview && !preserved_changesets.is_empty() {
+                // Exited packages' entries belong to their first stable release, even alongside pre-releases.
+                if !preserved_changesets.is_empty()
+                    && (!is_prerelease_preview
+                        || !all_preserved_targets_in_prerelease(&preserved_changesets, &workspace)?)
+                {
                     using_preserved = true;
                 } else {
                     cached_plan_state = Some(plan);
@@ -1979,6 +1983,8 @@ fn prepare_release_plan(
                 .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
             let newv = if stabilize && !parsed.pre.is_empty() {
                 stabilize_version_from_parsed(&parsed, *bump)
+            } else if parsed.pre.is_empty() && exited_prerelease(info, &old)? {
+                stabilize_base(&parsed, *bump)
             } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
                 bump_prerelease_entry(&parsed, *bump)
             } else {
@@ -2272,13 +2278,16 @@ fn implied_prerelease_bump(version: &Version) -> std::result::Result<Bump, Strin
     if version.pre.is_empty() {
         return Err("Version does not contain a pre-release identifier".to_string());
     }
+    Ok(implied_base_bump(version))
+}
 
+fn implied_base_bump(version: &Version) -> Bump {
     if version.minor == 0 && version.patch == 0 {
-        Ok(Bump::Major)
+        Bump::Major
     } else if version.patch == 0 {
-        Ok(Bump::Minor)
+        Bump::Minor
     } else {
-        Ok(Bump::Patch)
+        Bump::Patch
     }
 }
 
@@ -2439,15 +2448,32 @@ fn stabilize_version_from_parsed(
         apply_base_bump(&mut version, bump)?;
         return Ok(version.to_string());
     }
-    let implied = implied_prerelease_bump(&version)?;
-    if bump > implied {
-        // The changeset requests a bump larger than what the prerelease base already encodes,
-        // so we need to apply the additional bump before stripping the suffix.
+    stabilize_base(&version, bump)
+}
+
+/// The base already encodes the cycle's bump; `bump` applies only beyond it.
+fn stabilize_base(parsed: &Version, bump: Bump) -> std::result::Result<String, String> {
+    let mut version = parsed.clone();
+    if bump > implied_base_bump(&version) {
         apply_base_bump(&mut version, bump)?;
     }
     version.pre = Prerelease::EMPTY;
     version.build = BuildMetadata::EMPTY;
     Ok(version.to_string())
+}
+
+/// `sampo pre exit` leaves the changelog on the pre-release cycle: a stable version whose top
+/// section is a pre-release of it is unreleased.
+fn exited_prerelease(info: &PackageInfo, version: &str) -> Result<bool> {
+    let path = info.path.join("CHANGELOG.md");
+    let changelog = match fs::read_to_string(&path) {
+        Ok(changelog) => changelog,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(SampoError::Io(io_error_with_path(err, &path))),
+    };
+    let (_, versions) = split_intro_and_versions(changelog.trim_start_matches('\u{feff}'));
+    Ok(split_top_section(versions)
+        .is_some_and(|(header_text, _, _)| header_is_prerelease_of(header_text, version)))
 }
 
 /// Bump a semver version string, including pre-release handling
