@@ -33,6 +33,23 @@ impl AcknowledgmentStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Acknowledgments<'a> {
+    pub style: AcknowledgmentStyle,
+    /// GitHub usernames or Git author names, matched case-insensitively.
+    pub excluded: &'a [String],
+}
+
+impl Acknowledgments<'_> {
+    fn excludes(&self, name: &str) -> bool {
+        let name = name.to_lowercase();
+        self.excluded.iter().any(|entry| {
+            let entry = entry.trim();
+            entry.strip_prefix('@').unwrap_or(entry).to_lowercase() == name
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubUserInfo {
     /// GitHub username (login)
@@ -150,7 +167,7 @@ pub fn enrich_changeset_message(
     repo_slug: Option<&str>,
     github_token: Option<&str>,
     show_commit_hash: bool,
-    acknowledgments: Option<AcknowledgmentStyle>,
+    acknowledgments: Option<Acknowledgments<'_>>,
 ) -> String {
     // Create a tokio runtime for this blocking call
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -176,7 +193,7 @@ async fn enrich_changeset_message_async(
     repo_slug: Option<&str>,
     github_token: Option<&str>,
     show_commit_hash: bool,
-    acknowledgments: Option<AcknowledgmentStyle>,
+    acknowledgments: Option<Acknowledgments<'_>>,
 ) -> String {
     let commit = get_commit_info_for_hash(workspace, commit_hash);
 
@@ -187,7 +204,9 @@ async fn enrich_changeset_message_async(
     };
 
     let acknowledgment_suffix = match acknowledgments {
-        Some(style) => build_acknowledgment_suffix(&commit, repo_slug, github_token, style).await,
+        Some(acknowledgments) => {
+            build_acknowledgment_suffix(&commit, repo_slug, github_token, acknowledgments).await
+        }
         None => String::new(),
     };
 
@@ -242,16 +261,23 @@ async fn build_acknowledgment_suffix(
     commit: &Option<CommitInfo>,
     repo_slug: Option<&str>,
     github_token: Option<&str>,
-    style: AcknowledgmentStyle,
+    acknowledgments: Acknowledgments<'_>,
 ) -> String {
     let Some(commit) = commit else {
         return String::new();
     };
+    if acknowledgments.excludes(&commit.author_name) {
+        return String::new();
+    }
+    let style = acknowledgments.style;
 
     // If we have both GitHub repo and token, try to get GitHub user info with first contribution detection
     if let (Some(slug), Some(token)) = (repo_slug, github_token)
         && let Some(github_user) = get_github_user_for_commit(slug, &commit.sha, token).await
     {
+        if acknowledgments.excludes(&github_user.login) {
+            return String::new();
+        }
         let handle = style.render(&github_user.login);
         return if github_user.is_first_contribution {
             format!(" — Thanks {handle} for your first contribution 🎉!")
@@ -265,6 +291,9 @@ async fn build_acknowledgment_suffix(
     if let Some(slug) = repo_slug
         && let Some(github_user) = get_github_user_for_commit_public(slug, &commit.sha).await
     {
+        if acknowledgments.excludes(&github_user.login) {
+            return String::new();
+        }
         return format!(" — Thanks {}!", style.render(&github_user.login));
     }
 
@@ -415,6 +444,11 @@ async fn github_api_get_public(url: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    const MENTION: Acknowledgments<'static> = Acknowledgments {
+        style: AcknowledgmentStyle::Mention,
+        excluded: &[],
+    };
+
     #[test]
     fn parse_github_url_https() {
         assert_eq!(
@@ -527,7 +561,7 @@ mod tests {
             Some("owner/repo"),
             None, // no GitHub token for this test
             true, // show commit hash
-            Some(AcknowledgmentStyle::Mention),
+            Some(MENTION),
         );
 
         // Should contain the commit hash link and author thanks
@@ -559,6 +593,22 @@ mod tests {
             plain, "fix: resolve critical bug",
             "Should be unchanged when features disabled"
         );
+
+        let excluded = ["test user".to_string()];
+        let unthanked = enrich_changeset_message(
+            "fix: resolve critical bug",
+            &commit_hash,
+            repo_path,
+            Some("owner/repo"),
+            None,
+            true,
+            Some(Acknowledgments {
+                excluded: &excluded,
+                ..MENTION
+            }),
+        );
+        assert!(unthanked.contains(&commit_hash[..8]));
+        assert!(!unthanked.contains("Thanks"));
     }
 
     #[test]
@@ -803,18 +853,12 @@ mod tests {
         });
 
         // Test without GitHub repo/token (should use Git author)
-        let result =
-            build_acknowledgment_suffix(&commit, None, None, AcknowledgmentStyle::Mention).await;
+        let result = build_acknowledgment_suffix(&commit, None, None, MENTION).await;
         assert_eq!(result, " — Thanks Local Developer!");
 
         // Test with empty commit
-        let result = build_acknowledgment_suffix(
-            &None,
-            Some("owner/repo"),
-            Some("token"),
-            AcknowledgmentStyle::Mention,
-        )
-        .await;
+        let result =
+            build_acknowledgment_suffix(&None, Some("owner/repo"), Some("token"), MENTION).await;
         assert_eq!(result, "");
     }
 
@@ -852,6 +896,19 @@ mod tests {
     }
 
     #[test]
+    fn exclusions_match_logins_and_names_case_insensitively() {
+        let excluded = ["@OctoCat".to_string(), " Jane Doe ".to_string()];
+        let acknowledgments = Acknowledgments {
+            excluded: &excluded,
+            ..MENTION
+        };
+        assert!(acknowledgments.excludes("octocat"));
+        assert!(acknowledgments.excludes("jane doe"));
+        assert!(!acknowledgments.excludes("octocat2"));
+        assert!(!acknowledgments.excludes("Jane"));
+    }
+
+    #[test]
     fn link_style_credits_without_mentioning() {
         assert_eq!(AcknowledgmentStyle::Mention.render("octocat"), "@octocat");
         assert_eq!(
@@ -869,18 +926,12 @@ mod tests {
         });
 
         // Test with repo_slug but no token (should try public API, fall back to Git author)
-        let result = build_acknowledgment_suffix(
-            &commit,
-            Some("invalid/repo"),
-            None,
-            AcknowledgmentStyle::Mention,
-        )
-        .await;
+        let result =
+            build_acknowledgment_suffix(&commit, Some("invalid/repo"), None, MENTION).await;
         assert_eq!(result, " — Thanks Test Author!");
 
         // Test with neither repo nor token
-        let result =
-            build_acknowledgment_suffix(&commit, None, None, AcknowledgmentStyle::Mention).await;
+        let result = build_acknowledgment_suffix(&commit, None, None, MENTION).await;
         assert_eq!(result, " — Thanks Test Author!");
     }
 
