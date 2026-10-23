@@ -19,7 +19,6 @@ show_commit_hash = true
 # Whether to include author acknowledgments in changelog entries (default: true)
 show_acknowledgments = true
 # GitHub usernames or Git author names to leave out of acknowledgments (default: [])
-# List both, as the Git author name is thanked when the username can't be resolved
 exclude_acknowledgments = []
 # How to render entries for packages bumped by other packages, such as
 # "Updated dependencies: ..." (default: "list")

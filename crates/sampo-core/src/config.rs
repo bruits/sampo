@@ -124,8 +124,7 @@ impl Config {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
                     .collect::<Vec<String>>()
             })
             .unwrap_or_default();
@@ -496,7 +495,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nexclude_acknowledgments = [\"@octocat\", \" \", \"Jane Doe\"]\nshow_release_date = false\nautomatic_entries = \"collapse\"\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
+            "[changelog]\nshow_commit_hash = false\nshow_acknowledgments = false\nexclude_acknowledgments = [\"@octocat\", \"Jane Doe\"]\nshow_release_date = false\nautomatic_entries = \"collapse\"\nrelease_date_format = \"%d/%m/%Y\"\nrelease_date_timezone = \"+02:30\"\n",
         )
         .unwrap();
 

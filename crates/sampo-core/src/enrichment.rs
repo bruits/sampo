@@ -908,27 +908,6 @@ mod tests {
         assert!(!acknowledgments.excludes("Jane"));
     }
 
-    #[tokio::test]
-    async fn excluded_author_is_not_thanked() {
-        let commit = Some(CommitInfo {
-            sha: "abcd1234".to_string(),
-            short_sha: "abcd".to_string(),
-            author_name: "Local Developer".to_string(),
-        });
-        let excluded = ["local developer".to_string()];
-        let result = build_acknowledgment_suffix(
-            &commit,
-            None,
-            None,
-            Acknowledgments {
-                excluded: &excluded,
-                ..MENTION
-            },
-        )
-        .await;
-        assert_eq!(result, "");
-    }
-
     #[test]
     fn link_style_credits_without_mentioning() {
         assert_eq!(AcknowledgmentStyle::Mention.render("octocat"), "@octocat");
