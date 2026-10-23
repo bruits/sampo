@@ -4,6 +4,9 @@ version = 1
 [git]
 tag_format = "{ecosystem}-{package_name}-v{version}"
 
+[changelog]
+automatic_entries = "collapse"
+
 [packages]
 fixed = [[
   "cargo/sampo",
