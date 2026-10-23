@@ -13,6 +13,7 @@ use crate::{
     config::{AutomaticEntries, Config},
     current_branch, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
+    publish::package_tag_exists,
 };
 use chrono::{DateTime, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
@@ -952,6 +953,7 @@ fn compute_plan_state(
     let releases = prepare_release_plan(
         &bump_by_pkg,
         workspace,
+        config,
         preserved_targets,
         stabilize,
         &direct_targets,
@@ -1374,9 +1376,9 @@ fn restore_stable_preserved_changesets(
     Ok(())
 }
 
-/// Filter preserved changesets in memory for the dry-run path, removing entries
-/// that target packages currently in prerelease. Drops changesets that become empty.
-fn filter_prerelease_entries(
+/// Keep, in memory, the preserved changeset entries whose package has left pre-release.
+/// Drops changesets that become empty.
+pub fn filter_prerelease_entries(
     changesets: Vec<ChangesetInfo>,
     workspace: &Workspace,
 ) -> Result<Vec<ChangesetInfo>> {
@@ -1964,6 +1966,7 @@ fn version_plan_error(
 fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
     ws: &Workspace,
+    config: &Config,
     preserved_targets: &BTreeSet<String>,
     stabilize: bool,
     direct_targets: &BTreeSet<String>,
@@ -1987,7 +1990,7 @@ fn prepare_release_plan(
                 .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
             let newv = if stabilize && !parsed.pre.is_empty() {
                 stabilize_version_from_parsed(&parsed, *bump)
-            } else if parsed.pre.is_empty() && exited_prerelease(info, &old)? {
+            } else if parsed.pre.is_empty() && exited_prerelease(ws, config, info, &old)? {
                 stabilize_base(&parsed, *bump)
             } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
                 bump_prerelease_entry(&parsed, *bump)
@@ -2467,8 +2470,13 @@ fn stabilize_base(parsed: &Version, bump: Bump) -> std::result::Result<String, S
 }
 
 /// `sampo pre exit` leaves the changelog on the pre-release cycle: a stable version whose top
-/// section is a pre-release of it is unreleased.
-fn exited_prerelease(info: &PackageInfo, version: &str) -> Result<bool> {
+/// section is a pre-release of it is unreleased, unless its tag exists.
+fn exited_prerelease(
+    ws: &Workspace,
+    config: &Config,
+    info: &PackageInfo,
+    version: &str,
+) -> Result<bool> {
     let path = info.path.join("CHANGELOG.md");
     let changelog = match fs::read_to_string(&path) {
         Ok(changelog) => changelog,
@@ -2476,8 +2484,15 @@ fn exited_prerelease(info: &PackageInfo, version: &str) -> Result<bool> {
         Err(err) => return Err(SampoError::Io(io_error_with_path(err, &path))),
     };
     let (_, versions) = split_intro_and_versions(changelog.trim_start_matches('\u{feff}'));
-    Ok(split_top_section(versions)
-        .is_some_and(|(header_text, _, _)| header_is_prerelease_of(header_text, version)))
+    if !split_top_section(versions)
+        .is_some_and(|(header_text, _, _)| header_is_prerelease_of(header_text, version))
+    {
+        return Ok(false);
+    }
+    // Shipped without `sampo release` writing its section.
+    Ok(!package_tag_exists(
+        &ws.root, config, info.kind, &info.name, version,
+    )?)
 }
 
 /// Bump a semver version string, including pre-release handling
