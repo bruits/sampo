@@ -321,25 +321,107 @@ fn run_cargo_dry_run(
 }
 
 fn read_manifest_publishable(manifest_path: &Path) -> Result<bool> {
-    let text = fs::read_to_string(manifest_path)
-        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
-    let value: toml::Value = toml::from_str(&text).map_err(|e| {
-        SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
-    })?;
-    Ok(manifest_allows_publish(&value))
+    let manifest = read_manifest_toml(manifest_path)?;
+    let workspace_root = inherited_publish_workspace_root(&manifest, manifest_path)?;
+    Ok(manifest_allows_publish(
+        &manifest,
+        workspace_root.as_ref(),
+        manifest_path,
+    )?)
 }
 
-/// Per `[package].publish`, Cargo forbids publishing only when the field is `false`
-/// or an empty list; a single alternative registry stays publishable.
-fn manifest_allows_publish(value: &toml::Value) -> bool {
-    let Some(pkg) = value.get("package").and_then(|v| v.as_table()) else {
-        return false;
+fn read_manifest_toml(manifest_path: &Path) -> Result<toml::Value> {
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+    toml::from_str(&text).map_err(|e| {
+        SampoError::InvalidData(format!("invalid TOML in {}: {e}", manifest_path.display()))
+    })
+}
+
+/// The workspace root manifest, read only when `[package].publish` inherits from it so
+/// checks on standalone manifests stay a single file read.
+///
+/// Locates the root from the `package.workspace` path when set, otherwise the nearest
+/// `Cargo.toml` with a `[workspace]` table, starting from the crate's own directory.
+/// Unlike Cargo, a `[workspace].exclude` covering the crate does not skip that root.
+fn inherited_publish_workspace_root(
+    manifest: &toml::Value,
+    manifest_path: &Path,
+) -> Result<Option<toml::Value>> {
+    let Some(pkg) = manifest.get("package") else {
+        return Ok(None);
     };
-    match pkg.get("publish") {
+    if !pkg.get("publish").is_some_and(is_workspace_inherited) {
+        return Ok(None);
+    }
+
+    let manifest_path = std::path::absolute(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
+    let Some(crate_dir) = manifest_path.parent() else {
+        return Ok(None);
+    };
+    if let Some(explicit_root) = pkg.get("workspace").and_then(toml::Value::as_str) {
+        let root_manifest = crate_dir.join(explicit_root).join(CARGO_MANIFEST);
+        return read_manifest_toml(&root_manifest).map(Some);
+    }
+    for dir in crate_dir.ancestors() {
+        let candidate = dir.join(CARGO_MANIFEST);
+        if !candidate.is_file() {
+            continue;
+        }
+        let value = read_manifest_toml(&candidate)?;
+        if value.get("workspace").is_some() {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a field uses `field.workspace = true` (or `field = { workspace = true }`).
+fn is_workspace_inherited(value: &toml::Value) -> bool {
+    value.get("workspace").and_then(toml::Value::as_bool) == Some(true)
+}
+
+/// The effective `[package].publish`, resolving `publish.workspace = true` to
+/// `[workspace.package].publish` in `workspace_root`. `None` when the field is absent.
+fn resolve_package_publish<'a>(
+    pkg: &'a toml::map::Map<String, toml::Value>,
+    workspace_root: Option<&'a toml::Value>,
+    manifest_path: &Path,
+) -> std::result::Result<Option<&'a toml::Value>, WorkspaceError> {
+    let Some(publish) = pkg.get("publish") else {
+        return Ok(None);
+    };
+    if !is_workspace_inherited(publish) {
+        return Ok(Some(publish));
+    }
+    workspace_root
+        .and_then(|root| root.get("workspace")?.get("package")?.get("publish"))
+        .map(Some)
+        .ok_or_else(|| {
+            WorkspaceError::InvalidManifest(format!(
+                "{}: publish.workspace = true requires workspace.package.publish",
+                manifest_path.display()
+            ))
+        })
+}
+
+/// Per the effective `[package].publish`, Cargo forbids publishing only when it is `false`
+/// or an empty list; a single alternative registry stays publishable.
+fn manifest_allows_publish(
+    manifest: &toml::Value,
+    workspace_root: Option<&toml::Value>,
+    manifest_path: &Path,
+) -> std::result::Result<bool, WorkspaceError> {
+    let Some(pkg) = manifest.get("package").and_then(|v| v.as_table()) else {
+        return Ok(false);
+    };
+    let allowed = match resolve_package_publish(pkg, workspace_root, manifest_path)? {
         Some(toml::Value::Boolean(false)) => false,
         Some(toml::Value::Array(arr)) => !arr.is_empty(),
         _ => true,
-    }
+    };
+    Ok(allowed)
 }
 
 /// The single alternative registry a crate publishes to, if any.
@@ -347,11 +429,15 @@ fn manifest_allows_publish(value: &toml::Value) -> bool {
 /// Mirrors Cargo's auto-selection: a lone non-crates.io entry is the target; an absent
 /// field, multiple registries, or an explicit `crates-io` all default to crates.io
 /// (`None`).
-fn manifest_publish_target(value: &toml::Value) -> Option<String> {
-    let arr = value
-        .get("package")
-        .and_then(|v| v.as_table())?
-        .get("publish")?
+fn manifest_publish_target(
+    manifest: &toml::Value,
+    workspace_root: Option<&toml::Value>,
+    manifest_path: &Path,
+) -> Option<String> {
+    let pkg = manifest.get("package")?.as_table()?;
+    let arr = resolve_package_publish(pkg, workspace_root, manifest_path)
+        .ok()
+        .flatten()?
         .as_array()?;
     let [only] = arr.as_slice() else {
         return None;
@@ -376,9 +462,9 @@ fn cargo_version_exists(
 }
 
 fn publish_target_registry(manifest_path: &Path) -> Option<String> {
-    let text = fs::read_to_string(manifest_path).ok()?;
-    let value: toml::Value = toml::from_str(&text).ok()?;
-    manifest_publish_target(&value)
+    let manifest = read_manifest_toml(manifest_path).ok()?;
+    let workspace_root = inherited_publish_workspace_root(&manifest, manifest_path).ok()?;
+    manifest_publish_target(&manifest, workspace_root.as_ref(), manifest_path)
 }
 
 /// Runs from the manifest directory so Cargo's config discovery walks up to the
@@ -1308,11 +1394,8 @@ fn resolve_package_version(
 ) -> std::result::Result<String, WorkspaceError> {
     match pkg.get("version") {
         Some(toml::Value::String(v)) => Ok(v.clone()),
-        Some(toml::Value::Table(t)) => {
-            if t.get("workspace")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
+        Some(v @ toml::Value::Table(_)) => {
+            if is_workspace_inherited(v) {
                 workspace_version.clone().ok_or_else(|| {
                     WorkspaceError::InvalidManifest(format!(
                         "{}: version.workspace = true requires workspace.package.version",
@@ -1387,7 +1470,8 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
             .to_string();
         let version = resolve_package_version(pkg, &workspace_version, &manifest_path)?;
         // A non-publishable, versionless crate is not a release target.
-        if version.is_empty() && !manifest_allows_publish(&value) {
+        if version.is_empty() && !manifest_allows_publish(&value, Some(&root_toml), &manifest_path)?
+        {
             continue;
         }
         name_to_path.insert(name.clone(), member_dir.clone());
