@@ -151,6 +151,26 @@ fn cargo_discover_keeps_non_publishable_versioned_crate() {
 }
 
 #[test]
+fn cargo_adapter_honours_inherited_publish_false() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\npublish = false\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app")).unwrap();
+    let manifest = root.join("crates/app/Cargo.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"app\"\nversion = \"1.0.0\"\npublish.workspace = true\n",
+    )
+    .unwrap();
+
+    assert!(!CargoAdapter.is_publishable(&manifest).unwrap());
+}
+
+#[test]
 fn cargo_discover_keeps_publishable_versionless_crate() {
     // Kept discovered so publish errors loudly rather than silently dropping it.
     let temp = tempfile::tempdir().unwrap();
@@ -1013,54 +1033,173 @@ mod range_constraint_preservation {
 mod private_registries {
     use super::*;
 
-    fn manifest(toml_src: &str) -> toml::Value {
-        toml::from_str(toml_src).unwrap()
+    fn allows_publish(toml_src: &str) -> bool {
+        let manifest: toml::Value = toml::from_str(toml_src).unwrap();
+        manifest_allows_publish(&manifest, None, Path::new("Cargo.toml")).unwrap()
+    }
+
+    fn publish_target(toml_src: &str) -> Option<String> {
+        let manifest: toml::Value = toml::from_str(toml_src).unwrap();
+        manifest_publish_target(&manifest, None, Path::new("Cargo.toml"))
+    }
+
+    /// Writes a workspace whose root declares `workspace_package` under `[workspace.package]`
+    /// and a member crate at `crates/app`, returning the member's manifest path.
+    fn write_inheriting_workspace(
+        root: &Path,
+        workspace_package: &str,
+        crate_package: &str,
+    ) -> PathBuf {
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\n{workspace_package}"
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("crates/app")).unwrap();
+        let manifest = root.join("crates/app/Cargo.toml");
+        fs::write(
+            &manifest,
+            format!("[package]\nname = \"app\"\n{crate_package}"),
+        )
+        .unwrap();
+        manifest
     }
 
     #[test]
     fn allows_publish_for_absent_field_and_true() {
-        assert!(manifest_allows_publish(&manifest(
-            "[package]\nname=\"a\"\nversion=\"0.1.0\"\n"
-        )));
-        assert!(manifest_allows_publish(&manifest(
+        assert!(allows_publish("[package]\nname=\"a\"\nversion=\"0.1.0\"\n"));
+        assert!(allows_publish(
             "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = true\n"
-        )));
+        ));
     }
 
     #[test]
     fn allows_publish_for_any_non_empty_registry_list() {
         for publish in ["[\"crates-io\"]", "[\"my-registry\"]", "[\"a\", \"b\"]"] {
             let src = format!("[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = {publish}\n");
-            assert!(
-                manifest_allows_publish(&manifest(&src)),
-                "publish = {publish}"
-            );
+            assert!(allows_publish(&src), "publish = {publish}");
         }
     }
 
     #[test]
     fn forbids_publish_for_false_or_empty_list() {
-        assert!(!manifest_allows_publish(&manifest(
+        assert!(!allows_publish(
             "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = false\n"
-        )));
-        assert!(!manifest_allows_publish(&manifest(
+        ));
+        assert!(!allows_publish(
             "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = []\n"
-        )));
+        ));
     }
 
     #[test]
     fn forbids_publish_without_package_section() {
-        assert!(!manifest_allows_publish(&manifest(
-            "[dependencies]\nserde = \"1\"\n"
-        )));
+        assert!(!allows_publish("[dependencies]\nserde = \"1\"\n"));
+    }
+
+    #[test]
+    fn inherited_publish_follows_workspace_package() {
+        for (workspace_publish, expected) in [
+            ("publish = false\n", false),
+            ("publish = []\n", false),
+            ("publish = true\n", true),
+            ("publish = [\"my-registry\"]\n", true),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let manifest = write_inheriting_workspace(
+                temp.path(),
+                workspace_publish,
+                "version = \"1.0.0\"\npublish.workspace = true\n",
+            );
+            assert_eq!(
+                CargoAdapter.is_publishable(&manifest).unwrap(),
+                expected,
+                "{workspace_publish:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn own_publish_ignores_workspace_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest =
+            write_inheriting_workspace(temp.path(), "publish = false\n", "version = \"1.0.0\"\n");
+        assert!(CargoAdapter.is_publishable(&manifest).unwrap());
+    }
+
+    #[test]
+    fn inherited_publish_without_workspace_value_is_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_inheriting_workspace(
+            temp.path(),
+            "version = \"1.0.0\"\n",
+            "version = \"1.0.0\"\npublish.workspace = true\n",
+        );
+        let err = CargoAdapter.is_publishable(&manifest).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("publish.workspace = true requires workspace.package.publish"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn inherited_publish_uses_explicit_workspace_path() {
+        // `package.workspace` points to a root that is not an ancestor of the crate.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("ws")).unwrap();
+        fs::write(
+            root.join("ws/Cargo.toml"),
+            "[workspace]\nmembers = [\"../app\"]\n\n[workspace.package]\npublish = false\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        let manifest = root.join("app/Cargo.toml");
+        fs::write(
+            &manifest,
+            "[package]\nname = \"app\"\nversion = \"1.0.0\"\nworkspace = \"../ws\"\npublish.workspace = true\n",
+        )
+        .unwrap();
+
+        assert!(!CargoAdapter.is_publishable(&manifest).unwrap());
+    }
+
+    #[test]
+    fn discover_skips_versionless_crate_inheriting_publish_false() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_inheriting_workspace(
+            temp.path(),
+            "publish = false\n",
+            "publish.workspace = true\n",
+        );
+
+        let packages = discover_cargo(temp.path()).unwrap();
+        assert!(packages.is_empty(), "{packages:?}");
+        assert!(!CargoAdapter.is_publishable(&manifest).unwrap());
+    }
+
+    #[test]
+    fn publish_target_follows_inherited_registry() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = write_inheriting_workspace(
+            temp.path(),
+            "publish = [\"my-registry\"]\n",
+            "version = \"1.0.0\"\npublish.workspace = true\n",
+        );
+        assert_eq!(
+            publish_target_registry(&manifest),
+            Some("my-registry".to_string())
+        );
     }
 
     #[test]
     fn publish_target_is_single_alternative_registry() {
         assert_eq!(
-            manifest_publish_target(&manifest(
+            publish_target(
                 "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = [\"my-registry\"]\n"
-            )),
+            ),
             Some("my-registry".to_string())
         );
     }
@@ -1072,11 +1211,7 @@ mod private_registries {
             "[package]\nname=\"a\"\nversion=\"0.1.0\"\npublish = [\"my-registry\", \"crates-io\"]\n",
             "[package]\nname=\"a\"\nversion=\"0.1.0\"\n",
         ] {
-            assert_eq!(
-                manifest_publish_target(&manifest(src)),
-                None,
-                "src = {src:?}"
-            );
+            assert_eq!(publish_target(src), None, "src = {src:?}");
         }
     }
 
