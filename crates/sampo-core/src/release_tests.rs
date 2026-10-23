@@ -863,6 +863,43 @@ mod tests {
     }
 
     #[test]
+    fn stable_release_after_exit_bumps_a_version_already_tagged() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "1.0.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+        workspace.run_release(false).unwrap();
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+
+        let tag = Config::load(&workspace.root).unwrap().build_tag_name(
+            PackageKind::Cargo,
+            "foo",
+            "1.1.0",
+        );
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "release"],
+            vec!["tag", tag.as_str()],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+                .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+                .args(["-c", "core.hooksPath=/dev/null"])
+                .args(&args)
+                .current_dir(&workspace.root)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        workspace.add_changeset(&["foo"], Bump::Patch, "fix: after the stable release");
+        workspace.run_release(false).unwrap();
+        // The alpha's minor changeset, still preserved, is applied again and outranks the patch.
+        workspace.assert_crate_version("foo", "1.2.0");
+    }
+
+    #[test]
     fn stable_release_after_exit_applies_a_larger_bump() {
         let mut workspace = TestWorkspace::new();
         let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");

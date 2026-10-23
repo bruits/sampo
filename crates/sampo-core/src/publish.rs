@@ -469,7 +469,7 @@ fn tag_conflict_hint(config: &Config, group: &[&PackageInfo]) -> String {
     }
 }
 
-fn package_tag_exists(
+pub(crate) fn package_tag_exists(
     repo_root: &Path,
     config: &Config,
     kind: PackageKind,

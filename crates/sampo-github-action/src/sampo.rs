@@ -6,9 +6,9 @@ use sampo_core::types::{
 use sampo_core::{
     AcknowledgmentStyle, Acknowledgments, AutomaticEntries, Config, PublishExtraArgs,
     PublishOutput, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, get_commit_hash_for_path, load_changesets,
-    run_publish as core_publish, run_release as core_release,
-    run_stabilize_release as core_stabilize_release,
+    discover_workspace, enrich_changeset_message, filter_prerelease_entries,
+    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
+    run_release as core_release, run_stabilize_release as core_stabilize_release,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -128,8 +128,8 @@ pub fn run_stabilize_release(
 /// * `workspace` - Path to the workspace root
 /// * `releases` - Planned releases
 /// * `config` - Configuration reference to use for dependency policies and GitHub settings
-/// * `include_preserved` - Whether the plan also used the changesets preserved by pre-releases,
-///   as stabilization does
+/// * `stabilize` - Whether the plan stabilizes pre-releases, which uses every preserved changeset,
+///   not only those of packages that left pre-release mode
 ///
 /// # Returns
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
@@ -137,17 +137,10 @@ pub fn build_release_pr_body(
     workspace: &Path,
     releases: &BTreeMap<String, (String, String, String)>,
     config: &Config,
-    include_preserved: bool,
+    stabilize: bool,
 ) -> Result<String> {
     if releases.is_empty() {
         return Ok(String::new());
-    }
-
-    let changesets_dir = workspace.join(".sampo").join("changesets");
-    let mut changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
-    if include_preserved {
-        let prerelease_dir = workspace.join(".sampo").join("prerelease");
-        changesets.extend(load_changesets(&prerelease_dir, &config.changesets_tags)?);
     }
 
     // Load workspace for dependency explanations
@@ -155,6 +148,18 @@ pub fn build_release_pr_body(
         operation: "workspace-discovery".into(),
         message: e.to_string(),
     })?;
+
+    let changesets_dir = workspace.join(".sampo").join("changesets");
+    let mut changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
+    let preserved = load_changesets(
+        &workspace.join(".sampo").join("prerelease"),
+        &config.changesets_tags,
+    )?;
+    if stabilize {
+        changesets.extend(preserved);
+    } else {
+        changesets.extend(filter_prerelease_entries(preserved, &ws)?);
+    }
     let include_kind = ws.has_multiple_package_kinds();
 
     // Group messages per canonical package id by category
@@ -806,6 +811,47 @@ mod tests {
         assert!(pr_body.contains("feat: a adds new feature"));
         assert!(pr_body.contains(&added));
         assert!(!pr_body.contains(&moved));
+    }
+
+    #[test]
+    fn test_release_pr_body_after_pre_exit_includes_preserved_changesets() {
+        let _branch = EnvVarGuard::set_branch("main");
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+        let a_dir = root.join("crates/a");
+        fs::create_dir_all(a_dir.join("src")).unwrap();
+        fs::write(
+            a_dir.join("Cargo.toml"),
+            "[package]\nname=\"a\"\nversion=\"0.1.0-alpha\"\n",
+        )
+        .unwrap();
+        fs::write(a_dir.join("src/lib.rs"), "").unwrap();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+        fs::write(
+            root.join(".sampo/changesets/a-minor.md"),
+            "---\na: minor\n---\n\nfeat: a adds new feature\n",
+        )
+        .unwrap();
+        core_release(root, false).unwrap();
+        sampo_core::exit_prerelease(root, &[String::from("a")]).unwrap();
+
+        let plan = capture_release_plan(root).unwrap();
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+
+        assert!(
+            pr_body.contains(
+                "## a 0.2.0 -> 0.2.0\n\n### Minor changes\n\n- feat: a adds new feature\n"
+            ),
+            "unexpected PR body:\n{pr_body}"
+        );
     }
 
     #[test]
