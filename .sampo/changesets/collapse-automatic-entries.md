@@ -4,7 +4,7 @@ cargo/sampo: minor
 cargo/sampo-github-action: minor
 ---
 
-Added the `automatic_entries` option to the `[changelog]` section. Set it to `"collapse"` to drop the entries Sampo writes for packages bumped by other packages ("Updated dependencies: ...", "Bumped due to fixed dependency group policy"), and give consecutive releases with nothing else one changelog section, whose heading spans their versions (`## 1.0.1 ... 1.1.0`).
+Added the `automatic_entries` option to the `[changelog]` section. With `"collapse"`, changelogs drop the entries Sampo writes for packages bumped by other packages (such as "Updated dependencies"), consecutive releases with nothing else share one section, and the release pull request folds those packages into a collapsed block.
 
 ```toml
 [changelog]
