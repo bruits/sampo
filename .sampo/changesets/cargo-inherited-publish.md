@@ -4,4 +4,4 @@ cargo/sampo-core: patch
 cargo/sampo-github-action: patch
 ---
 
-In Rust (Cargo) projects, fixed crates using `publish.workspace = true` being treated as publishable: Sampo now reads `publish` from the workspace root's `[workspace.package]`, so `sampo publish` and `ignore_unpublished` skip crates that inherit `publish = false`.
+In Rust (Cargo) projects, fixed `sampo publish` and `ignore_unpublished` ignoring `publish.workspace = true`: crates inheriting `publish = false` are now skipped, and crates inheriting an alternative registry are checked against it instead of crates.io.
