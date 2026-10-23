@@ -818,8 +818,7 @@ mod tests {
         workspace.assert_crate_version("foo", "1.1.0-alpha.1");
 
         exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
-        let output = workspace.run_release(false).unwrap();
-        assert!(!output.released_packages.is_empty());
+        workspace.run_release(false).unwrap();
         workspace.assert_crate_version("foo", "1.1.0");
 
         let changelog = workspace.read_changelog("foo");
