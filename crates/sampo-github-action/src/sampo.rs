@@ -4,7 +4,7 @@ use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    AcknowledgmentStyle, Config, PublishExtraArgs, PublishOutput,
+    AcknowledgmentStyle, AutomaticEntries, Config, PublishExtraArgs, PublishOutput,
     detect_all_dependency_explanations, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
     run_publish as core_publish, run_release as core_release,
@@ -226,12 +226,25 @@ pub fn build_release_pr_body(
     output.push_str(" When you're ready to do a release, you can merge this and the packages will be published automatically. ");
     output.push_str("Not ready yet? Just keep adding changesets to the default branch, and this PR will stay up to date.\n\n");
 
+    // Packages bumped only to follow others, listed compactly so they don't bury the real
+    // entries, as their changelogs do in collapse mode.
+    let mut bump_only: Vec<String> = Vec::new();
+
     // Deterministic crate order by name
     let mut crate_ids: Vec<_> = releases.keys().cloned().collect();
     crate_ids.sort();
     for identifier in crate_ids {
         let (fallback_name, old_version, new_version) = &releases[&identifier];
         let pretty_name = display_label_for_release(&ws, &identifier, include_kind, fallback_name);
+        if config.changelog_automatic_entries == AutomaticEntries::Collapse
+            && messages_by_pkg.get(&identifier).is_none_or(Vec::is_empty)
+        {
+            bump_only.push(format!(
+                "{} {} -> {}",
+                pretty_name, old_version, new_version
+            ));
+            continue;
+        }
         output.push_str(&format!(
             "## {} {} -> {}\n\n",
             pretty_name, old_version, new_version
@@ -266,6 +279,8 @@ pub fn build_release_pr_body(
             }
         }
     }
+
+    append_bump_only_packages(&mut output, &bump_only);
 
     Ok(output)
 }
@@ -326,6 +341,27 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
         }
         output.push('\n');
     }
+}
+
+/// Append a collapsed list of the packages bumped only to follow other packages, if any
+fn append_bump_only_packages(output: &mut String, packages: &[String]) {
+    if packages.is_empty() {
+        return;
+    }
+    let noun = if packages.len() == 1 {
+        "package"
+    } else {
+        "packages"
+    };
+    output.push_str(&format!(
+        "<details>\n<summary>{} {} bumped only to follow other packages</summary>\n\n",
+        packages.len(),
+        noun
+    ));
+    for package in packages {
+        output.push_str(&format_markdown_list_item(package));
+    }
+    output.push_str("\n</details>\n");
 }
 
 #[cfg(test)]
@@ -618,6 +654,66 @@ mod tests {
 
         // FIXED: Package 'a' should now have an explanation for the bump!
         assert!(pr_body.contains("Bumped due to fixed dependency group policy"));
+    }
+
+    #[test]
+    fn test_collapsed_automatic_entries_in_pr_body() {
+        let _branch = EnvVarGuard::set_branch("main");
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+        for (name, manifest) in [
+            ("a", "[package]\nname=\"a\"\nversion=\"1.0.0\"\n"),
+            (
+                "b",
+                "[package]\nname=\"b\"\nversion=\"1.0.0\"\n\n[dependencies]\na = { path=\"../a\", version=\"1.0.0\" }\n",
+            ),
+            ("c", "[package]\nname=\"c\"\nversion=\"1.0.0\"\n"),
+        ] {
+            let dir = root.join("crates").join(name);
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+            fs::write(dir.join("src/lib.rs"), "").unwrap();
+        }
+
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(sampo_dir.join("changesets")).unwrap();
+        fs::write(
+            sampo_dir.join("config.toml"),
+            "[changelog]\nautomatic_entries = \"collapse\"\n\n[packages]\nfixed = [[\"a\", \"b\", \"c\"]]\n",
+        )
+        .unwrap();
+        fs::write(
+            sampo_dir.join("changesets/a-minor.md"),
+            "---\na: minor\n---\n\nfeat: a adds new feature\n",
+        )
+        .unwrap();
+
+        let plan = capture_release_plan(root).unwrap();
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config).unwrap();
+
+        assert!(
+            pr_body.contains(
+                "## a 1.0.0 -> 1.1.0\n\n### Minor changes\n\n- feat: a adds new feature\n"
+            )
+        );
+        assert!(
+            pr_body.ends_with(
+                "<details>\n<summary>2 packages bumped only to follow other packages</summary>\n\n- b 1.0.0 -> 1.1.0\n- c 1.0.0 -> 1.1.0\n\n</details>\n"
+            ),
+            "unexpected PR body:\n{pr_body}"
+        );
+        assert!(!pr_body.contains("## b "));
+        assert!(!pr_body.contains("## c "));
+        assert!(!pr_body.contains("Updated dependencies"));
+        assert!(!pr_body.contains("Bumped due to fixed dependency group policy"));
     }
 
     #[test]

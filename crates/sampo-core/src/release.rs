@@ -10,7 +10,7 @@ use crate::types::{
 use crate::{
     AcknowledgmentStyle,
     changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
-    config::Config,
+    config::{AutomaticEntries, Config},
     current_branch, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
 };
@@ -21,6 +21,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Sole content of the changelog section for releases with only automatic entries, when
+/// `changelog.automatic_entries` is `"collapse"`.
+const VERSION_BUMP_ONLY_ENTRY: &str = "Version bump only, to follow other packages.";
+
+/// Joins the first and last version in the heading of a collapsed section.
+const VERSION_RANGE_SEPARATOR: &str = "...";
 
 /// Format dependency updates for changelog display
 ///
@@ -270,6 +277,8 @@ pub fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
 /// - Packages bumped due to internal dependency updates ("Updated dependencies: ...")
 /// - Packages bumped due to fixed dependency group policy ("Bumped due to fixed dependency group policy")
 ///
+/// Returns no explanations when `changelog.automatic_entries` is `"collapse"`.
+///
 /// # Arguments
 /// * `changesets` - The changesets being processed
 /// * `workspace` - The workspace containing all packages
@@ -285,6 +294,9 @@ pub fn detect_all_dependency_explanations(
     releases: &BTreeMap<String, (String, String)>,
 ) -> Result<BTreeMap<String, Vec<(String, ChangelogCategory)>>> {
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
+    if config.changelog_automatic_entries == AutomaticEntries::Collapse {
+        return Ok(messages_by_pkg);
+    }
     let include_kind = workspace.has_multiple_package_kinds();
 
     // 1. Detect packages bumped due to fixed dependency group policy
@@ -2202,6 +2214,7 @@ fn apply_releases(
             newv,
             &messages,
             release_date_display.as_deref(),
+            cfg.changelog_automatic_entries == AutomaticEntries::Collapse,
         )?;
     }
 
@@ -2470,20 +2483,71 @@ fn split_intro_and_versions(body: &str) -> (&str, &str) {
     (body, "")
 }
 
-fn header_matches_release_version(header_text: &str, version: &str) -> bool {
-    if header_text == version {
-        return true;
+/// Splits a changelog heading text (without the `## ` prefix) into the first and last
+/// version it covers: `1.2.0`, `1.2.0 — date`, or a collapsed `1.0.0 ... 1.2.0 — date`.
+fn heading_versions(header_text: &str) -> Option<(&str, &str)> {
+    let mut tokens = header_text.split_whitespace();
+    let first = tokens.next()?;
+    let mut next = tokens.next();
+    let mut last = first;
+    if next == Some(VERSION_RANGE_SEPARATOR) {
+        last = tokens.next()?;
+        next = tokens.next();
     }
-
-    header_text
-        .strip_prefix(version)
-        .map(|rest| {
-            let trimmed = rest.trim_start();
-            trimmed.is_empty() || trimmed.starts_with('—') || trimmed.starts_with('-')
-        })
-        .unwrap_or(false)
+    // Whatever follows the versions must be the release date.
+    match next {
+        Some(token) if !token.starts_with(['—', '-']) => None,
+        _ => Some((first, last)),
+    }
 }
 
+/// Whether a heading token names `version`, allowing a date glued to it. A glued `-` only
+/// counts as a date when a digit follows, so `1.0.0-rc.1` is not taken for `1.0.0`.
+fn heading_token_matches(token: &str, version: &str) -> bool {
+    match token.strip_prefix(version) {
+        Some("") => true,
+        Some(rest) => {
+            rest.starts_with('—')
+                || rest
+                    .strip_prefix('-')
+                    .is_some_and(|date| date.starts_with(|c: char| c.is_ascii_digit()))
+        }
+        None => false,
+    }
+}
+
+/// Whether a changelog `## ` heading text (without the `## ` prefix) is the section for
+/// `version`, with or without a release date suffix. A collapsed range heading
+/// (`1.0.0 ... 1.2.0`) is the section for every version it spans.
+pub fn header_matches_release_version(header_text: &str, version: &str) -> bool {
+    let Some((first, last)) = heading_versions(header_text) else {
+        return false;
+    };
+    if heading_token_matches(first, version) || heading_token_matches(last, version) {
+        return true;
+    }
+    first != last
+        && matches!(
+            (Version::parse(first), Version::parse(last), Version::parse(version)),
+            (Ok(first), Ok(last), Ok(version)) if first < version && version < last
+        )
+}
+
+/// Splits the first `## ` section off a changelog's versions part, returning its heading
+/// text, its body, and everything after it.
+fn split_top_section(versions: &str) -> Option<(&str, &str, &str)> {
+    let after_marker = versions.trim_start().strip_prefix("## ")?;
+    let header_end = after_marker.find('\n').unwrap_or(after_marker.len());
+    let after_header = &after_marker[header_end..];
+    let (body, remaining) = match after_header.find("\n## ") {
+        Some(pos) => after_header.split_at(pos + 1),
+        None => (after_header, ""),
+    };
+    Some((after_marker[..header_end].trim(), body, remaining))
+}
+
+/// With `collapse_version_bump_only`, a release without entries gets the version-bump-only
+/// line instead of an empty section, extending the latest section if it is one already.
 fn update_changelog(
     crate_dir: &Path,
     package: &str,
@@ -2491,6 +2555,7 @@ fn update_changelog(
     new_version: &str,
     entries: &[(String, ChangelogCategory)],
     release_date_display: Option<&str>,
+    collapse_version_bump_only: bool,
 ) -> Result<()> {
     let path = crate_dir.join("CHANGELOG.md");
     let existing = if path.exists() {
@@ -2501,7 +2566,7 @@ fn update_changelog(
     let cleaned = existing.trim_start_matches('\u{feff}');
     let (intro_part, versions_part) = split_intro_and_versions(cleaned);
     let mut intro = intro_part.to_string();
-    let mut versions_body = versions_part.to_string();
+    let mut versions_body = versions_part;
 
     if intro.trim().is_empty() {
         intro = format!("# {}\n\n", package);
@@ -2536,52 +2601,53 @@ fn update_changelog(
 
     // Parse and merge the current top section only if it's an unpublished section.
     // If header == old_version => preserve it (do not merge or strip).
-    let trimmed = versions_body.trim_start();
-    if trimmed.starts_with("## ") {
-        let mut lines_iter = trimmed.lines();
-        let header_line = lines_iter.next().unwrap_or("").trim();
-        let header_text = header_line.trim_start_matches("## ").trim();
-
-        let is_published_top = header_matches_release_version(header_text, old_version);
-
-        if !is_published_top {
-            let after_header_offset = header_line.len();
-            let rest_after_header = &trimmed[after_header_offset..];
-            let next_rel = rest_after_header.find("\n## ");
-            let (section_text, remaining) = match next_rel {
-                Some(pos) => {
-                    let end = after_header_offset + pos + 1;
-                    (&trimmed[..end], &trimmed[end..])
-                }
-                None => (trimmed, ""),
-            };
-
-            // Parse existing section headings - support both bump-based and custom tags
-            let mut current_heading: Option<String> = None;
-            for line in section_text.lines() {
-                let t = line.trim();
-                if t.starts_with("### ") {
-                    let heading_text = t.trim_start_matches("### ").trim();
-                    current_heading = Some(heading_text.to_string());
-                    continue;
-                }
-                if t.starts_with("- ")
-                    && let Some(ref heading) = current_heading
-                {
-                    let msg = t.trim_start_matches("- ").trim();
-                    push_unique_to_section(&mut sections, heading, msg);
-                }
+    if let Some((header_text, section_body, remaining)) = split_top_section(versions_body)
+        && !header_matches_release_version(header_text, old_version)
+    {
+        // Parse existing section headings - support both bump-based and custom tags
+        let mut current_heading: Option<String> = None;
+        for line in section_body.lines() {
+            let t = line.trim();
+            if t.starts_with("### ") {
+                let heading_text = t.trim_start_matches("### ").trim();
+                current_heading = Some(heading_text.to_string());
+                continue;
             }
-
-            versions_body = remaining.to_string();
+            if t.starts_with("- ")
+                && let Some(ref heading) = current_heading
+            {
+                let msg = t.trim_start_matches("- ").trim();
+                push_unique_to_section(&mut sections, heading, msg);
+            }
         }
+
+        versions_body = remaining;
+    }
+
+    let collapse = collapse_version_bump_only && sections.is_empty();
+    let mut heading_versions_label = new_version.to_string();
+    // Consecutive version-bump-only releases share one section, but only when it is the
+    // latest one, so a range never spans a release with real entries.
+    if collapse
+        && let Some((header_text, section_body, remaining)) = split_top_section(versions_body)
+        && section_body.trim() == VERSION_BUMP_ONLY_ENTRY
+        && let Some((first, last)) = heading_versions(header_text)
+        && last == old_version
+    {
+        heading_versions_label = format!("{first} {VERSION_RANGE_SEPARATOR} {new_version}");
+        versions_body = remaining;
     }
 
     // Build new aggregated top section
     let mut section = String::new();
     match release_date_display.and_then(|d| (!d.trim().is_empty()).then_some(d)) {
-        Some(date) => section.push_str(&format!("## {new_version} — {date}\n\n")),
-        None => section.push_str(&format!("## {new_version}\n\n")),
+        Some(date) => section.push_str(&format!("## {heading_versions_label} — {date}\n\n")),
+        None => section.push_str(&format!("## {heading_versions_label}\n\n")),
+    }
+
+    if collapse {
+        section.push_str(VERSION_BUMP_ONLY_ENTRY);
+        section.push_str("\n\n");
     }
 
     // When using bump-based sections (default), render in Major > Minor > Patch order.
@@ -2631,7 +2697,7 @@ fn update_changelog(
                 combined.push_str("\n\n");
             }
         }
-        combined.push_str(&versions_body);
+        combined.push_str(versions_body);
     }
 
     fs::write(&path, combined)?;
@@ -2675,6 +2741,7 @@ mod tests {
             "1.0.1",
             &entries,
             Some("2024-06-20"),
+            false,
         )
         .unwrap();
 
@@ -2702,7 +2769,16 @@ mod tests {
             "Initial release".to_string(),
             ChangelogCategory::Bump(Bump::Major),
         )];
-        update_changelog(crate_dir, "new-package", "0.1.0", "1.0.0", &entries, None).unwrap();
+        update_changelog(
+            crate_dir,
+            "new-package",
+            "0.1.0",
+            "1.0.0",
+            &entries,
+            None,
+            false,
+        )
+        .unwrap();
 
         let updated = fs::read_to_string(crate_dir.join("CHANGELOG.md")).unwrap();
         assert!(updated.starts_with("# new-package\n\n## 1.0.0"));
@@ -2720,6 +2796,31 @@ mod tests {
             "1.0.1 — 2024-06-20",
             "1.0.0"
         ));
+        assert!(!header_matches_release_version("1.0.0-rc.1", "1.0.0"));
+        assert!(!header_matches_release_version(
+            "1.0.0-rc.1 — 2024-06-20",
+            "1.0.0"
+        ));
+    }
+
+    #[test]
+    fn header_matches_release_version_covers_collapsed_ranges() {
+        let heading = "0.2.0 ... 0.4.0 — 2024-06-20";
+        for version in ["0.2.0", "0.3.1", "0.4.0-rc.1", "0.4.0"] {
+            assert!(
+                header_matches_release_version(heading, version),
+                "{version} should be in {heading}"
+            );
+        }
+        for version in ["0.1.9", "0.4.1", "0.2.0-rc.1"] {
+            assert!(
+                !header_matches_release_version(heading, version),
+                "{version} should not be in {heading}"
+            );
+        }
+        assert!(header_matches_release_version("0.2.0 ... 0.4.0", "0.3.0"));
+        assert!(!header_matches_release_version("0.2.0 ...", "0.2.0"));
+        assert!(!header_matches_release_version("0.2.0 to 0.4.0", "0.2.0"));
     }
 
     #[test]
@@ -2738,6 +2839,7 @@ mod tests {
             "0.1.1",
             &entries,
             Some("   "),
+            false,
         )
         .unwrap();
 

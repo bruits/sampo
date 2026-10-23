@@ -22,7 +22,7 @@ pub use changeset::{
     ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown,
     render_changeset_markdown_with_tags,
 };
-pub use config::Config;
+pub use config::{AutomaticEntries, Config};
 pub use enrichment::{
     AcknowledgmentStyle, CommitInfo, GitHubUserInfo, detect_github_repo_slug,
     detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
@@ -40,8 +40,8 @@ pub use release::{
     build_dependency_updates, bump_version, create_dependency_update_entry,
     create_fixed_dependency_policy_entry, create_structural_version_coupling_entry,
     detect_all_dependency_explanations, detect_fixed_dependency_policy_packages,
-    format_dependency_updates_message, infer_bump_from_versions, run_release,
-    run_stabilize_release,
+    format_dependency_updates_message, header_matches_release_version, infer_bump_from_versions,
+    run_release, run_stabilize_release,
 };
 pub use types::{
     Bump, ChangelogCategory, ConstraintCheckResult, ConstraintViolation, DependencyUpdate,
