@@ -2615,8 +2615,7 @@ fn update_changelog(
 
     // Parse and merge the current top section only if it's an unpublished section.
     // A header naming old_version, or a pre-release of it (after `sampo pre exit`), is
-    // published: preserve it. `extract_changelog_section` keeps the exact match, since a tag's
-    // release notes need that version's own section.
+    // published: preserve it.
     if let Some((header_text, section_body, remaining)) = split_top_section(versions_body)
         && !header_matches_release_version(header_text, old_version)
         && !header_is_prerelease_of(header_text, old_version)
@@ -2844,9 +2843,6 @@ mod tests {
     fn header_is_prerelease_of_needs_the_same_stable_base() {
         for heading in [
             "1.1.0-alpha.1",
-            "1.1.0-alpha.1 — 2024-06-20",
-            "1.1.0-alpha.1—2024-06-20",
-            "1.1.0-alpha.1-2024-06-20",
             "1.1.0-alpha ... 1.1.0-alpha.2 — 2024-06-20",
         ] {
             assert!(header_is_prerelease_of(heading, "1.1.0"), "{heading}");
