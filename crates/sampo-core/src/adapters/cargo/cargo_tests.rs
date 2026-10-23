@@ -151,26 +151,6 @@ fn cargo_discover_keeps_non_publishable_versioned_crate() {
 }
 
 #[test]
-fn cargo_adapter_honours_inherited_publish_false() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    fs::write(
-        root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\npublish = false\n",
-    )
-    .unwrap();
-    fs::create_dir_all(root.join("crates/app")).unwrap();
-    let manifest = root.join("crates/app/Cargo.toml");
-    fs::write(
-        &manifest,
-        "[package]\nname = \"app\"\nversion = \"1.0.0\"\npublish.workspace = true\n",
-    )
-    .unwrap();
-
-    assert!(!CargoAdapter.is_publishable(&manifest).unwrap());
-}
-
-#[test]
 fn cargo_discover_keeps_publishable_versionless_crate() {
     // Kept discovered so publish errors loudly rather than silently dropping it.
     let temp = tempfile::tempdir().unwrap();

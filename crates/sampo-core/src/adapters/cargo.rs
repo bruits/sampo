@@ -341,8 +341,9 @@ fn read_manifest_toml(manifest_path: &Path) -> Result<toml::Value> {
 /// The workspace root manifest, read only when `[package].publish` inherits from it so
 /// checks on standalone manifests stay a single file read.
 ///
-/// Locates the root like Cargo: the `package.workspace` path when set, otherwise the
-/// nearest `Cargo.toml` with a `[workspace]` table, starting from the crate's own directory.
+/// Locates the root from the `package.workspace` path when set, otherwise the nearest
+/// `Cargo.toml` with a `[workspace]` table, starting from the crate's own directory.
+/// Unlike Cargo, a `[workspace].exclude` covering the crate does not skip that root.
 fn inherited_publish_workspace_root(
     manifest: &toml::Value,
     manifest_path: &Path,
@@ -354,7 +355,8 @@ fn inherited_publish_workspace_root(
         return Ok(None);
     }
 
-    let manifest_path = std::path::absolute(manifest_path)?;
+    let manifest_path = std::path::absolute(manifest_path)
+        .map_err(|e| SampoError::Io(crate::errors::io_error_with_path(e, manifest_path)))?;
     let Some(crate_dir) = manifest_path.parent() else {
         return Ok(None);
     };
@@ -1392,11 +1394,8 @@ fn resolve_package_version(
 ) -> std::result::Result<String, WorkspaceError> {
     match pkg.get("version") {
         Some(toml::Value::String(v)) => Ok(v.clone()),
-        Some(toml::Value::Table(t)) => {
-            if t.get("workspace")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
+        Some(v @ toml::Value::Table(_)) => {
+            if is_workspace_inherited(v) {
                 workspace_version.clone().ok_or_else(|| {
                     WorkspaceError::InvalidManifest(format!(
                         "{}: version.workspace = true requires workspace.package.version",
