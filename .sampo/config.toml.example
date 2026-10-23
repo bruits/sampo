@@ -18,6 +18,8 @@ repository = "owner/repo"
 show_commit_hash = true
 # Whether to include author acknowledgments in changelog entries (default: true)
 show_acknowledgments = true
+# GitHub usernames or Git author names to leave out of acknowledgments (default: [])
+exclude_acknowledgments = []
 # How to render entries for packages bumped by other packages, such as
 # "Updated dependencies: ..." (default: "list")
 # "collapse" keeps one section per run of releases with nothing else

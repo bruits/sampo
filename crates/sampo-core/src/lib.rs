@@ -24,7 +24,7 @@ pub use changeset::{
 };
 pub use config::{AutomaticEntries, Config};
 pub use enrichment::{
-    AcknowledgmentStyle, CommitInfo, GitHubUserInfo, detect_github_repo_slug,
+    AcknowledgmentStyle, Acknowledgments, CommitInfo, GitHubUserInfo, detect_github_repo_slug,
     detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
 };
 pub use errors::{Result, SampoError, WorkspaceError};

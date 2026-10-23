@@ -8,7 +8,7 @@ use crate::types::{
     Workspace, format_ambiguity_options,
 };
 use crate::{
-    AcknowledgmentStyle,
+    AcknowledgmentStyle, Acknowledgments,
     changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
     config::{AutomaticEntries, Config},
     current_branch, detect_github_repo_slug_with_config, discover_workspace,
@@ -1719,7 +1719,10 @@ fn compute_initial_bumps(
                     github_token.as_deref(),
                     cfg.changelog_show_commit_hash,
                     cfg.changelog_show_acknowledgments
-                        .then_some(AcknowledgmentStyle::Mention),
+                        .then_some(Acknowledgments {
+                            style: AcknowledgmentStyle::Mention,
+                            excluded: &cfg.changelog_exclude_acknowledgments,
+                        }),
                 )
             } else {
                 cs.message.clone()
