@@ -813,6 +813,36 @@ mod tests {
     }
 
     #[test]
+    fn stable_release_after_exit_keeps_prerelease_sections() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace.add_crate("foo", "1.0.0-alpha");
+        workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+        workspace.run_release(false).unwrap();
+        workspace.add_changeset(&["foo"], Bump::Patch, "fix: alpha follow-up");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("foo", "1.1.0-alpha.1");
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        let output = workspace.run_release(false).unwrap();
+        assert!(!output.released_packages.is_empty());
+
+        let changelog = workspace.read_changelog("foo");
+        let stable = changelog.find("\n## ").expect("stable section");
+        let alpha_1 = changelog
+            .find("## 1.1.0-alpha.1")
+            .expect("alpha.1 section should be kept");
+        let alpha = changelog
+            .rfind("## 1.1.0-alpha")
+            .expect("alpha section should be kept");
+        assert!(
+            stable < alpha_1 && alpha_1 < alpha,
+            "unexpected changelog:\n{changelog}"
+        );
+        assert!(changelog[alpha_1..alpha].contains("- fix: alpha follow-up"));
+    }
+
+    #[test]
     fn bumps_versions() {
         assert_eq!(bump_version("0.0.0", Bump::Patch).unwrap(), "0.0.1");
         assert_eq!(bump_version("0.1.2", Bump::Minor).unwrap(), "0.2.0");

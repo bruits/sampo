@@ -1264,7 +1264,7 @@ fn collect_preserved_targets(
 }
 
 /// Move all preserved changeset files from the prerelease directory to the
-/// changesets directory without filtering. Used when exiting prerelease mode.
+/// changesets directory without filtering.
 pub(crate) fn restore_prerelease_changesets(
     prerelease_dir: &Path,
     changesets_dir: &Path,
@@ -2533,6 +2533,20 @@ pub fn header_matches_release_version(header_text: &str, version: &str) -> bool 
         )
 }
 
+fn header_is_prerelease_of(header_text: &str, version: &str) -> bool {
+    let (Some((_, last)), Ok(version)) = (heading_versions(header_text), Version::parse(version))
+    else {
+        return false;
+    };
+    let token = last.split('—').next().unwrap_or(last);
+    version.pre.is_empty()
+        && Version::parse(token).is_ok_and(|heading| {
+            !heading.pre.is_empty()
+                && (heading.major, heading.minor, heading.patch)
+                    == (version.major, version.minor, version.patch)
+        })
+}
+
 /// Splits the first `## ` section off a changelog's versions part, returning its heading
 /// text, its body, and everything after it.
 fn split_top_section(versions: &str) -> Option<(&str, &str, &str)> {
@@ -2600,9 +2614,12 @@ fn update_changelog(
     }
 
     // Parse and merge the current top section only if it's an unpublished section.
-    // If header == old_version => preserve it (do not merge or strip).
+    // A header naming old_version, or a pre-release of it (after `sampo pre exit`), is
+    // published: preserve it. `extract_changelog_section` keeps the exact match, since a tag's
+    // release notes need that version's own section.
     if let Some((header_text, section_body, remaining)) = split_top_section(versions_body)
         && !header_matches_release_version(header_text, old_version)
+        && !header_is_prerelease_of(header_text, old_version)
     {
         // Parse existing section headings - support both bump-based and custom tags
         let mut current_heading: Option<String> = None;
@@ -2821,6 +2838,23 @@ mod tests {
         assert!(header_matches_release_version("0.2.0 ... 0.4.0", "0.3.0"));
         assert!(!header_matches_release_version("0.2.0 ...", "0.2.0"));
         assert!(!header_matches_release_version("0.2.0 to 0.4.0", "0.2.0"));
+    }
+
+    #[test]
+    fn header_is_prerelease_of_needs_the_same_stable_base() {
+        for heading in [
+            "1.1.0-alpha.1",
+            "1.1.0-alpha.1 — 2024-06-20",
+            "1.1.0-alpha.1—2024-06-20",
+            "1.1.0-alpha.1-2024-06-20",
+            "1.1.0-alpha ... 1.1.0-alpha.2 — 2024-06-20",
+        ] {
+            assert!(header_is_prerelease_of(heading, "1.1.0"), "{heading}");
+        }
+        assert!(!header_is_prerelease_of("1.1.0 — 2024-06-20", "1.1.0"));
+        assert!(!header_is_prerelease_of("1.1.1-rc.1", "1.1.0"));
+        assert!(!header_is_prerelease_of("1.1.0-alpha.1", "1.1.0-alpha.2"));
+        assert!(!header_is_prerelease_of("Unreleased", "1.1.0"));
     }
 
     #[test]

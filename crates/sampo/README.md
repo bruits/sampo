@@ -127,7 +127,7 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 
 Run `sampo pre` to manage pre-release versions for one or more packages.
 
-While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. When exiting pre-release mode or switching to a different label (for example, from `alpha` to `beta`), any preserved changesets are restored back to `.sampo/changesets/`, so the next release keeps the full history.
+While in pre-release mode, you can continue to add changesets and run `sampo release` and `sampo publish` as usual. Sampo preserves the consumed changesets in `.sampo/prerelease/`. Switching to a different label (for example, from `alpha` to `beta`) or merging the GitHub Action's stabilize PR restores them all back to `.sampo/changesets/`, and after `sampo pre exit` the next stable `sampo release` restores those of the exited packages, so the release keeps the full history.
 
 > [!NOTE]
 > In Java (Maven) projects, `SNAPSHOT` is not a valid label. Sampo only manages static release versions, and has no snapshot cycle. Use `alpha`, `beta`, `rc` or a milestone like `M1` instead.
