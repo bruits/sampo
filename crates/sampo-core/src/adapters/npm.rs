@@ -136,6 +136,7 @@ impl NpmAdapter {
 
         let mut cmd = command(manager_name);
         cmd.args(publish_command_args(
+            manager,
             yarn.as_ref(),
             dry_run,
             &info,
@@ -655,6 +656,7 @@ fn wants_dry_run(dry_run: bool, extra_args: &[String]) -> bool {
 }
 
 fn publish_command_args(
+    manager: PackageManager,
     yarn: Option<&YarnPublish>,
     dry_run: bool,
     info: &NpmManifestInfo,
@@ -697,6 +699,15 @@ fn publish_command_args(
     {
         args.push("--tag".to_string());
         args.push(tag);
+    }
+
+    // Off its `publish-branch`, pnpm asks to confirm. Without a terminal, pnpm 12 fails and
+    // older versions exit 0 without publishing. `git.release_branches` already vets the branch.
+    if manager == PackageManager::Pnpm
+        && !has_flag(extra_args, "--git-checks")
+        && !has_flag(extra_args, "--no-git-checks")
+    {
+        args.push("--no-git-checks".to_string());
     }
 
     args.extend_from_slice(extra_args);
