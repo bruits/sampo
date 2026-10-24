@@ -1,5 +1,34 @@
 # sampo-core
 
+## 0.19.0 — 2026-10-24
+
+### Minor changes
+
+- [3f8f56a](https://github.com/bruits/sampo/commit/3f8f56a6c62d22784f20f3c174182495ad6cfb8d) Added the `exclude_acknowledgments` option to the `[changelog]` section, listing GitHub usernames or Git author names that changelog entries should not thank.
+  
+  ```toml
+  [changelog]
+  exclude_acknowledgments = ["octocat", "The Octocat"]
+  ```
+   — Thanks @goulvenclech!
+- [6de5d88](https://github.com/bruits/sampo/commit/6de5d881680073503589c77a370b224de0b867aa) Added the `automatic_entries` option to the `[changelog]` section. With `"collapse"`, changelogs drop the entries Sampo writes for packages bumped by other packages (such as "Updated dependencies"), consecutive releases with nothing else share one section, and the release pull request folds those packages into a collapsed block.
+  
+  ```toml
+  [changelog]
+  automatic_entries = "collapse"
+  ```
+   — Thanks @arthurfiorette!
+
+### Patch changes
+
+- [480b943](https://github.com/bruits/sampo/commit/480b94366acaf10904e72c16f0576da7164eae2e) Fixed the first release after `sampo pre exit` bumping versions a second time: exited packages now ship at the version their pre-release reached (`1.1.0` after `1.1.0-alpha.1`), including those that left pre-release mode before this fix. — Thanks @goulvenclech!
+- [7cfcd43](https://github.com/bruits/sampo/commit/7cfcd4377ddaee8a5433c47266073d6c11dfc8a8) Fixed package names containing a `/` (e.g. `@scope/name` in npm, `vendor/package` in Packagist) failing with `unsupported package kind` when written without their ecosystem prefix, in changesets, `packages.fixed` and `packages.linked` groups, and `sampo add` or `sampo pre` with `-p`. — Thanks @ricardoleal20!
+- [139c850](https://github.com/bruits/sampo/commit/139c85097c0f4ca32488df83e5e4f3312130fcfb) In Rust (Cargo) projects, fixed `sampo publish` and `ignore_unpublished` ignoring `publish.workspace = true`: crates inheriting `publish = false` are now skipped, and crates inheriting an alternative registry are checked against it instead of crates.io. — Thanks @arthurfiorette!
+- [7477529](https://github.com/bruits/sampo/commit/7477529e9a3473e63ac58d37adeddbb1a0dfde3f) In Rust (Cargo) projects, fixed `sampo release` and `sampo pre` failing on internal dependencies pinned with `=x.y.z`. Such pins now follow the released version, like bare pins, and no longer raise constraint warnings or violations. — Thanks @ricardoleal20!
+- [91b4893](https://github.com/bruits/sampo/commit/91b489315fdbd281ea0949909c1cf39d030f2503) In JavaScript/TypeScript (npm) projects, fixed `sampo publish` failing on pre-release versions with npm 11: a pre-release now goes under a dist-tag named after its first pre-release identifier (`alpha` for `1.2.0-alpha.1`), or `next` when npm cannot take that identifier as a tag. `publishConfig.tag` and a `--tag` passed through `--npm-args` still take precedence, while a `tag` set in `.npmrc` or `NPM_CONFIG_TAG` no longer applies to pre-releases. — Thanks @ricardoleal20!
+- [848eec1](https://github.com/bruits/sampo/commit/848eec1f864d6915964e554cab1ed2ae478169c6) Fixed `sampo release` folding or deleting existing changelog sections, such as `## [1.0.1] - 2024-01-01`, `## v1.0.1`, `## About`, or the stable release a pre-release was entered from. They are now kept as written, the new release goes above the first `##` heading holding a digit, and `## [Unreleased]` stays on top without being folded into the release. — Thanks @ricardoleal20!
+- [342bc4d](https://github.com/bruits/sampo/commit/342bc4d0abaca13eabad208dda40d76ea0353519) In JavaScript/TypeScript (npm) projects, fixed `sampo publish` failing, or tagging a release that pnpm never published, on a release branch other than pnpm's `publish-branch` (`main` or `master` by default). Sampo now passes `--no-git-checks` to `pnpm publish`, so pnpm's branch, clean-tree, and up-to-date checks no longer run, whatever `.npmrc` or `pnpm-workspace.yaml` sets. — Thanks @ricardoleal20!
+
 ## 0.18.0 — 2026-10-09
 
 ### Minor changes
