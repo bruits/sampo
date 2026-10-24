@@ -1,5 +1,11 @@
 # sampo-github-bot
 
+## 0.4.13 — 2026-10-24
+
+### Patch changes
+
+- [7cfcd43](https://github.com/bruits/sampo/commit/7cfcd4377ddaee8a5433c47266073d6c11dfc8a8) Fixed package names containing a `/` (e.g. `@scope/name` in npm, `vendor/package` in Packagist) failing with `unsupported package kind` when written without their ecosystem prefix, in changesets, `packages.fixed` and `packages.linked` groups, and `sampo add` or `sampo pre` with `-p`. — Thanks @ricardoleal20!
+
 ## 0.4.12 — 2026-10-09
 
 ### Patch changes
