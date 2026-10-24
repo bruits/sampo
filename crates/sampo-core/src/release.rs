@@ -2509,11 +2509,17 @@ pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String
     })
 }
 
+/// A digit marks a release heading in any format, so `## About` or `## [Unreleased]` stay on top.
 fn split_intro_and_versions(body: &str) -> (&str, &str) {
     let mut offset = 0;
     let len = body.len();
     while offset < len {
-        if body[offset..].starts_with("## ") {
+        if body[offset..]
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("## "))
+            .is_some_and(|heading| heading.contains(|c: char| c.is_ascii_digit()))
+        {
             return body.split_at(offset);
         }
 
@@ -2592,6 +2598,32 @@ fn header_is_prerelease_of(header_text: &str, version: &str) -> bool {
         })
 }
 
+/// Only a strict `x.y.z` heading, as Sampo writes it, can be unreleased and merged.
+fn header_is_ahead_of(header_text: &str, version: &str) -> bool {
+    let (Some((first, _)), Ok(version)) =
+        (heading_versions(header_text), parse_version_string(version))
+    else {
+        return false;
+    };
+    let token = first.split('—').next().unwrap_or(first);
+    Version::parse(token).is_ok_and(|heading| {
+        heading.cmp_precedence(&version).is_gt() && !is_before_prerelease_cycle(&heading, &version)
+    })
+}
+
+/// The cycle's stable base and other labels shipped before it, though SemVer ranks them higher.
+fn is_before_prerelease_cycle(heading: &Version, version: &Version) -> bool {
+    if version.pre.is_empty() {
+        return false;
+    }
+    if heading.pre.is_empty() {
+        return (heading.major, heading.minor, heading.patch)
+            == (version.major, version.minor, version.patch);
+    }
+    strip_trailing_numeric_identifiers(&heading.pre)
+        != strip_trailing_numeric_identifiers(&version.pre)
+}
+
 /// Splits the first `## ` section off a changelog's versions part, returning its heading
 /// text, its body, and everything after it.
 fn split_top_section(versions: &str) -> Option<(&str, &str, &str)> {
@@ -2658,12 +2690,8 @@ fn update_changelog(
         push_unique_to_section(&mut sections, &heading, msg);
     }
 
-    // Parse and merge the current top section only if it's an unpublished section.
-    // A header naming old_version, or a pre-release of it (after `sampo pre exit`), is
-    // published: preserve it.
     if let Some((header_text, section_body, remaining)) = split_top_section(versions_body)
-        && !header_matches_release_version(header_text, old_version)
-        && !header_is_prerelease_of(header_text, old_version)
+        && header_is_ahead_of(header_text, old_version)
     {
         // Parse existing section headings - support both bump-based and custom tags
         let mut current_heading: Option<String> = None;
@@ -2896,6 +2924,46 @@ mod tests {
         assert!(!header_is_prerelease_of("1.1.1-rc.1", "1.1.0"));
         assert!(!header_is_prerelease_of("1.1.0-alpha.1", "1.1.0-alpha.2"));
         assert!(!header_is_prerelease_of("Unreleased", "1.1.0"));
+    }
+
+    #[test]
+    fn header_is_ahead_of_needs_a_newer_version_in_sampo_format() {
+        for (heading, version) in [
+            ("0.1.1", "0.1.0"),
+            ("0.2.0 — 2024-01-01", "0.1.0"),
+            ("0.2.0 ... 0.3.0 — 2024-01-01", "0.1.0"),
+            ("1.1.0-alpha", "1.0.0"),
+            ("1.2.4-alpha", "1.2.3-alpha"),
+            ("1.1.0-alpha.2", "1.1.0-alpha.1"),
+            ("1.3.0", "1.2.3-alpha"),
+            ("0.1.1", "0.1"),
+            ("2.2.0", "2.1"),
+        ] {
+            assert!(header_is_ahead_of(heading, version), "{heading}");
+        }
+        for (heading, version) in [
+            ("1.0.1", "1.0.1"),
+            ("1.0.1 — 2024-01-01", "1.0.1"),
+            ("1.0.1+20240101", "1.0.1"),
+            ("2.1.0", "2.1"),
+            ("2.1", "2.1.1"),
+            ("1.0.0", "1.0.1"),
+            ("0.2.0 ... 0.4.0", "0.3.0"),
+            ("1.1.0-alpha.1", "1.1.0"),
+            ("1.1.0-alpha", "1.1.0-beta"),
+            ("[1.1.0] - 2024-01-01", "1.0.1"),
+            ("v1.1.0", "1.0.1"),
+            ("2.0 migration guide", "1.0.1"),
+            ("2.2", "2.1"),
+            ("2024-01-01", "1.0.1"),
+            ("Unreleased", "1.0.0"),
+            ("1.2.3", "1.2.3-alpha"),
+            ("1.2.3 — 2024-01-01", "1.2.3-alpha.2"),
+            ("1.0.1-beta", "1.0.1-alpha"),
+            ("1.0.1-rc.1", "1.0.1-beta.2"),
+        ] {
+            assert!(!header_is_ahead_of(heading, version), "{heading}");
+        }
     }
 
     #[test]

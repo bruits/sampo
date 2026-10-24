@@ -96,7 +96,7 @@ At the root of each published package, a human-readable file listing all changes
 
 Sampo generates changelog entries from consumed changesets and enriches them with commit hash links and author acknowledgments (can be disabled in config).
 
-Any intro content or custom main header before the first `##` section is preserved. You can also manually edit the previously released entries, and Sampo will keep them intact.
+Sampo adds each release above the first `##` heading holding a digit, such as a version in any format (`## 2`, `## v1.2.0`, `## [1.2.0] - 2024-06-20`) or a date, or at the end of the file if none does. Anything above it, such as an intro, `## About`, or `## [Unreleased]`, is preserved. You can also manually edit the previously released entries, and Sampo will keep them intact.
 
 ### Usage
 

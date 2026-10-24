@@ -842,6 +842,57 @@ mod tests {
     }
 
     #[test]
+    fn stable_release_after_exit_finds_the_prerelease_section_below_an_intro() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("foo", "1.1.0-alpha.1")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog(
+                "foo",
+                "# foo
+
+## About
+
+Hand-written notes.
+
+## 1.1.0-alpha.1
+
+### Minor changes
+
+- feat: alpha foundation
+",
+            )
+            .add_preserved_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("foo", "1.1.0");
+        assert_eq!(
+            workspace.read_changelog("foo"),
+            "# foo
+
+## About
+
+Hand-written notes.
+
+## 1.1.0
+
+### Minor changes
+
+- feat: alpha foundation
+
+## 1.1.0-alpha.1
+
+### Minor changes
+
+- feat: alpha foundation
+"
+        );
+    }
+
+    #[test]
     fn stable_release_after_exit_keeps_dependents_on_their_base() {
         let mut workspace = TestWorkspace::new();
         let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
@@ -1174,6 +1225,137 @@ tempfile = "3.0"
         workspace.assert_changelog_contains("x", "feat: new minor");
         workspace.assert_changelog_contains("x", "### Patch changes");
         workspace.assert_changelog_contains("x", "initial patch");
+    }
+
+    fn changelog_after_patch_release(changelog: &str) -> String {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "1.0.1")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog("x", changelog)
+            .add_changeset(&["x"], Bump::Patch, "fix: new fix");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("x", "1.0.2");
+        workspace.read_changelog("x")
+    }
+
+    #[test]
+    fn release_goes_above_the_first_heading_with_a_digit() {
+        let cases = [
+            (
+                "",
+                "## [1.0.1] - 2024-01-01\n\n### Fixed\n\n- Old fix.\n\n[1.0.1]: https://example.com/releases/v1.0.1\n",
+            ),
+            ("", "## v1.0.1\n\n- Old fix.\n"),
+            (
+                "",
+                "## [1.0.1](https://example.com/compare/v1.0.0...v1.0.1) (2024-01-01)\n\n* old fix\n",
+            ),
+            ("", "## 1.0.1 (2024-01-01)\n\n- Old fix.\n"),
+            ("", "## x@1.0.1\n\n- Old fix.\n"),
+            ("", "## 2024-01-01\n\n- Old fix.\n"),
+            ("", "## 1.0.0\n\n### Patch changes\n\n- Initial release.\n"),
+            (
+                "",
+                "## 2.0 migration guide\n\n### Steps\n\n- Step.\n\n## 1.0.1\n\n- Old fix.\n",
+            ),
+            (
+                "## About\n\nUser-facing changes only.\n\n## [Unreleased]\n\n### Added\n\n- Pending entry.\n\n",
+                "## 1.0.1\n\n- Old fix.\n",
+            ),
+            ("## [Unreleased]\n\n", ""),
+        ];
+        for (above, below) in cases {
+            let before = format!("# Changelog\n\n{above}{below}");
+            let after = format!(
+                "# Changelog\n\n{above}## 1.0.2\n\n### Patch changes\n\n- fix: new fix\n\n{below}"
+            );
+            assert_eq!(changelog_after_patch_release(&before), after, "{before}");
+        }
+    }
+
+    #[test]
+    fn prerelease_keeps_the_stable_release_it_was_entered_from() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "1.2.3")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog(
+                "x",
+                "# x
+
+## 1.2.3
+
+### Patch changes
+
+- Published fix.
+",
+            );
+        enter_prerelease(&workspace.root, &[String::from("x")], "alpha").unwrap();
+        workspace.add_changeset(&["x"], Bump::Patch, "feat: pre work");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("x", "1.2.4-alpha");
+        assert_eq!(
+            workspace.read_changelog("x"),
+            "# x
+
+## 1.2.4-alpha
+
+### Patch changes
+
+- feat: pre work
+
+## 1.2.3
+
+### Patch changes
+
+- Published fix.
+"
+        );
+    }
+
+    #[test]
+    fn switching_back_to_an_earlier_label_keeps_its_section() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "1.0.0-beta")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_changeset(&["x"], Bump::Patch, "fix: beta work");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("x", "1.0.1-beta");
+
+        let packages = [String::from("x")];
+        exit_prerelease(&workspace.root, &packages).unwrap();
+        restore_preserved_changesets(&workspace.root).unwrap();
+        enter_prerelease(&workspace.root, &packages, "alpha").unwrap();
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("x", "1.0.2-alpha");
+        assert_eq!(
+            workspace.read_changelog("x"),
+            "# x
+
+## 1.0.2-alpha
+
+### Patch changes
+
+- fix: beta work
+
+## 1.0.1-beta
+
+### Patch changes
+
+- fix: beta work
+
+"
+        );
     }
 
     #[test]
