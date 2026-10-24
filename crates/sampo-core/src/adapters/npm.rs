@@ -3,6 +3,7 @@ use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
+use semver::Version;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::value::RawValue;
@@ -28,7 +29,6 @@ struct NpmPublishConfig {
 #[derive(Debug, Clone)]
 struct NpmManifestInfo {
     name: String,
-    #[allow(dead_code)]
     version: Option<String>,
     private: bool,
     package_manager: Option<String>,
@@ -692,15 +692,52 @@ fn publish_command_args(
         }
     }
 
-    if let Some(tag) = info.publish_config.tag.as_deref()
-        && !has_flag(extra_args, "--tag")
+    if !has_flag(extra_args, "--tag")
+        && let Some(tag) = default_dist_tag(info)
     {
         args.push("--tag".to_string());
-        args.push(tag.to_string());
+        args.push(tag);
     }
 
     args.extend_from_slice(extra_args);
     args
+}
+
+/// Stands in for a first pre-release identifier that cannot be a tag. npm refuses one that reads as
+/// a version range, and reads one that starts with `-` as flags, which can end in its usage text
+/// and an exit 0 without publishing.
+const FALLBACK_PRERELEASE_TAG: &str = "next";
+
+/// The tag Sampo adds when the passthrough sets none: `publishConfig.tag`, or else the first
+/// pre-release identifier of the version. Left to the default tag, a pre-release would take
+/// `latest`, and npm 11 refuses to publish one at all.
+fn default_dist_tag(info: &NpmManifestInfo) -> Option<String> {
+    if let Some(tag) = &info.publish_config.tag {
+        return Some(tag.clone());
+    }
+    prerelease_dist_tag(info.version.as_deref()?)
+}
+
+/// The first identifier of a pre-release version (`alpha` for `1.2.0-alpha.1` and for
+/// `1.2.0-alpha.beta`), or the fallback when it cannot be a tag. A stable version has none.
+fn prerelease_dist_tag(version: &str) -> Option<String> {
+    let pre = Version::parse(version).ok()?.pre;
+    let identifier = pre
+        .split('.')
+        .next()
+        .filter(|identifier| !identifier.is_empty())?;
+    if identifier.starts_with('-') || reads_as_version_range(identifier) {
+        return Some(FALLBACK_PRERELEASE_TAG.to_string());
+    }
+    Some(identifier.to_string())
+}
+
+/// npm refuses a tag that is a valid semver range, as `0`, `x` and `v1` are, and an identifier of
+/// a pre-release version can be any of them.
+fn reads_as_version_range(tag: &str) -> bool {
+    let rest = tag.trim_start_matches('v');
+    rest.eq_ignore_ascii_case("x")
+        || (!rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// `yarn npm publish` gained `--dry-run` in 4.9.3 (yarnpkg/berry#6850).

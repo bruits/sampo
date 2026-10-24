@@ -1265,3 +1265,111 @@ fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
         ["npm", "publish", "--dry-run"]
     );
 }
+
+fn manifest_info_at(name: &str, version: &str) -> NpmManifestInfo {
+    NpmManifestInfo {
+        version: Some(version.to_string()),
+        ..manifest_info(name)
+    }
+}
+
+#[test]
+fn publish_command_args_tag_a_prerelease_with_its_first_identifier() {
+    for (version, tag) in [
+        ("1.2.0-alpha.1", "alpha"),
+        ("2.0.0-rc.0", "rc"),
+        ("1.0.0-beta", "beta"),
+        ("1.2.0-alpha.beta", "alpha"),
+        ("1.0.0-alpha.1+build.5", "alpha"),
+        ("1.0.0-my-label.2", "my-label"),
+    ] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(None, true, &info, &[]),
+            ["publish", "--dry-run", "--tag", tag],
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn publish_command_args_tag_a_prerelease_on_yarn_too() {
+    let info = manifest_info_at("@scope/pkg", "1.2.0-alpha.1");
+    let berry = YarnPublish::Berry {
+        version: "4.18.0".to_string(),
+        dry_run: true,
+    };
+
+    assert_eq!(
+        super::publish_command_args(Some(&berry), false, &info, &[]),
+        ["npm", "publish", "--access", "public", "--tag", "alpha"]
+    );
+    assert_eq!(
+        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        ["publish", "--access", "public", "--tag", "alpha"]
+    );
+}
+
+#[test]
+fn publish_command_args_leave_a_stable_version_on_latest() {
+    for version in ["1.2.0", "0.0.1", "1.2.0+build.5"] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(None, true, &info, &[]),
+            ["publish", "--dry-run"],
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn publish_command_args_prefer_a_tag_the_user_chose_over_the_prerelease_one() {
+    let mut info = manifest_info_at("pkg", "1.2.0-alpha.1");
+    info.publish_config.tag = Some("next".to_string());
+    assert_eq!(
+        super::publish_command_args(None, false, &info, &[]),
+        ["publish", "--tag", "next"]
+    );
+
+    let info = manifest_info_at("pkg", "1.2.0-alpha.1");
+    let separate = ["--tag".to_string(), "beta".to_string()];
+    assert_eq!(
+        super::publish_command_args(None, false, &info, &separate),
+        ["publish", "--tag", "beta"]
+    );
+    let joined = ["--tag=beta".to_string()];
+    assert_eq!(
+        super::publish_command_args(None, false, &info, &joined),
+        ["publish", "--tag=beta"]
+    );
+}
+
+// npm refuses `--tag 0`, `--tag x` and `--tag v1` as valid semver ranges, and reads `--tag -alpha`
+// as flags: it prints its help and exits 0 without publishing.
+#[test]
+fn publish_command_args_fall_back_when_the_first_identifier_cannot_be_a_tag() {
+    for version in [
+        "1.0.0-0",
+        "1.0.0-7.alpha",
+        "1.0.0-x",
+        "1.0.0-X.1",
+        "1.0.0-v2.1",
+        "1.0.0--alpha.1",
+    ] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(None, true, &info, &[]),
+            ["publish", "--dry-run", "--tag", "next"],
+            "{version}"
+        );
+    }
+
+    for (version, tag) in [("1.0.0-x1", "x1"), ("1.0.0-1a.2", "1a"), ("1.0.0-v.1", "v")] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(None, true, &info, &[]),
+            ["publish", "--dry-run", "--tag", tag],
+            "{version}"
+        );
+    }
+}
