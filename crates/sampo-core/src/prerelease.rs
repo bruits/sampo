@@ -538,6 +538,30 @@ mod tests {
     }
 
     #[test]
+    fn enter_and_exit_carry_exact_pins_along() {
+        let temp = init_workspace();
+        let root = temp.path();
+
+        write_manifest(&root.join("crates/foo"), "foo", "1.2.3");
+        write_manifest(&root.join("crates/bar"), "bar", "0.1.0");
+        append_dependency(&root.join("crates/bar"), "foo", "=1.2.3");
+
+        enter_prerelease(root, &[String::from("foo")], "alpha").unwrap();
+        let bar_manifest = fs::read_to_string(root.join("crates/bar/Cargo.toml")).unwrap();
+        assert!(
+            bar_manifest.contains("version = \"=1.2.3-alpha\""),
+            "{bar_manifest}"
+        );
+
+        exit_prerelease(root, &[String::from("foo")]).unwrap();
+        let bar_manifest = fs::read_to_string(root.join("crates/bar/Cargo.toml")).unwrap();
+        assert!(
+            bar_manifest.contains("version = \"=1.2.3\""),
+            "{bar_manifest}"
+        );
+    }
+
+    #[test]
     fn restore_preserved_changesets_moves_files() {
         let temp = init_workspace();
         let root = temp.path();

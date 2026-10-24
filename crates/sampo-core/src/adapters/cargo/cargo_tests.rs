@@ -1010,6 +1010,152 @@ mod range_constraint_preservation {
     }
 }
 
+mod exact_pins {
+    use super::*;
+
+    fn rewrite(input: &str, dep_name: &str, new_version: &str) -> (String, Vec<(String, String)>) {
+        let updates = BTreeMap::from([(dep_name.to_string(), new_version.to_string())]);
+        update_manifest_versions(Path::new("/demo/Cargo.toml"), input, None, &updates).unwrap()
+    }
+
+    #[test]
+    fn exact_pin_keeps_its_operator_inline() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies]\nbar = { version = \"=1.0.0\", path = \"../bar\" }\n",
+        );
+
+        let (out, applied) = rewrite(input, "bar", "1.3.0");
+
+        assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
+        assert!(out.contains("version = \"=1.3.0\""), "{out}");
+    }
+
+    #[test]
+    fn exact_pin_keeps_its_operator_as_simple_string() {
+        let input =
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nbar = \"=1.0.0\"\n";
+
+        let (out, applied) = rewrite(input, "bar", "1.3.0");
+
+        assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
+        assert!(out.contains("bar = \"=1.3.0\""), "{out}");
+    }
+
+    #[test]
+    fn exact_pin_keeps_its_operator_in_table_form() {
+        let input = concat!(
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n",
+            "[dependencies.bar]\nversion = \"=1.0.0\"\npath = \"../bar\"\n",
+        );
+
+        let (out, applied) = rewrite(input, "bar", "1.3.0");
+
+        assert!(applied.contains(&("bar".to_string(), "1.3.0".to_string())));
+        assert!(out.contains("version = \"=1.3.0\""), "{out}");
+    }
+
+    #[test]
+    fn exact_pins_are_rewritten_in_every_dependency_section() {
+        let input = r#"[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+bar = { path = "../bar", version = "=1.0.0" }
+alias = { package = "bar", path = "../bar", version = "=1.0.0" }
+
+[dev-dependencies]
+bar = { path = "../bar", version = "=1.0.0" }
+
+[build-dependencies]
+bar = { path = "../bar", version = "=1.0.0" }
+
+[target.'cfg(unix)'.dependencies]
+bar = { path = "../bar", version = "=1.0.0" }
+"#;
+
+        let (out, _) = rewrite(input, "bar", "1.3.0");
+
+        assert_eq!(out.matches("version = \"=1.3.0\"").count(), 5, "{out}");
+        assert!(!out.contains("=1.0.0"), "{out}");
+    }
+
+    #[test]
+    fn exact_pin_spellings_are_all_recognised() {
+        for spelling in [
+            "=1.0.0",
+            "= 1.0.0",
+            " =1.0.0 ",
+            "=1.0.0-alpha.1",
+            "=1.0.0+build.7",
+        ] {
+            let input = format!(
+                "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nbar = {{ path = \"../bar\", version = \"{spelling}\" }}\n"
+            );
+
+            let (out, applied) = rewrite(&input, "bar", "1.3.0");
+
+            assert!(!applied.is_empty(), "'{spelling}' should be a pin");
+            assert!(out.contains("version = \"=1.3.0\""), "'{spelling}': {out}");
+        }
+    }
+
+    #[test]
+    fn exact_pin_already_on_the_new_version_is_unchanged() {
+        let input =
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nbar = \"=1.3.0\"\n";
+
+        let (out, applied) = rewrite(input, "bar", "1.3.0");
+
+        assert!(applied.is_empty());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn partial_exact_requirement_is_a_range_and_is_preserved() {
+        for requirement in ["=1.0", "=1"] {
+            let input = format!(
+                "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[dependencies]\nbar = {{ path = \"../bar\", version = \"{requirement}\" }}\n"
+            );
+
+            let (out, applied) = rewrite(&input, "bar", "1.0.5");
+
+            assert!(applied.is_empty(), "'{requirement}' is not a pin");
+            assert_eq!(out, input);
+        }
+    }
+
+    #[test]
+    fn exact_pin_in_workspace_dependencies_keeps_its_operator() {
+        let input = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+foo = { version = "=0.1.0", path = "crates/foo" }
+bar = "=0.1.0"
+baz = { version = "=0.1", path = "crates/baz" }
+"#;
+        let versions = BTreeMap::from([
+            ("foo".to_string(), "0.2.0".to_string()),
+            ("bar".to_string(), "0.2.0".to_string()),
+            ("baz".to_string(), "0.1.5".to_string()),
+        ]);
+
+        let (out, changed) =
+            update_workspace_root_manifest(Path::new("/Cargo.toml"), input, None, &versions)
+                .unwrap();
+
+        assert!(changed);
+        assert!(out.contains("foo = { version = \"=0.2.0\""), "{out}");
+        assert!(out.contains("bar = \"=0.2.0\""), "{out}");
+        assert!(
+            out.contains("baz = { version = \"=0.1\""),
+            "a partial `=0.1` is a range and stays: {out}"
+        );
+    }
+}
+
 mod private_registries {
     use super::*;
 

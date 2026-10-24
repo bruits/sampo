@@ -56,19 +56,31 @@ pub fn write_fake_bun(dir: &Path, argv_log: &Path, version: &str) {
     write_bun_with_version_body(dir, argv_log, &format!("echo {version}; exit 0"));
 }
 
-/// Point the release at `main` and make `dir` the only place tools are found.
+/// Point the release at `main`.
 ///
 /// The environment is process-wide; hold the guard for the whole test body.
 #[must_use = "the returned guard keeps sibling tests out of this test's environment"]
-pub fn use_only(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
+pub fn pin_release_branch() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
     unsafe {
         std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
-        std::env::set_var("PATH", dir);
         // Set on GitHub Actions, where it sends changelog enrichment down another path.
         std::env::remove_var("GITHUB_REPOSITORY");
+    }
+    guard
+}
+
+/// Point the release at `main` and make `dir` the only place tools are found.
+///
+/// The environment is process-wide; hold the guard for the whole test body.
+#[must_use = "the returned guard keeps sibling tests out of this test's environment"]
+pub fn use_only(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
+    let guard = pin_release_branch();
+
+    unsafe {
+        std::env::set_var("PATH", dir);
     }
     guard
 }
