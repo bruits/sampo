@@ -463,6 +463,22 @@ mod tests {
     }
 
     #[test]
+    fn cli_packages_read_scoped_npm_names_without_the_ecosystem_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"name":"@acme/a","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let workspace = discover_workspace(temp.path()).unwrap();
+
+        let specs = resolve_cli_packages(Some(&workspace), &["@acme/a".to_string()]).unwrap();
+
+        assert_eq!(specs, [PackageSpecifier::parse("npm/@acme/a").unwrap()]);
+    }
+
+    #[test]
     fn normalized_message_arg_trims_and_accepts_content() {
         let value = crate::ui::normalize_nonempty_string(Some("  feat: update docs  "));
         assert_eq!(value.as_deref(), Some("feat: update docs"));

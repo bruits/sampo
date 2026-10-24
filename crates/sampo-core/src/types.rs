@@ -84,6 +84,9 @@ pub struct PackageSpecifier {
 
 impl PackageSpecifier {
     /// Parse from a raw input string.
+    ///
+    /// Only a supported ecosystem before the first '/' is a prefix, since npm, Packagist, and
+    /// Maven names can hold a '/' themselves (e.g. `@scope/name`).
     pub fn parse(raw: &str) -> Result<Self, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -96,18 +99,18 @@ impl PackageSpecifier {
             if rest.is_empty() {
                 return Err("package reference is missing a name after '/'".to_string());
             }
-            let kind = PackageKind::from_str(kind_str)
-                .map_err(|_| format!("unsupported package kind '{}'", kind_str))?;
-            Ok(Self {
-                kind: Some(kind),
-                name: rest.to_string(),
-            })
-        } else {
-            Ok(Self {
-                kind: None,
-                name: unquoted.to_string(),
-            })
+            if let Some(kind) = PackageKind::parse(kind_str) {
+                return Ok(Self {
+                    kind: Some(kind),
+                    name: rest.to_string(),
+                });
+            }
         }
+
+        Ok(Self {
+            kind: None,
+            name: unquoted.to_string(),
+        })
     }
 
     /// Canonical string used when persisting the specifier.
@@ -687,6 +690,29 @@ mod tests {
                 assert!(listing.contains("cargo/shared"));
             }
             other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_reads_a_prefix_that_is_no_ecosystem_as_part_of_the_name() {
+        for (raw, name) in [
+            ("@acme/a", "@acme/a"),
+            ("\"@acme/a\"", "@acme/a"),
+            ("vendor/package", "vendor/package"),
+            ("com.example/app", "com.example/app"),
+            ("nmp/@acme/a", "nmp/@acme/a"),
+        ] {
+            let spec = PackageSpecifier::parse(raw).unwrap();
+            assert_eq!(spec.kind, None, "{raw}");
+            assert_eq!(spec.name, name, "{raw}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_a_slash_without_a_name_after_it() {
+        for raw in ["npm/", "@acme/"] {
+            let err = PackageSpecifier::parse(raw).unwrap_err();
+            assert!(err.contains("missing a name"), "{raw}: {err}");
         }
     }
 

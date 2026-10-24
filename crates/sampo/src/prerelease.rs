@@ -472,7 +472,9 @@ fn report_updates(
 
 #[cfg(test)]
 mod tests {
+    use super::{PackageSpecifier, discover_workspace, resolve_cli_specifiers};
     use crate::ui::normalize_nonempty_string;
+    use std::fs;
 
     #[test]
     fn normalized_label_arg_trims_and_accepts_value() {
@@ -486,5 +488,21 @@ mod tests {
     fn normalized_label_arg_rejects_empty_value() {
         assert!(normalize_nonempty_string(Some("   ")).is_none());
         assert!(normalize_nonempty_string(None).is_none());
+    }
+
+    #[test]
+    fn cli_specifiers_read_scoped_npm_names_without_the_ecosystem_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join("package.json"),
+            r#"{"name":"@acme/a","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let workspace = discover_workspace(temp.path()).unwrap();
+
+        let specs = resolve_cli_specifiers(&workspace, &["@acme/a".to_string()]).unwrap();
+
+        assert_eq!(specs, [PackageSpecifier::parse("npm/@acme/a").unwrap()]);
     }
 }
