@@ -133,7 +133,7 @@ While in pre-release mode, you can continue to add changesets and run `sampo rel
 > In Java (Maven) projects, `SNAPSHOT` is not a valid label. Sampo only manages static release versions, and has no snapshot cycle. Use `alpha`, `beta`, `rc` or a milestone like `M1` instead.
 
 > [!NOTE]
-> In JavaScript/TypeScript (npm) projects, `sampo publish` publishes a pre-release under a dist-tag, not `latest`: the first identifier of its pre-release version, so `1.2.0-alpha.1` and `1.2.0-alpha.beta` both go under `alpha`. An identifier npm cannot take as a tag, such as `0` or `x`, becomes `next`. A `publishConfig.tag` in `package.json`, or a `--tag` passed through `--npm-args`, takes precedence; a `tag` set in `.npmrc` or `NPM_CONFIG_TAG` does not.
+> In JavaScript/TypeScript (npm) projects, `sampo publish` publishes a pre-release under a dist-tag named after its first pre-release identifier (`alpha` for `1.2.0-alpha.1`). A `publishConfig.tag` in `package.json` or a `--tag` passed through `--npm-args` takes precedence.
 
 ## Configuration
 

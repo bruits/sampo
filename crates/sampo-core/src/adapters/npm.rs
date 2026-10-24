@@ -703,14 +703,11 @@ fn publish_command_args(
     args
 }
 
-/// Stands in for a first pre-release identifier that cannot be a tag. npm refuses one that reads as
-/// a version range, and reads one that starts with `-` as flags, which can end in its usage text
-/// and an exit 0 without publishing.
+/// Stands in for a first identifier npm cannot take as a tag: it refuses one that reads as a
+/// version range, and reads one starting with `-` as flags, which can exit 0 without publishing.
 const FALLBACK_PRERELEASE_TAG: &str = "next";
 
-/// The tag Sampo adds when the passthrough sets none: `publishConfig.tag`, or else the first
-/// pre-release identifier of the version. Left to the default tag, a pre-release would take
-/// `latest`, and npm 11 refuses to publish one at all.
+/// npm 11 refuses to publish a pre-release under the default tag.
 fn default_dist_tag(info: &NpmManifestInfo) -> Option<String> {
     if let Some(tag) = &info.publish_config.tag {
         return Some(tag.clone());
@@ -718,8 +715,6 @@ fn default_dist_tag(info: &NpmManifestInfo) -> Option<String> {
     prerelease_dist_tag(info.version.as_deref()?)
 }
 
-/// The first identifier of a pre-release version (`alpha` for `1.2.0-alpha.1` and for
-/// `1.2.0-alpha.beta`), or the fallback when it cannot be a tag. A stable version has none.
 fn prerelease_dist_tag(version: &str) -> Option<String> {
     let pre = Version::parse(version).ok()?.pre;
     let identifier = pre
@@ -732,8 +727,7 @@ fn prerelease_dist_tag(version: &str) -> Option<String> {
     Some(identifier.to_string())
 }
 
-/// npm refuses a tag that is a valid semver range, as `0`, `x` and `v1` are, and an identifier of
-/// a pre-release version can be any of them.
+/// The pre-release identifiers npm reads as a semver range, such as `0`, `x` and `v1`.
 fn reads_as_version_range(tag: &str) -> bool {
     let rest = tag.trim_start_matches('v');
     rest.eq_ignore_ascii_case("x")
