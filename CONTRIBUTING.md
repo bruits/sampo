@@ -8,10 +8,14 @@ It is easy to start with, through minimal configuration, sensible defaults, and 
 
 Issues, PRs, and discussions that break the [code of conduct](./CODE_OF_CONDUCT.md) are deleted and their authors banned.
 
-## Before Opening Issues
+## Before Opening Issues/PRs
 
 - Report a security vulnerability privately, as the [security policy](./SECURITY.md) explains.
-- Ask questions about using Sampo on [Discord](https://discord.com/invite/84pd4QtmzA), and open a [feature request](https://github.com/bruits/sampo/issues/new?template=02-feature-request.yml) for an idea.
+- Ask questions about using Sampo on [Discord](https://discord.com/invite/84pd4QtmzA). For an idea, open a [feature request](https://github.com/bruits/sampo/issues/new?template=02-feature-request.yml) or talk it through on Discord first.
+- Look through existing issues and PRs, in case your topic is already covered.
+- Give as much detail as you can. It doesn't have to be perfect, we'll figure it out together.
+- Keep a PR small and focused on one issue or feature. Run the checks in [AGENTS.md](./AGENTS.md), add tests for what it adds or fixes, and a [changeset](#writing-changesets) for what users meet.
+- Submit your best effort, and we'll gladly help polish it.
 
 ## Quality Guidelines
 
@@ -23,17 +27,13 @@ Issues, PRs, and discussions that break the [code of conduct](./CODE_OF_CONDUCT.
 
 ## Writing Changesets
 
-Sampo versions itself and writes its own changelogs from changesets, setting the example for its users. A change users meet (behaviour, public API, configuration, or output) ships with one. Install Sampo with `cargo install sampo`, then run `sampo add -p cargo/sampo cargo/sampo-core -b minor -m "Added …"`, or `cargo run -p sampo -- add …` from the repository. Packages are named with their registry, since `sampo` exists on both crates.io and npm. Internal refactors, tests, and docs need none.
+Sampo versions itself and writes its own changelogs from changesets, setting the example for its users. A change users meet (behaviour, public API, configuration, or output) ships with one. Install Sampo with `cargo install sampo`, then run `sampo add -p cargo/sampo cargo/sampo-core -b minor -m "Added …"`, or `cargo run -p sampo -- add …` from the repository.
 
 While Sampo is 0.x, a feature or a breaking change is a `minor` bump, and a fix a `patch`.
 
 A description starts with `Added`, `Removed`, `Fixed`, `Changed`, `Deprecated`, or `Improved`, and says in one or two sentences what changed for users, naming the command, option, or API, without the implementation. A breaking change opens with `**⚠️ breaking change:**`, and a change for one ecosystem with its name, after any breaking prefix (e.g. `In Python (PyPI) projects, added …`). A minimal usage example can follow when it clarifies the change.
 
 Changesets wait in `.sampo/changesets/`. On `main`, the Release & Publish workflow runs Sampo's own GitHub Action, which gathers them into a release PR, and merging that PR publishes the crates and npm packages. The same workflow deploys the GitHub App when a release changes it.
-
-On npm, the `sampo` shim runs the binary of the `@bruits/sampo-<os>-<arch>` carrier matching the user's platform. The `fixed` group in `.sampo/config.toml` releases the carriers with `cargo/sampo` and `npm/sampo`, and Sampo keeps the shim's `optionalDependencies` pins in step, so a changeset never names a carrier. Carriers commit no binary. At release time, `scripts/publish-npm-platform-packages.sh` publishes each with its CI-built binary, then Sampo skips them as already published and ships the shim. The script stops on a missing build artefact or a carrier whose version differs from the shim's. Adding a platform means a carrier `package.json` at the shim's version, its entry in the `fixed` group and in the shim's `optionalDependencies`, a row in the script's `mappings`, a target in the build matrix of `.github/workflows/release.yml`, and an entry in `PLATFORM_PACKAGES` in `packages/sampo/bin/sampo.js`.
-
-Both the script and Sampo publish through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). Each package on npmjs.com trusts the `release.yml` workflow of `bruits/sampo` in the `sampo` environment, with direct `npm publish` allowed (off by default). Trusted publishing cannot create a package, so a new carrier is published once by hand. Its trusted publisher is added at most two days before the next release, since npm expires one that has not published within two days.
 
 ## Getting Started
 
@@ -46,8 +46,8 @@ Sampo is a Rust monorepo using [Cargo workspaces](https://doc.rust-lang.org/book
 | `crates/sampo-github-action` | The GitHub Action, whose binary prepares release PRs and publishes |
 | `crates/sampo-github-bot` | The GitHub App that asks pull requests for missing changesets, deployed to [Fly.io](https://fly.io) |
 | `packages/sampo` | The npm shim that runs the CLI binary for the user's platform |
-| `packages/sampo-<os>-<arch>` | One binary carrier per platform, published as `@bruits/sampo-<os>-<arch>` |
-| `scripts/` | The release script that publishes the npm carriers |
+| `packages/sampo-<os>-<arch>` | One platform package per OS and architecture, published with the CLI binary as `@bruits/sampo-<os>-<arch>` |
+| `scripts/` | The release script that publishes the npm platform packages |
 | `.sampo/` | Sampo's own configuration and pending changesets |
 
 `sampo`, `sampo-github-action`, and `sampo-github-bot` depend on `sampo-core`, and on nothing else in the workspace.

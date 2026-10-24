@@ -1060,8 +1060,8 @@ pub(crate) fn validate_dependency_constraints(
                 continue;
             };
 
-            // Pinned versions (bare semver) will be updated during manifest updates,
-            // so only range constraints need validation here.
+            // Pinned versions (bare `1.2.3` or exact `=1.2.3`) will be rewritten during
+            // manifest updates, so only range constraints need validation here.
             // Other ecosystems skip validation (their adapters return Skipped).
             let constraint = match pkg_info.kind {
                 PackageKind::Cargo => {

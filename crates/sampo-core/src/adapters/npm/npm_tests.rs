@@ -434,9 +434,9 @@ fn npm_discover_separates_dev_deps() {
 }
 
 #[test]
-fn npm_discover_excludes_private_versionless_root() {
+fn npm_discover_excludes_private_versionless_packages() {
     // A discovered container would render a malformed versionless tag like
-    // "npm-root-monorepo-v" and get released.
+    // "npm-root-monorepo-v", and a discovered app would be bumped from 0.0.0.
     let temp = tempdir().unwrap();
     let root = temp.path();
 
@@ -463,11 +463,22 @@ fn npm_discover_excludes_private_versionless_root() {
     )
     .unwrap();
 
+    fs::create_dir_all(packages_dir.join("app")).unwrap();
+    fs::write(
+        packages_dir.join("app/package.json"),
+        r#"{ "name": "app", "private": true }"#,
+    )
+    .unwrap();
+
     let packages = NpmAdapter.discover(root).unwrap();
 
     assert!(
         !packages.iter().any(|p| p.name == "root-monorepo"),
         "private versionless root must be excluded from discovery"
+    );
+    assert!(
+        !packages.iter().any(|p| p.name == "app"),
+        "private versionless member must be excluded from discovery"
     );
     assert!(
         packages.iter().any(|p| p.name == "pkg-a"),
@@ -1148,15 +1159,21 @@ fn publish_command_args_namespace_publishing_under_npm_on_berry_only() {
     };
 
     assert_eq!(
-        super::publish_command_args(Some(&berry), true, &info, &[]),
+        super::publish_command_args(PackageManager::Yarn, Some(&berry), true, &info, &[]),
         ["npm", "publish", "--dry-run"]
     );
     assert_eq!(
-        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        super::publish_command_args(
+            PackageManager::Yarn,
+            Some(&YarnPublish::Classic),
+            false,
+            &info,
+            &[]
+        ),
         ["publish"]
     );
     assert_eq!(
-        super::publish_command_args(None, true, &info, &[]),
+        super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
         ["publish", "--dry-run"]
     );
 }
@@ -1168,7 +1185,7 @@ fn publish_command_args_keep_the_existing_flag_handling() {
     info.publish_config.tag = Some("next".to_string());
 
     assert_eq!(
-        super::publish_command_args(None, true, &info, &[]),
+        super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
         [
             "publish",
             "--dry-run",
@@ -1183,7 +1200,7 @@ fn publish_command_args_keep_the_existing_flag_handling() {
 
     let overrides = ["--tag".to_string(), "beta".to_string()];
     assert_eq!(
-        super::publish_command_args(None, false, &info, &overrides),
+        super::publish_command_args(PackageManager::Npm, None, false, &info, &overrides),
         [
             "publish",
             "--registry",
@@ -1207,7 +1224,7 @@ fn publish_command_args_omit_registry_on_berry_which_rejects_the_flag() {
     };
 
     assert_eq!(
-        super::publish_command_args(Some(&berry), true, &info, &[]),
+        super::publish_command_args(PackageManager::Yarn, Some(&berry), true, &info, &[]),
         [
             "npm",
             "publish",
@@ -1219,7 +1236,13 @@ fn publish_command_args_omit_registry_on_berry_which_rejects_the_flag() {
         ]
     );
     assert_eq!(
-        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        super::publish_command_args(
+            PackageManager::Yarn,
+            Some(&YarnPublish::Classic),
+            false,
+            &info,
+            &[]
+        ),
         [
             "publish",
             "--registry",
@@ -1253,7 +1276,7 @@ fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
     let passthrough = ["--dry-run".to_string()];
 
     assert_eq!(
-        super::publish_command_args(None, true, &info, &passthrough),
+        super::publish_command_args(PackageManager::Npm, None, true, &info, &passthrough),
         ["publish", "--dry-run"]
     );
     let berry = YarnPublish::Berry {
@@ -1261,7 +1284,145 @@ fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
         dry_run: true,
     };
     assert_eq!(
-        super::publish_command_args(Some(&berry), true, &info, &passthrough),
+        super::publish_command_args(
+            PackageManager::Yarn,
+            Some(&berry),
+            true,
+            &info,
+            &passthrough
+        ),
         ["npm", "publish", "--dry-run"]
     );
+}
+
+#[test]
+fn publish_command_args_turn_pnpm_git_checks_off() {
+    let mut info = manifest_info("@scope/pkg");
+    info.publish_config.tag = Some("next".to_string());
+    let passthrough = ["--otp=123456".to_string()];
+
+    assert_eq!(
+        super::publish_command_args(PackageManager::Pnpm, None, false, &info, &passthrough),
+        [
+            "publish",
+            "--access",
+            "public",
+            "--tag",
+            "next",
+            "--no-git-checks",
+            "--otp=123456"
+        ]
+    );
+}
+
+#[test]
+fn publish_command_args_keep_a_passthrough_git_checks_choice() {
+    let info = manifest_info("pkg");
+
+    for choice in ["--git-checks", "--git-checks=false", "--no-git-checks"] {
+        let passthrough = [choice.to_string()];
+        assert_eq!(
+            super::publish_command_args(PackageManager::Pnpm, None, false, &info, &passthrough),
+            ["publish", choice],
+            "{choice} must be forwarded alone"
+        );
+    }
+}
+
+#[test]
+fn publish_command_args_leave_bun_without_git_checks() {
+    let info = manifest_info("pkg");
+
+    assert_eq!(
+        super::publish_command_args(PackageManager::Bun, None, false, &info, &[]),
+        ["publish"]
+    );
+}
+
+fn manifest_info_at(name: &str, version: &str) -> NpmManifestInfo {
+    NpmManifestInfo {
+        version: Some(version.to_string()),
+        ..manifest_info(name)
+    }
+}
+
+#[test]
+fn publish_command_args_tag_a_prerelease_with_its_first_identifier() {
+    for (version, tag) in [
+        ("1.2.0-alpha.1", "alpha"),
+        ("2.0.0-rc.0", "rc"),
+        ("1.0.0-beta", "beta"),
+        ("1.2.0-alpha.beta", "alpha"),
+        ("1.0.0-alpha.1+build.5", "alpha"),
+        ("1.0.0-my-label.2", "my-label"),
+    ] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
+            ["publish", "--dry-run", "--tag", tag],
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn publish_command_args_leave_a_stable_version_on_latest() {
+    for version in ["1.2.0", "0.0.1", "1.2.0+build.5"] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
+            ["publish", "--dry-run"],
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn publish_command_args_prefer_a_tag_the_user_chose_over_the_prerelease_one() {
+    let mut info = manifest_info_at("pkg", "1.2.0-alpha.1");
+    info.publish_config.tag = Some("next".to_string());
+    assert_eq!(
+        super::publish_command_args(PackageManager::Npm, None, false, &info, &[]),
+        ["publish", "--tag", "next"]
+    );
+
+    let info = manifest_info_at("pkg", "1.2.0-alpha.1");
+    let separate = ["--tag".to_string(), "beta".to_string()];
+    assert_eq!(
+        super::publish_command_args(PackageManager::Npm, None, false, &info, &separate),
+        ["publish", "--tag", "beta"]
+    );
+    let joined = ["--tag=beta".to_string()];
+    assert_eq!(
+        super::publish_command_args(PackageManager::Npm, None, false, &info, &joined),
+        ["publish", "--tag=beta"]
+    );
+}
+
+#[test]
+fn publish_command_args_fall_back_when_the_first_identifier_cannot_be_a_tag() {
+    for version in [
+        "1.0.0-0",
+        "1.0.0-7.alpha",
+        "1.0.0-x",
+        "1.0.0-X.1",
+        "1.0.0-v2.1",
+        "1.0.0--alpha.1",
+    ] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
+            ["publish", "--dry-run", "--tag", "next"],
+            "{version}"
+        );
+    }
+
+    for (version, tag) in [("1.0.0-x1", "x1"), ("1.0.0-1a.2", "1a"), ("1.0.0-v.1", "v")] {
+        let info = manifest_info_at("pkg", version);
+        assert_eq!(
+            super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
+            ["publish", "--dry-run", "--tag", tag],
+            "{version}"
+        );
+    }
 }

@@ -659,26 +659,44 @@ impl ManifestMetadata {
         dep_name: &str,
     ) -> Option<String> {
         let package = self.package_for_manifest(manifest_path)?;
-        package
+        let constraints: Vec<&str> = package
             .dependencies
             .iter()
-            .find(|dep| dep.package_name == dep_name)
-            .map(|dep| dep.version_req.clone())
+            .filter(|dep| dep.package_name == dep_name)
+            .map(|dep| dep.version_req.as_str())
+            .collect();
+        // The release rewrites an exact pin, so a range in another section is the one to check.
+        constraints
+            .iter()
+            .find(|req| !is_pin(req))
+            .or(constraints.first())
+            .map(|req| req.to_string())
     }
 
-    /// Check if a dependency's version in the raw TOML is a pinned exact version.
-    /// Pinned versions (bare semver like `"1.0.0"`) will be updated during manifest updates,
-    /// while range constraints (e.g., `"^1.0"`) are preserved and need constraint validation.
+    /// Check if a dependency's version is pinned (bare `"1.0.0"` or exact `"=1.0.0"`) in every
+    /// section of the member manifest declaring it. Pinned versions will be updated during
+    /// manifest updates, while range constraints (e.g., `"^1.0"`) are preserved and need
+    /// constraint validation.
     pub fn is_dependency_pinned(&self, manifest_path: &Path, dep_name: &str) -> bool {
-        let manifest_key = self
+        let dependencies: Vec<_> = self
             .package_for_manifest(manifest_path)
-            .and_then(|pkg| {
+            .map(|pkg| {
                 pkg.dependencies
                     .iter()
-                    .find(|d| d.package_name == dep_name)
-                    .map(|d| d.manifest_key.as_str())
+                    .filter(|d| d.package_name == dep_name)
+                    .collect()
             })
-            .unwrap_or(dep_name);
+            .unwrap_or_default();
+
+        // Metadata cannot tell a bare `1.0.0` from `^1.0.0`, but it can tell an exact pin, and
+        // sees one inherited from `[workspace.dependencies]`, which the member manifest lacks.
+        if !dependencies.is_empty() && dependencies.iter().all(|d| is_pin(&d.version_req)) {
+            return true;
+        }
+
+        let manifest_key = dependencies
+            .first()
+            .map_or(dep_name, |d| d.manifest_key.as_str());
 
         let content = match fs::read_to_string(manifest_path) {
             Ok(c) => c,
@@ -690,25 +708,21 @@ impl ManifestMetadata {
         };
 
         let top = doc.as_table();
-        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-            if let Some(raw) = raw_dep_version(top, section, manifest_key) {
-                return Version::parse(raw.trim()).is_ok();
-            }
-        }
-
+        let mut tables = vec![top];
         if let Some(targets) = top.get("target").and_then(Item::as_table) {
-            for (_, target_item) in targets.iter() {
-                if let Some(target_table) = target_item.as_table() {
-                    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                        if let Some(raw) = raw_dep_version(target_table, section, manifest_key) {
-                            return Version::parse(raw.trim()).is_ok();
-                        }
-                    }
-                }
-            }
+            tables.extend(targets.iter().filter_map(|(_, target)| target.as_table()));
         }
 
-        false
+        // A range in one section is not rewritten, so a pin in another must not hide it.
+        let mut requirements = tables
+            .into_iter()
+            .flat_map(|table| {
+                ["dependencies", "dev-dependencies", "build-dependencies"]
+                    .into_iter()
+                    .filter_map(move |section| raw_dep_version(table, section, manifest_key))
+            })
+            .peekable();
+        requirements.peek().is_some() && requirements.all(is_pin)
     }
 }
 
@@ -1004,17 +1018,33 @@ fn raw_dep_version<'a>(parent: &'a Table, section: &str, dep_name: &str) -> Opti
     }
 }
 
-/// Returns true if the existing dependency version should be replaced with the exact new version.
-/// Pinned versions (bare semver) are always replaced; range constraints are preserved.
-fn should_update_dependency_version(existing: &str, new_version: &str) -> bool {
-    let trimmed = existing.trim();
+/// The operator of a pin: empty for a bare `1.0.0`, `=` for an exact `=1.0.0`. `None` for a
+/// range, including a partial `=1.0`, which Cargo reads as `>=1.0.0, <1.1.0`.
+fn pin_operator(requirement: &str) -> Option<&'static str> {
+    let trimmed = requirement.trim();
 
     if Version::parse(trimmed).is_ok() {
-        return trimmed != new_version;
+        Some("")
+    } else if trimmed
+        .strip_prefix('=')
+        .is_some_and(|version| Version::parse(version.trim()).is_ok())
+    {
+        Some("=")
+    } else {
+        None
     }
+}
 
-    // Deferred to constraint validation in release.rs
-    false
+fn is_pin(requirement: &str) -> bool {
+    pin_operator(requirement).is_some()
+}
+
+/// A pin moved to `new_version` with its operator, or `None` when there is nothing to write:
+/// ranges are deferred to constraint validation in release.rs.
+fn updated_dependency_requirement(existing: &str, new_version: &str) -> Option<String> {
+    pin_operator(existing)
+        .map(|operator| format!("{operator}{new_version}"))
+        .filter(|updated| updated != existing.trim())
 }
 
 fn has_package_field(item: &Item, name: &str) -> bool {
@@ -1041,10 +1071,10 @@ fn update_standard_dependency_item(item: &mut Item, new_version: &str, is_dev: b
         Item::Table(table) => update_table_dependency(table, new_version, is_dev),
         Item::Value(value) => {
             let current = value.as_str().unwrap_or_default();
-            if !should_update_dependency_version(current, new_version) {
+            let Some(updated) = updated_dependency_requirement(current, new_version) else {
                 return false;
-            }
-            *item = Item::Value(Value::from(new_version));
+            };
+            *item = Item::Value(Value::from(updated));
             true
         }
         _ => false,
@@ -1065,18 +1095,16 @@ fn update_inline_dependency(table: &mut InlineTable, new_version: &str, is_dev: 
         return false;
     }
 
-    let current = table.get("version").and_then(Value::as_str);
-    let needs_update = match current {
-        Some(existing) => should_update_dependency_version(existing, new_version),
-        // No version field present — don't insert one
-        None => false,
+    // No version field present — don't insert one
+    let Some(existing) = table.get("version").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(updated) = updated_dependency_requirement(existing, new_version) else {
+        return false;
     };
 
-    if needs_update {
-        table.insert("version", Value::from(new_version));
-    }
-
-    needs_update
+    table.insert("version", Value::from(updated));
+    true
 }
 
 fn update_table_dependency(table: &mut Table, new_version: &str, is_dev: bool) -> bool {
@@ -1096,21 +1124,20 @@ fn update_table_dependency(table: &mut Table, new_version: &str, is_dev: bool) -
         return false;
     }
 
-    let current = table
+    // No version field present — don't insert one
+    let Some(existing) = table
         .get("version")
         .and_then(Item::as_value)
-        .and_then(Value::as_str);
-    let needs_update = match current {
-        Some(existing) => should_update_dependency_version(existing, new_version),
-        // No version field present — don't insert one
-        None => false,
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    let Some(updated) = updated_dependency_requirement(existing, new_version) else {
+        return false;
     };
 
-    if needs_update {
-        table.insert("version", Item::Value(Value::from(new_version)));
-    }
-
-    needs_update
+    table.insert("version", Item::Value(Value::from(updated)));
+    true
 }
 
 fn update_workspace_dependency(doc: &mut DocumentMut, dep_name: &str, new_version: &str) -> bool {
@@ -1196,11 +1223,9 @@ fn compute_workspace_dependency_version(existing: &str, new_version: &str) -> Op
         return None;
     }
 
-    if Version::parse(trimmed_existing).is_ok() {
-        if trimmed_existing == new_version {
-            return None;
-        }
-        return Some(new_version.to_string());
+    // A pin already on `new_version` falls through, and has too many parts to be a shorthand.
+    if let Some(updated) = updated_dependency_requirement(trimmed_existing, new_version) {
+        return Some(updated);
     }
 
     let shorthand = parse_numeric_shorthand(trimmed_existing)?;

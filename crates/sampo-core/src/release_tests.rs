@@ -2929,6 +2929,67 @@ bar = { version = "1.0.0", path = "crates/bar" }
         );
     }
 
+    #[test]
+    fn exact_pins_follow_release_in_fixed_group() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_crate("c", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "=1.0.0")
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\", \"cargo/c\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor");
+        fs::write(
+            workspace.root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n\n[workspace.dependencies]\nb = { path=\"crates/b\", version=\"=1.0.0\" }\n",
+        )
+        .unwrap();
+        let c_manifest = workspace.crates["c"].join("Cargo.toml");
+        let c_content = fs::read_to_string(&c_manifest).unwrap();
+        fs::write(
+            &c_manifest,
+            c_content + "\n[dependencies]\nb.workspace = true\n",
+        )
+        .unwrap();
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_dependency_version("a", "b", "=1.1.0");
+        let root_manifest: toml::Value =
+            toml::from_str(&fs::read_to_string(workspace.root.join("Cargo.toml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            root_manifest["workspace"]["dependencies"]["b"]["version"].as_str(),
+            Some("=1.1.0")
+        );
+    }
+
+    #[test]
+    fn exact_pin_does_not_hide_a_range_in_another_section() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "=1.0.0")
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor");
+        let a_manifest = workspace.crates["a"].join("Cargo.toml");
+        let a_content = fs::read_to_string(&a_manifest).unwrap();
+        fs::write(
+            &a_manifest,
+            a_content + "\n[dev-dependencies]\nb = { path=\"../b\", version=\"~1.0.0\" }\n",
+        )
+        .unwrap();
+
+        match workspace.run_release(true) {
+            Err(crate::errors::SampoError::ConstraintViolation(message)) => {
+                assert!(message.contains("~1.0.0"), "{message}");
+                assert!(!message.contains("=1.0.0"), "{message}");
+            }
+            other => panic!("Expected SampoError::ConstraintViolation, got {other:?}"),
+        }
+    }
+
     /// Pins `SAMPO_RELEASE_BRANCH=main` under a briefly-held lock; a long-lived
     /// `EnvVarGuard` would serialise every parallel test against this one.
     fn setup_sampo_root(
@@ -3107,6 +3168,80 @@ bar = { version = "1.0.0", path = "crates/bar" }
                  @bruits/sampo-win32-x64 (npm)@0.22.0"
             ),
             "{changelog}"
+        );
+    }
+
+    /// An npm workspace of `@acme/<name>` packages, all at 1.0.0, with the given Sampo config.
+    fn write_scoped_npm_workspace(root: &std::path::Path, names: &[&str], config: &str) {
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        for name in names {
+            let dir = root.join("packages").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("package.json"),
+                format!(r#"{{"name":"@acme/{name}","version":"1.0.0"}}"#),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(root.join(".sampo/config.toml"), config).unwrap();
+    }
+
+    fn released_versions(output: &ReleaseOutput) -> Vec<(&str, &str)> {
+        let mut released: Vec<_> = output
+            .released_packages
+            .iter()
+            .map(|package| (package.identifier.as_str(), package.new_version.as_str()))
+            .collect();
+        released.sort();
+        released
+    }
+
+    #[test]
+    fn release_reads_scoped_npm_names_in_changesets_without_the_ecosystem_prefix() {
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scoped_npm_workspace(root, &["a", "b"], "");
+        TestWorkspace::write_changeset_to_dir(
+            &root.join(".sampo/changesets"),
+            // Quoted, as Changesets writes a scoped name
+            &["\"@acme/a\""],
+            Bump::Patch,
+            "fix: a bug",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(released_versions(&output), [("npm/@acme/a", "1.0.1")]);
+    }
+
+    #[test]
+    fn fixed_group_reads_scoped_npm_names_without_the_ecosystem_prefix() {
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scoped_npm_workspace(
+            root,
+            &["a", "b"],
+            "[packages]\nfixed = [[\"@acme/a\", \"@acme/b\"]]\n",
+        );
+        TestWorkspace::write_changeset_to_dir(
+            &root.join(".sampo/changesets"),
+            &["\"@acme/a\""],
+            Bump::Minor,
+            "feat: a feature",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("npm/@acme/a", "1.1.0"), ("npm/@acme/b", "1.1.0")]
         );
     }
 
@@ -3820,6 +3955,79 @@ end
             changeset.exists(),
             "the changeset must survive a failed release"
         );
+    }
+
+    const PRIVATE_VERSIONLESS_APP: &str =
+        r#"{"name":"web","private":true,"dependencies":{"lib":"^1.0.0"}}"#;
+
+    fn write_npm_lib_and_private_app(root: &std::path::Path, changeset: &str) {
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*","apps/*"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("packages/lib")).unwrap();
+        fs::write(
+            root.join("packages/lib/package.json"),
+            r#"{"name":"lib","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("apps/web")).unwrap();
+        fs::write(root.join("apps/web/package.json"), PRIVATE_VERSIONLESS_APP).unwrap();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+        fs::write(root.join(".sampo/changesets/c.md"), changeset).unwrap();
+    }
+
+    #[test]
+    fn private_versionless_npm_dependent_is_left_out_of_the_release() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_private_app(root, "---\nnpm/lib: patch\n---\n\nfix: a change\n");
+
+        let output = run_release(root, false).unwrap();
+
+        let released: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(released, ["lib"]);
+        assert_eq!(
+            fs::read_to_string(root.join("packages/lib/package.json")).unwrap(),
+            r#"{"name":"lib","version":"1.0.1"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("apps/web/package.json")).unwrap(),
+            PRIVATE_VERSIONLESS_APP
+        );
+        assert!(!root.join("apps/web/CHANGELOG.md").exists());
+    }
+
+    #[test]
+    fn changeset_naming_a_private_versionless_npm_package_fails_before_any_write() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_private_app(
+            root,
+            "---\nnpm/lib: minor\nnpm/web: minor\n---\n\nfeat: a change\n",
+        );
+
+        let message = run_release(root, false)
+            .expect_err("web is not a release target")
+            .to_string();
+
+        assert!(
+            message.contains("'npm/web'") && message.contains("not found"),
+            "got: {message}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("packages/lib/package.json")).unwrap(),
+            r#"{"name":"lib","version":"1.0.0"}"#
+        );
+        assert!(!root.join("packages/lib/CHANGELOG.md").exists());
+        assert!(root.join(".sampo/changesets/c.md").exists());
     }
 
     #[test]

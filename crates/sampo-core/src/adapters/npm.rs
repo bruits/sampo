@@ -3,6 +3,7 @@ use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
 use reqwest::StatusCode;
+use semver::Version;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use serde_json::value::RawValue;
@@ -28,7 +29,6 @@ struct NpmPublishConfig {
 #[derive(Debug, Clone)]
 struct NpmManifestInfo {
     name: String,
-    #[allow(dead_code)]
     version: Option<String>,
     private: bool,
     package_manager: Option<String>,
@@ -136,6 +136,7 @@ impl NpmAdapter {
 
         let mut cmd = command(manager_name);
         cmd.args(publish_command_args(
+            manager,
             yarn.as_ref(),
             dry_run,
             &info,
@@ -655,6 +656,7 @@ fn wants_dry_run(dry_run: bool, extra_args: &[String]) -> bool {
 }
 
 fn publish_command_args(
+    manager: PackageManager,
     yarn: Option<&YarnPublish>,
     dry_run: bool,
     info: &NpmManifestInfo,
@@ -692,15 +694,55 @@ fn publish_command_args(
         }
     }
 
-    if let Some(tag) = info.publish_config.tag.as_deref()
-        && !has_flag(extra_args, "--tag")
+    if !has_flag(extra_args, "--tag")
+        && let Some(tag) = default_dist_tag(info)
     {
         args.push("--tag".to_string());
-        args.push(tag.to_string());
+        args.push(tag);
+    }
+
+    // Off its `publish-branch`, pnpm asks to confirm. Without a terminal, pnpm 12 fails and
+    // older versions exit 0 without publishing. `git.release_branches` already vets the branch.
+    if manager == PackageManager::Pnpm
+        && !has_flag(extra_args, "--git-checks")
+        && !has_flag(extra_args, "--no-git-checks")
+    {
+        args.push("--no-git-checks".to_string());
     }
 
     args.extend_from_slice(extra_args);
     args
+}
+
+/// Stands in for a first identifier npm cannot take as a tag: it refuses one that reads as a
+/// version range, and reads one starting with `-` as flags, which can exit 0 without publishing.
+const FALLBACK_PRERELEASE_TAG: &str = "next";
+
+/// npm 11 refuses to publish a pre-release under the default tag.
+fn default_dist_tag(info: &NpmManifestInfo) -> Option<String> {
+    if let Some(tag) = &info.publish_config.tag {
+        return Some(tag.clone());
+    }
+    prerelease_dist_tag(info.version.as_deref()?)
+}
+
+fn prerelease_dist_tag(version: &str) -> Option<String> {
+    let pre = Version::parse(version).ok()?.pre;
+    let identifier = pre
+        .split('.')
+        .next()
+        .filter(|identifier| !identifier.is_empty())?;
+    if identifier.starts_with('-') || reads_as_version_range(identifier) {
+        return Some(FALLBACK_PRERELEASE_TAG.to_string());
+    }
+    Some(identifier.to_string())
+}
+
+/// The pre-release identifiers npm reads as a semver range, such as `0`, `x` and `v1`.
+fn reads_as_version_range(tag: &str) -> bool {
+    let rest = tag.trim_start_matches('v');
+    rest.eq_ignore_ascii_case("x")
+        || (!rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// `yarn npm publish` gained `--dry-run` in 4.9.3 (yarnpkg/berry#6850).
@@ -1665,27 +1707,13 @@ fn discover_npm(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceE
         }
     }
 
-    if let Some(manifest) = &root_manifest {
-        let has_name = manifest
+    if let Some(manifest) = &root_manifest
+        && manifest
             .get("name")
             .and_then(JsonValue::as_str)
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let is_private = manifest
-            .get("private")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false);
-        let has_version = manifest
-            .get("version")
-            .and_then(JsonValue::as_str)
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-
-        // A private, versionless root is a workspace container, not a release target.
-        let is_private_versionless_container = is_private && !has_version;
-        if has_name && !is_private_versionless_container {
-            package_dirs.insert(root.to_path_buf());
-        }
+            .is_some_and(|s| !s.trim().is_empty())
+    {
+        package_dirs.insert(root.to_path_buf());
     }
 
     let mut manifests: Vec<(String, String, PathBuf, JsonValue)> = Vec::new();
@@ -1715,6 +1743,14 @@ fn discover_npm(root: &Path) -> std::result::Result<Vec<PackageInfo>, WorkspaceE
             .and_then(JsonValue::as_str)
             .unwrap_or("")
             .to_string();
+        let is_private = manifest
+            .get("private")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(false);
+        // A private, versionless package is not a release target.
+        if is_private && version.trim().is_empty() {
+            continue;
+        }
 
         manifests.push((name.clone(), version, dir.clone(), manifest));
         name_to_path.insert(name, dir.clone());

@@ -132,6 +132,9 @@ While in pre-release mode, you can continue to add changesets and run `sampo rel
 > [!NOTE]
 > In Java (Maven) projects, `SNAPSHOT` is not a valid label. Sampo only manages static release versions, and has no snapshot cycle. Use `alpha`, `beta`, `rc` or a milestone like `M1` instead.
 
+> [!NOTE]
+> In JavaScript/TypeScript (npm) projects, `sampo publish` publishes a pre-release under a dist-tag named after its first pre-release identifier (`alpha` for `1.2.0-alpha.1`). A `publishConfig.tag` in `package.json` or a `--tag` passed through `--npm-args` takes precedence.
+
 ## Configuration
 
 > [!NOTE]
@@ -224,7 +227,7 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 `ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust crates, `"private": true` in a workspace `package.json` for npm packages, or a `Private :: Do Not Upload` classifier in `pyproject.toml` for Python packages. By default, Sampo still tracks versioning and changelogs for those packages, but will not attempt to publish them to their registries.
 
 > [!NOTE]
-> This tracking still requires a declared `version`. A package that is both not publishable **and** has no `version` (typically a workspace root used as a container) is skipped entirely, so it never gets a version tag or release.
+> This tracking still requires a declared `version`. A package that is both not publishable **and** has no `version` (typically a workspace root or an app) is skipped entirely, so it never gets a version tag or release.
 
 `ignore`: A list of glob-like patterns to ignore packages by canonical identifier, plain name, or relative path. `*` matches any sequence. Examples:
 

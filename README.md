@@ -16,9 +16,10 @@ Don't know where to start? Check out Sampo's [documentation](./crates/sampo/READ
 
 ## Acknowledgements
 
-Sampo builds on the work of several open-source projects:
+Sampo is deeply inspired by [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), but made with Rust and designed for multi-ecosystem monorepos. Read more about Sampo's [alternatives](./crates/sampo/README.md#alternatives).
 
-- [Changesets](https://github.com/changesets/changesets) and [Lerna](https://github.com/lerna/lerna), which inspired its changesets and monorepo release workflows, as its [alternatives](./crates/sampo/README.md#alternatives) explain
+Sampo also builds on the work of these open-source projects:
+
 - Knope's [changesets](https://github.com/knope-dev/changesets) crate, which parses changeset files. [Knope](https://github.com/knope-dev/knope) is another Rust project inspired by Changesets, well worth a look
 - [Semantic Versioning](https://semver.org/), whose `MAJOR.MINOR.PATCH` format and version bumps Sampo uses and enforces
 
