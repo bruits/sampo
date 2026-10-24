@@ -2305,6 +2305,67 @@ bar = { version = "1.0.0", path = "crates/bar" }
         );
     }
 
+    #[test]
+    fn exact_pins_follow_release_in_fixed_group() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_crate("c", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "=1.0.0")
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\", \"cargo/c\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor");
+        fs::write(
+            workspace.root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n\n[workspace.dependencies]\nb = { path=\"crates/b\", version=\"=1.0.0\" }\n",
+        )
+        .unwrap();
+        let c_manifest = workspace.crates["c"].join("Cargo.toml");
+        let c_content = fs::read_to_string(&c_manifest).unwrap();
+        fs::write(
+            &c_manifest,
+            c_content + "\n[dependencies]\nb.workspace = true\n",
+        )
+        .unwrap();
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_dependency_version("a", "b", "=1.1.0");
+        let root_manifest: toml::Value =
+            toml::from_str(&fs::read_to_string(workspace.root.join("Cargo.toml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            root_manifest["workspace"]["dependencies"]["b"]["version"].as_str(),
+            Some("=1.1.0")
+        );
+    }
+
+    #[test]
+    fn exact_pin_does_not_hide_a_range_in_another_section() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "=1.0.0")
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n")
+            .add_changeset(&["cargo/b"], Bump::Minor, "bump b minor");
+        let a_manifest = workspace.crates["a"].join("Cargo.toml");
+        let a_content = fs::read_to_string(&a_manifest).unwrap();
+        fs::write(
+            &a_manifest,
+            a_content + "\n[dev-dependencies]\nb = { path=\"../b\", version=\"~1.0.0\" }\n",
+        )
+        .unwrap();
+
+        match workspace.run_release(true) {
+            Err(crate::errors::SampoError::ConstraintViolation(message)) => {
+                assert!(message.contains("~1.0.0"), "{message}");
+                assert!(!message.contains("=1.0.0"), "{message}");
+            }
+            other => panic!("Expected SampoError::ConstraintViolation, got {other:?}"),
+        }
+    }
+
     /// Pins `SAMPO_RELEASE_BRANCH=main` under a briefly-held lock; a long-lived
     /// `EnvVarGuard` would serialise every parallel test against this one.
     fn setup_sampo_root(

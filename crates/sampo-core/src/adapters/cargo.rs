@@ -659,28 +659,44 @@ impl ManifestMetadata {
         dep_name: &str,
     ) -> Option<String> {
         let package = self.package_for_manifest(manifest_path)?;
-        package
+        let constraints: Vec<&str> = package
             .dependencies
             .iter()
-            .find(|dep| dep.package_name == dep_name)
-            .map(|dep| dep.version_req.clone())
+            .filter(|dep| dep.package_name == dep_name)
+            .map(|dep| dep.version_req.as_str())
+            .collect();
+        // The release rewrites an exact pin, so a range in another section is the one to check.
+        constraints
+            .iter()
+            .find(|req| !is_pin(req))
+            .or(constraints.first())
+            .map(|req| req.to_string())
     }
 
-    /// Check if a dependency's version is pinned: a bare semver like `"1.0.0"` in the raw TOML,
-    /// or an exact `"=1.0.0"`. Pinned versions will be updated during manifest updates,
-    /// while range constraints (e.g., `"^1.0"`) are preserved and need constraint validation.
+    /// Check if a dependency's version is pinned (bare `"1.0.0"` or exact `"=1.0.0"`) in every
+    /// section of the member manifest declaring it. Pinned versions will be updated during
+    /// manifest updates, while range constraints (e.g., `"^1.0"`) are preserved and need
+    /// constraint validation.
     pub fn is_dependency_pinned(&self, manifest_path: &Path, dep_name: &str) -> bool {
-        let dependency = self
+        let dependencies: Vec<_> = self
             .package_for_manifest(manifest_path)
-            .and_then(|pkg| pkg.dependencies.iter().find(|d| d.package_name == dep_name));
+            .map(|pkg| {
+                pkg.dependencies
+                    .iter()
+                    .filter(|d| d.package_name == dep_name)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Metadata cannot tell a bare `1.0.0` from `^1.0.0`, but it can tell an exact pin, and
         // sees one inherited from `[workspace.dependencies]`, which the member manifest lacks.
-        if dependency.is_some_and(|d| is_pin(&d.version_req)) {
+        if !dependencies.is_empty() && dependencies.iter().all(|d| is_pin(&d.version_req)) {
             return true;
         }
 
-        let manifest_key = dependency.map_or(dep_name, |d| d.manifest_key.as_str());
+        let manifest_key = dependencies
+            .first()
+            .map_or(dep_name, |d| d.manifest_key.as_str());
 
         let content = match fs::read_to_string(manifest_path) {
             Ok(c) => c,
@@ -692,25 +708,21 @@ impl ManifestMetadata {
         };
 
         let top = doc.as_table();
-        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-            if let Some(raw) = raw_dep_version(top, section, manifest_key) {
-                return is_pin(raw);
-            }
-        }
-
+        let mut tables = vec![top];
         if let Some(targets) = top.get("target").and_then(Item::as_table) {
-            for (_, target_item) in targets.iter() {
-                if let Some(target_table) = target_item.as_table() {
-                    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                        if let Some(raw) = raw_dep_version(target_table, section, manifest_key) {
-                            return is_pin(raw);
-                        }
-                    }
-                }
-            }
+            tables.extend(targets.iter().filter_map(|(_, target)| target.as_table()));
         }
 
-        false
+        // A range in one section is not rewritten, so a pin in another must not hide it.
+        let mut requirements = tables
+            .into_iter()
+            .flat_map(|table| {
+                ["dependencies", "dev-dependencies", "build-dependencies"]
+                    .into_iter()
+                    .filter_map(move |section| raw_dep_version(table, section, manifest_key))
+            })
+            .peekable();
+        requirements.peek().is_some() && requirements.all(is_pin)
     }
 }
 
@@ -1006,9 +1018,8 @@ fn raw_dep_version<'a>(parent: &'a Table, section: &str, dep_name: &str) -> Opti
     }
 }
 
-/// The operator of a pin, which follows its crate in a release instead of being validated as a
-/// range: an empty one for a bare semver (`1.0.0`), `=` for an exact one (`=1.0.0`). `None` for
-/// a range, including a partial `=1.0`, which Cargo reads as `>=1.0.0, <1.1.0`.
+/// The operator of a pin: empty for a bare `1.0.0`, `=` for an exact `=1.0.0`. `None` for a
+/// range, including a partial `=1.0`, which Cargo reads as `>=1.0.0, <1.1.0`.
 fn pin_operator(requirement: &str) -> Option<&'static str> {
     let trimmed = requirement.trim();
 
@@ -1028,17 +1039,12 @@ fn is_pin(requirement: &str) -> bool {
     pin_operator(requirement).is_some()
 }
 
-/// The requirement a pinned dependency takes to follow its crate to `new_version`, keeping
-/// the operator it carries. Ranges are not pins.
-fn pinned_requirement(existing: &str, new_version: &str) -> Option<String> {
-    pin_operator(existing).map(|operator| format!("{operator}{new_version}"))
-}
-
-/// The requirement to write when the dependency moves to `new_version`, or `None` to leave it
-/// as written: ranges are deferred to constraint validation in release.rs, and a pin already
-/// on the new version has nothing to change.
+/// A pin moved to `new_version` with its operator, or `None` when there is nothing to write:
+/// ranges are deferred to constraint validation in release.rs.
 fn updated_dependency_requirement(existing: &str, new_version: &str) -> Option<String> {
-    pinned_requirement(existing, new_version).filter(|updated| updated != existing.trim())
+    pin_operator(existing)
+        .map(|operator| format!("{operator}{new_version}"))
+        .filter(|updated| updated != existing.trim())
 }
 
 fn has_package_field(item: &Item, name: &str) -> bool {
@@ -1217,8 +1223,9 @@ fn compute_workspace_dependency_version(existing: &str, new_version: &str) -> Op
         return None;
     }
 
-    if let Some(pinned) = pinned_requirement(trimmed_existing, new_version) {
-        return (pinned != trimmed_existing).then_some(pinned);
+    // A pin already on `new_version` falls through, and has too many parts to be a shorthand.
+    if let Some(updated) = updated_dependency_requirement(trimmed_existing, new_version) {
+        return Some(updated);
     }
 
     let shorthand = parse_numeric_shorthand(trimmed_existing)?;
