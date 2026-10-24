@@ -842,6 +842,59 @@ mod tests {
     }
 
     #[test]
+    fn stable_release_after_exit_finds_the_prerelease_section_below_an_intro() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("foo", "1.1.0-alpha.1")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog(
+                "foo",
+                "# foo
+
+## About
+
+Hand-written notes.
+
+## 1.1.0-alpha.1
+
+### Minor changes
+
+- feat: alpha foundation
+",
+            )
+            .add_preserved_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
+
+        exit_prerelease(&workspace.root, &[String::from("foo")]).unwrap();
+        workspace.run_release(false).unwrap();
+
+        // The intro section is not taken for the top release, so the exit is recognised and
+        // the version stays on the pre-release's base.
+        workspace.assert_crate_version("foo", "1.1.0");
+        assert_eq!(
+            workspace.read_changelog("foo"),
+            "# foo
+
+## About
+
+Hand-written notes.
+
+## 1.1.0
+
+### Minor changes
+
+- feat: alpha foundation
+
+## 1.1.0-alpha.1
+
+### Minor changes
+
+- feat: alpha foundation
+"
+        );
+    }
+
+    #[test]
     fn stable_release_after_exit_keeps_dependents_on_their_base() {
         let mut workspace = TestWorkspace::new();
         let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
@@ -1174,6 +1227,577 @@ tempfile = "3.0"
         workspace.assert_changelog_contains("x", "feat: new minor");
         workspace.assert_changelog_contains("x", "### Patch changes");
         workspace.assert_changelog_contains("x", "initial patch");
+    }
+
+    /// Releases a patch of `x` (1.0.1 to 1.0.2) on top of `changelog`, and returns the
+    /// changelog Sampo leaves.
+    fn changelog_after_patch_release(changelog: &str) -> String {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "1.0.1")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog("x", changelog)
+            .add_changeset(&["x"], Bump::Patch, "fix: new fix");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("x", "1.0.2");
+        workspace.read_changelog("x")
+    }
+
+    /// Releases a patch of the PyPI package `demo` at the manifest `version`, which may have
+    /// fewer than three components, on top of `changelog`, and returns the changelog Sampo
+    /// leaves.
+    fn pypi_changelog_after_patch_release(version: &str, changelog: &str) -> String {
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[changelog]\nshow_release_date = false\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("pyproject.toml"),
+            format!("[project]\nname = \"demo\"\nversion = \"{version}\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join("CHANGELOG.md"), changelog).unwrap();
+        fs::write(
+            root.join(".sampo/changesets/fix.md"),
+            "---\npypi/demo: patch\n---\n\nfix: new fix\n",
+        )
+        .unwrap();
+
+        run_release(root, false).unwrap();
+
+        fs::read_to_string(root.join("CHANGELOG.md")).unwrap()
+    }
+
+    #[test]
+    fn keep_a_changelog_section_is_kept_as_written() {
+        let before = "# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [1.0.1] - 2024-01-01
+
+### Fixed
+
+- Old fix.
+
+[1.0.1]: https://example.com/releases/v1.0.1
+";
+        let after = "# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## [1.0.1] - 2024-01-01
+
+### Fixed
+
+- Old fix.
+
+[1.0.1]: https://example.com/releases/v1.0.1
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn v_prefixed_section_is_kept_as_written() {
+        let before = "# Changelog
+
+## v1.0.1
+
+### Fixed
+
+- Old fix.
+";
+        let after = "# Changelog
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## v1.0.1
+
+### Fixed
+
+- Old fix.
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn release_please_sections_are_kept_as_written() {
+        let before = "# Changelog
+
+## [1.0.1](https://example.com/compare/v1.0.0...v1.0.1) (2024-01-01)
+
+### Bug Fixes
+
+* old fix ([abc1234](https://example.com/commit/abc1234))
+
+## 1.0.0 (2023-12-01)
+
+### Features
+
+* first release ([def5678](https://example.com/commit/def5678))
+";
+        let after = "# Changelog
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## [1.0.1](https://example.com/compare/v1.0.0...v1.0.1) (2024-01-01)
+
+### Bug Fixes
+
+* old fix ([abc1234](https://example.com/commit/abc1234))
+
+## 1.0.0 (2023-12-01)
+
+### Features
+
+* first release ([def5678](https://example.com/commit/def5678))
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn section_with_a_parenthesized_date_is_kept_as_written() {
+        let before = "# Changelog
+
+## 1.0.1 (2024-01-01)
+
+### Patch changes
+
+- Old fix.
+";
+        let after = "# Changelog
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## 1.0.1 (2024-01-01)
+
+### Patch changes
+
+- Old fix.
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn intro_sections_stay_above_the_new_release() {
+        let before = "# Changelog
+
+## About
+
+This changelog lists user-facing changes only.
+
+## [Unreleased]
+
+## 1.0.1
+
+### Patch changes
+
+- Old fix.
+";
+        let after = "# Changelog
+
+## About
+
+This changelog lists user-facing changes only.
+
+## [Unreleased]
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## 1.0.1
+
+### Patch changes
+
+- Old fix.
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn section_older_than_the_manifest_version_is_kept() {
+        let before = "# Changelog
+
+## 1.0.0
+
+### Patch changes
+
+- Initial release.
+";
+        let after = "# Changelog
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## 1.0.0
+
+### Patch changes
+
+- Initial release.
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn section_of_a_two_component_manifest_version_is_kept() {
+        // Feature releases are `x.y` and patches `x.y.z`, so the manifest is at `2.1`.
+        let before = "# Changelog
+
+## 2.1
+
+### Minor changes
+
+- Feature release.
+
+## 2.0.1
+
+### Patch changes
+
+- Patch release.
+";
+        let after = "# Changelog
+
+## 2.1.1
+
+### Patch changes
+
+- fix: new fix
+
+## 2.1
+
+### Minor changes
+
+- Feature release.
+
+## 2.0.1
+
+### Patch changes
+
+- Patch release.
+";
+
+        assert_eq!(pypi_changelog_after_patch_release("2.1", before), after);
+    }
+
+    #[test]
+    fn section_of_a_one_component_manifest_version_is_kept() {
+        // A bare number is no version heading, except for the package's own version.
+        let before = "# Changelog
+
+## 2
+
+### Major changes
+
+- Big release.
+
+## 1.9.3
+
+### Patch changes
+
+- Old patch.
+";
+        let after = "# Changelog
+
+## 2.0.1
+
+### Patch changes
+
+- fix: new fix
+
+## 2
+
+### Major changes
+
+- Big release.
+
+## 1.9.3
+
+### Patch changes
+
+- Old patch.
+";
+
+        assert_eq!(pypi_changelog_after_patch_release("2", before), after);
+    }
+
+    #[test]
+    fn unreleased_section_is_merged_for_a_two_component_manifest_version() {
+        let before = "# Changelog
+
+## 0.1.1
+
+### Patch changes
+
+- fix: unreleased bug
+";
+        let after = "# Changelog
+
+## 0.1.1
+
+### Patch changes
+
+- fix: new fix
+- fix: unreleased bug
+
+";
+
+        assert_eq!(pypi_changelog_after_patch_release("0.1", before), after);
+    }
+
+    #[test]
+    fn sections_without_a_version_are_kept_below_the_new_release() {
+        let before = "# Changelog
+
+## 2024-01-01
+
+- Old fix.
+";
+        let after = "# Changelog
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## 2024-01-01
+
+- Old fix.
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn unreleased_placeholder_alone_is_kept_below_the_new_release() {
+        // Without a version heading to go above, the first release takes the place of the
+        // first `##` section. Later ones go above that release, not above the placeholder.
+        let before = "# Changelog
+
+## [Unreleased]
+";
+        let after = "# Changelog
+
+## 1.0.2
+
+### Patch changes
+
+- fix: new fix
+
+## [Unreleased]
+";
+
+        assert_eq!(changelog_after_patch_release(before), after);
+    }
+
+    #[test]
+    fn merged_top_section_keeps_multi_line_entries_whole() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "0.1.0")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog(
+                "x",
+                "# x
+
+## 0.1.1
+
+### Patch changes
+
+- fix: a bug
+  with a second line
+  - and a nested item
+
+- fix: another
+",
+            )
+            .add_changeset(&["x"], Bump::Minor, "feat: new thing");
+
+        workspace.run_release(false).unwrap();
+
+        assert_eq!(
+            workspace.read_changelog("x"),
+            "# x
+
+## 0.2.0
+
+### Minor changes
+
+- feat: new thing
+
+### Patch changes
+
+- fix: a bug
+  with a second line
+  - and a nested item
+- fix: another
+
+"
+        );
+    }
+
+    #[test]
+    fn merged_top_section_does_not_fold_trailing_text_into_its_last_entry() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "0.1.0")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog(
+                "x",
+                "# x
+
+## 0.1.1
+
+### Patch changes
+
+- fix: a bug
+
+[0.1.1]: https://example.com/releases/v0.1.1
+",
+            )
+            .add_changeset(&["x"], Bump::Minor, "feat: new thing");
+
+        workspace.run_release(false).unwrap();
+
+        assert_eq!(
+            workspace.read_changelog("x"),
+            "# x
+
+## 0.2.0
+
+### Minor changes
+
+- feat: new thing
+
+### Patch changes
+
+- fix: a bug
+
+"
+        );
+    }
+
+    #[test]
+    fn prerelease_keeps_the_stable_release_it_was_entered_from() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "1.2.3")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_existing_changelog(
+                "x",
+                "# x
+
+## 1.2.3
+
+### Patch changes
+
+- Published fix.
+",
+            );
+        enter_prerelease(&workspace.root, &[String::from("x")], "alpha").unwrap();
+        workspace.add_changeset(&["x"], Bump::Patch, "feat: pre work");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("x", "1.2.4-alpha");
+        assert_eq!(
+            workspace.read_changelog("x"),
+            "# x
+
+## 1.2.4-alpha
+
+### Patch changes
+
+- feat: pre work
+
+## 1.2.3
+
+### Patch changes
+
+- Published fix.
+"
+        );
+    }
+
+    #[test]
+    fn switching_back_to_an_earlier_label_keeps_its_section() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("x", "1.0.0-beta")
+            .set_config("[changelog]\nshow_release_date = false\n")
+            .add_changeset(&["x"], Bump::Patch, "fix: beta work");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("x", "1.0.1-beta");
+
+        let packages = [String::from("x")];
+        exit_prerelease(&workspace.root, &packages).unwrap();
+        restore_preserved_changesets(&workspace.root).unwrap();
+        enter_prerelease(&workspace.root, &packages, "alpha").unwrap();
+        workspace.run_release(false).unwrap();
+
+        // The restored changeset is listed again in the new section, as after a switch to
+        // a later label, while the published beta section stays as it was.
+        workspace.assert_crate_version("x", "1.0.2-alpha");
+        assert_eq!(
+            workspace.read_changelog("x"),
+            "# x
+
+## 1.0.2-alpha
+
+### Patch changes
+
+- fix: beta work
+
+## 1.0.1-beta
+
+### Patch changes
+
+- fix: beta work
+
+"
+        );
     }
 
     #[test]
