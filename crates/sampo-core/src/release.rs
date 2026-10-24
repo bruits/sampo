@@ -2483,7 +2483,7 @@ fn exited_prerelease(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(SampoError::Io(io_error_with_path(err, &path))),
     };
-    let (_, versions) = split_intro_and_versions(changelog.trim_start_matches('\u{feff}'), version);
+    let (_, versions) = split_intro_and_versions(changelog.trim_start_matches('\u{feff}'));
     if !split_top_section(versions)
         .is_some_and(|(header_text, _, _)| header_is_prerelease_of(header_text, version))
     {
@@ -2509,47 +2509,29 @@ pub fn bump_version(old: &str, bump: Bump) -> std::result::Result<String, String
     })
 }
 
-/// Splits a changelog into its intro and the versions part, where new releases go. The versions
-/// part starts at the first version heading, in any format (`## 1.2.0`, `## v1.2.0`,
-/// `## [1.2.0] - date`), or at the heading of `version`, the package's current one, which may
-/// be a bare number (`## 2`). `##` sections above it, such as `## About`, stay in the intro.
-/// Without either, the versions part starts at the first `## ` heading.
-fn split_intro_and_versions<'a>(body: &'a str, version: &str) -> (&'a str, &'a str) {
-    let mut first_section = None;
+/// A digit marks a release heading in any format, so `## About` or `## [Unreleased]` stay on top.
+fn split_intro_and_versions(body: &str) -> (&str, &str) {
     let mut offset = 0;
-    for line in body.split_inclusive('\n') {
-        if let Some(header_text) = line.strip_prefix("## ") {
-            if leading_version(header_text).is_some()
-                || header_matches_release_version(header_text, version)
-            {
-                return body.split_at(offset);
-            }
-            first_section.get_or_insert(offset);
+    let len = body.len();
+    while offset < len {
+        if body[offset..]
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("## "))
+            .is_some_and(|heading| heading.contains(|c: char| c.is_ascii_digit()))
+        {
+            return body.split_at(offset);
         }
-        offset += line.len();
+
+        match body[offset..].find('\n') {
+            Some(newline_offset) => {
+                offset += newline_offset + 1;
+            }
+            None => break,
+        }
     }
 
-    body.split_at(first_section.unwrap_or(body.len()))
-}
-
-/// The version a changelog heading text (without the `## ` prefix) starts with, however the
-/// changelog writes it: `1.2.0`, `v1.2.0`, `[1.2.0]` or `[1.2.0](link)`, optionally followed
-/// by a date. A collapsed `1.0.0 ... 1.2.0` heading starts with its first version. A manifest
-/// version may have one to three components, but a heading needs two (`2.1`): a bare number
-/// (`2`, `v2`) or a date (`2024-01-01`) is too ambiguous to take for a version.
-fn leading_version(header_text: &str) -> Option<Version> {
-    let token = header_text.split_whitespace().next()?;
-    let token = token.strip_prefix('[').unwrap_or(token);
-    let token = token.strip_prefix('v').unwrap_or(token);
-    let end = token
-        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')))
-        .unwrap_or(token.len());
-    let candidate = &token[..end];
-    let numbers_end = candidate.find(['-', '+']).unwrap_or(candidate.len());
-    if !candidate[..numbers_end].contains('.') {
-        return None;
-    }
-    parse_version_string(candidate).ok()
+    (body, "")
 }
 
 /// Splits a changelog heading text (without the `## ` prefix) into the first and last
@@ -2616,21 +2598,20 @@ fn header_is_prerelease_of(header_text: &str, version: &str) -> bool {
         })
 }
 
-/// Whether a changelog heading names a version newer than `version`, so its section holds a
-/// release that has not shipped yet.
+/// Only a strict `x.y.z` heading, as Sampo writes it, can be unreleased and merged.
 fn header_is_ahead_of(header_text: &str, version: &str) -> bool {
-    let (Some(heading), Ok(version)) =
-        (leading_version(header_text), parse_version_string(version))
+    let (Some((first, _)), Ok(version)) =
+        (heading_versions(header_text), parse_version_string(version))
     else {
         return false;
     };
-    heading > version && !is_before_prerelease_cycle(&heading, &version)
+    let token = first.split('—').next().unwrap_or(first);
+    Version::parse(token).is_ok_and(|heading| {
+        heading.cmp_precedence(&version).is_gt() && !is_before_prerelease_cycle(&heading, &version)
+    })
 }
 
-/// Whether `heading` shipped before the pre-release cycle `version` is in, although SemVer
-/// ranks it higher: the stable version the cycle was entered from (`1.2.3` for `1.2.3-alpha`),
-/// or a pre-release of another label (`1.0.1-beta` for `1.0.1-alpha`, after switching back).
-/// A cycle keeps its label, so any other label is an earlier cycle.
+/// The cycle's stable base and other labels shipped before it, though SemVer ranks them higher.
 fn is_before_prerelease_cycle(heading: &Version, version: &Version) -> bool {
     if version.pre.is_empty() {
         return false;
@@ -2656,39 +2637,6 @@ fn split_top_section(versions: &str) -> Option<(&str, &str, &str)> {
     Some((after_marker[..header_end].trim(), body, remaining))
 }
 
-/// The entries of a changelog section body, each with the `###` heading it sits under. An
-/// entry is a `- ` item with its continuation lines, so multi-line and nested entries stay
-/// whole. Unindented text after a blank line, such as a link reference, is not part of it.
-fn section_entries(body: &str) -> Vec<(&str, String)> {
-    let mut entries: Vec<(&str, String)> = Vec::new();
-    let mut heading = None;
-    let mut continues_entry = false;
-    let mut blank_lines = 0;
-    for line in body.lines() {
-        if line.trim().is_empty() {
-            blank_lines += 1;
-            continue;
-        }
-        if let Some(text) = line.strip_prefix("### ") {
-            heading = Some(text.trim());
-            continues_entry = false;
-        } else if let (Some(item), Some(heading)) = (line.strip_prefix("- "), heading) {
-            entries.push((heading, item.to_string()));
-            continues_entry = true;
-        } else if continues_entry
-            && (blank_lines == 0 || line.starts_with(char::is_whitespace))
-            && let Some((_, message)) = entries.last_mut()
-        {
-            message.push_str(&"\n".repeat(blank_lines + 1));
-            message.push_str(line.strip_prefix("  ").unwrap_or(line));
-        } else {
-            continues_entry = false;
-        }
-        blank_lines = 0;
-    }
-    entries
-}
-
 /// With `collapse_version_bump_only`, a release without entries gets the version-bump-only
 /// line instead of an empty section, extending the latest section if it is one already.
 fn update_changelog(
@@ -2707,7 +2655,7 @@ fn update_changelog(
         String::new()
     };
     let cleaned = existing.trim_start_matches('\u{feff}');
-    let (intro_part, versions_part) = split_intro_and_versions(cleaned, old_version);
+    let (intro_part, versions_part) = split_intro_and_versions(cleaned);
     let mut intro = intro_part.to_string();
     let mut versions_body = versions_part;
 
@@ -2742,14 +2690,24 @@ fn update_changelog(
         push_unique_to_section(&mut sections, &heading, msg);
     }
 
-    // Merge the current top section only if it is ahead of old_version: its release never
-    // shipped. Any other section is published, or not written by Sampo, so it stays as is.
     if let Some((header_text, section_body, remaining)) = split_top_section(versions_body)
         && header_is_ahead_of(header_text, old_version)
     {
-        // Entries keep the heading they sit under, bump-based or custom tag
-        for (heading, message) in section_entries(section_body) {
-            push_unique_to_section(&mut sections, heading, message.trim_end());
+        // Parse existing section headings - support both bump-based and custom tags
+        let mut current_heading: Option<String> = None;
+        for line in section_body.lines() {
+            let t = line.trim();
+            if t.starts_with("### ") {
+                let heading_text = t.trim_start_matches("### ").trim();
+                current_heading = Some(heading_text.to_string());
+                continue;
+            }
+            if t.starts_with("- ")
+                && let Some(ref heading) = current_heading
+            {
+                let msg = t.trim_start_matches("- ").trim();
+                push_unique_to_section(&mut sections, heading, msg);
+            }
         }
 
         versions_body = remaining;
@@ -2969,148 +2927,43 @@ mod tests {
     }
 
     #[test]
-    fn leading_version_reads_the_version_a_heading_starts_with() {
-        for heading in [
-            "1.0.1",
-            "1.0.1 — 2024-01-01",
-            "1.0.1 - 2024-01-01",
-            "1.0.1 (2024-01-01)",
-            "v1.0.1",
-            "[1.0.1] - 2024-01-01",
-            "[v1.0.1]",
-            "[1.0.1](https://example.com/compare/v1.0.0...v1.0.1) (2024-01-01)",
-            "1.0.1 ... 1.0.3 — 2024-01-01",
-        ] {
-            assert_eq!(
-                leading_version(heading),
-                Some(Version::new(1, 0, 1)),
-                "{heading}"
-            );
-        }
-        assert_eq!(
-            leading_version("[1.1.0-alpha.1]"),
-            Version::parse("1.1.0-alpha.1").ok()
-        );
-        for heading in ["2.1", "v2.1", "[2.1] - 2024-01-01", "2.1 — 2024-01-01"] {
-            assert_eq!(
-                leading_version(heading),
-                Some(Version::new(2, 1, 0)),
-                "{heading}"
-            );
-        }
-        for heading in [
-            "About",
-            "Unreleased",
-            "[Unreleased]",
-            "2024-01-01",
-            "2",
-            "v2",
-            "1.x",
-            "Version 1.0.1",
-        ] {
-            assert_eq!(leading_version(heading), None, "{heading}");
-        }
-    }
-
-    #[test]
-    fn header_is_ahead_of_needs_a_newer_version() {
+    fn header_is_ahead_of_needs_a_newer_version_in_sampo_format() {
         for (heading, version) in [
             ("0.1.1", "0.1.0"),
-            ("[0.2.0] - 2024-01-01", "0.1.0"),
-            ("1.1.0-alpha", "1.0.0"),
+            ("0.2.0 — 2024-01-01", "0.1.0"),
             ("0.2.0 ... 0.3.0 — 2024-01-01", "0.1.0"),
+            ("1.1.0-alpha", "1.0.0"),
             ("1.2.4-alpha", "1.2.3-alpha"),
             ("1.1.0-alpha.2", "1.1.0-alpha.1"),
             ("1.3.0", "1.2.3-alpha"),
             ("0.1.1", "0.1"),
-            ("2.2", "2.1"),
+            ("2.2.0", "2.1"),
         ] {
             assert!(header_is_ahead_of(heading, version), "{heading}");
         }
         for (heading, version) in [
             ("1.0.1", "1.0.1"),
             ("1.0.1 — 2024-01-01", "1.0.1"),
-            ("[1.0.1] - 2024-01-01", "1.0.1"),
-            ("2.1", "2.1"),
+            ("1.0.1+20240101", "1.0.1"),
             ("2.1.0", "2.1"),
             ("2.1", "2.1.1"),
             ("1.0.0", "1.0.1"),
+            ("0.2.0 ... 0.4.0", "0.3.0"),
             ("1.1.0-alpha.1", "1.1.0"),
             ("1.1.0-alpha", "1.1.0-beta"),
-            ("0.2.0 ... 0.4.0", "0.3.0"),
+            ("[1.1.0] - 2024-01-01", "1.0.1"),
+            ("v1.1.0", "1.0.1"),
+            ("2.0 migration guide", "1.0.1"),
+            ("2.2", "2.1"),
+            ("2024-01-01", "1.0.1"),
             ("Unreleased", "1.0.0"),
-        ] {
-            assert!(!header_is_ahead_of(heading, version), "{heading}");
-        }
-    }
-
-    #[test]
-    fn header_is_ahead_of_ignores_releases_before_a_prerelease_cycle() {
-        // SemVer ranks these above the pre-release, but they shipped before its cycle.
-        for (heading, version) in [
             ("1.2.3", "1.2.3-alpha"),
             ("1.2.3 — 2024-01-01", "1.2.3-alpha.2"),
-            ("[1.2.3] - 2024-01-01", "1.2.3-rc.1"),
             ("1.0.1-beta", "1.0.1-alpha"),
             ("1.0.1-rc.1", "1.0.1-beta.2"),
         ] {
             assert!(!header_is_ahead_of(heading, version), "{heading}");
         }
-    }
-
-    #[test]
-    fn section_entries_keep_each_entry_whole() {
-        // Sampo renders a blank line inside an entry as two spaces.
-        let body = [
-            "",
-            "### Minor changes",
-            "",
-            "- feat: a",
-            "  with a second line",
-            "  - and a nested item",
-            "  ",
-            "  after a blank line",
-            "",
-            "- feat: b",
-            "",
-            "### Custom tag",
-            "",
-            "- c",
-        ]
-        .join("\n");
-        assert_eq!(
-            section_entries(&body),
-            [
-                (
-                    "Minor changes",
-                    "feat: a\nwith a second line\n- and a nested item\n\nafter a blank line"
-                        .to_string()
-                ),
-                ("Minor changes", "feat: b".to_string()),
-                ("Custom tag", "c".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn section_entries_end_at_a_blank_line_before_unindented_text() {
-        let body = "
-### Patch changes
-
-- fix: a bug
-  with a second line
-
-[0.1.1]: https://example.com/releases/v0.1.1
-
-A closing paragraph.
-";
-        assert_eq!(
-            section_entries(body),
-            [(
-                "Patch changes",
-                "fix: a bug\nwith a second line".to_string()
-            )]
-        );
     }
 
     #[test]

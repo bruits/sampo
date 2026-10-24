@@ -394,7 +394,7 @@ fn test_release_updates_versions_and_outputs() {
     assert!(manifest.contains("name = \"foo\""));
 
     let changelog = ws.read_file("crates/foo/CHANGELOG.md");
-    assert!(changelog.contains("## 0.2.0"));
+    assert!(changelog.starts_with("# Changelog\n\n## Unreleased\n\n## 0.2.0"));
     assert!(!ws.exists(".sampo/changesets/add-feature.md"));
 }
 
