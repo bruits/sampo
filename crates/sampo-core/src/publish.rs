@@ -2003,7 +2003,7 @@ edition = "2021"
         )
         .unwrap();
 
-        // Private, versionless member: discovered with an empty version, must be skipped.
+        // Private, versionless member: never discovered, so never tagged.
         let member = root.join("packages/internal");
         fs::create_dir_all(&member).unwrap();
         fs::write(
@@ -2077,8 +2077,8 @@ edition = "2021"
 
     #[test]
     fn two_versionless_members_no_spurious_conflict() {
-        // Two versionless members with a tag_format omitting {package_name} both
-        // render "npm-v", which would make check_tag_conflicts abort the whole
+        // Two versionless packages with a tag_format omitting {package_name} both
+        // render "pypi-v", which would make check_tag_conflicts abort the whole
         // publish even though neither is ever tagged.
         let workspace = TestWorkspace::new();
         let root = &workspace.root;
@@ -2090,12 +2090,15 @@ edition = "2021"
         )
         .unwrap();
 
+        // Private versionless npm packages are not discovered, PyPI ones are.
         for member_name in ["internal-a", "internal-b"] {
-            let member = root.join("packages").join(member_name);
+            let member = root.join("tools").join(member_name);
             fs::create_dir_all(&member).unwrap();
             fs::write(
-                member.join("package.json"),
-                format!(r#"{{ "name": "{member_name}", "private": true }}"#),
+                member.join("pyproject.toml"),
+                format!(
+                    "[project]\nname = \"{member_name}\"\nclassifiers = [\"Private :: Do Not Upload\"]\n"
+                ),
             )
             .unwrap();
         }
@@ -2126,8 +2129,8 @@ edition = "2021"
             "private versioned root should still be tagged, got: {tag_lines:?}"
         );
         assert!(
-            !tag_lines.contains(&"npm-v"),
-            "versionless members must not produce a malformed 'npm-v' tag, got: {tag_lines:?}"
+            !tag_lines.contains(&"pypi-v"),
+            "versionless packages must not produce a malformed 'pypi-v' tag, got: {tag_lines:?}"
         );
     }
 

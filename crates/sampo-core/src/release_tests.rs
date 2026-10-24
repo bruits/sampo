@@ -3333,6 +3333,79 @@ end
         );
     }
 
+    const PRIVATE_VERSIONLESS_APP: &str =
+        r#"{"name":"web","private":true,"dependencies":{"lib":"^1.0.0"}}"#;
+
+    fn write_npm_lib_and_private_app(root: &std::path::Path, changeset: &str) {
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*","apps/*"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("packages/lib")).unwrap();
+        fs::write(
+            root.join("packages/lib/package.json"),
+            r#"{"name":"lib","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("apps/web")).unwrap();
+        fs::write(root.join("apps/web/package.json"), PRIVATE_VERSIONLESS_APP).unwrap();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+        fs::write(root.join(".sampo/changesets/c.md"), changeset).unwrap();
+    }
+
+    #[test]
+    fn private_versionless_npm_dependent_is_left_out_of_the_release() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_private_app(root, "---\nnpm/lib: patch\n---\n\nfix: a change\n");
+
+        let output = run_release(root, false).unwrap();
+
+        let released: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(released, ["lib"]);
+        assert_eq!(
+            fs::read_to_string(root.join("packages/lib/package.json")).unwrap(),
+            r#"{"name":"lib","version":"1.0.1"}"#
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("apps/web/package.json")).unwrap(),
+            PRIVATE_VERSIONLESS_APP
+        );
+        assert!(!root.join("apps/web/CHANGELOG.md").exists());
+    }
+
+    #[test]
+    fn changeset_naming_a_private_versionless_npm_package_fails_before_any_write() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_private_app(
+            root,
+            "---\nnpm/lib: minor\nnpm/web: minor\n---\n\nfeat: a change\n",
+        );
+
+        let message = run_release(root, false)
+            .expect_err("web is not a release target")
+            .to_string();
+
+        assert!(
+            message.contains("'npm/web'") && message.contains("not found"),
+            "got: {message}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("packages/lib/package.json")).unwrap(),
+            r#"{"name":"lib","version":"1.0.0"}"#
+        );
+        assert!(!root.join("packages/lib/CHANGELOG.md").exists());
+        assert!(root.join(".sampo/changesets/c.md").exists());
+    }
+
     #[test]
     fn coupled_pair_advances_together_across_successive_prereleases() {
         set_release_branch_main();

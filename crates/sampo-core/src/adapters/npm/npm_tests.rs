@@ -434,9 +434,9 @@ fn npm_discover_separates_dev_deps() {
 }
 
 #[test]
-fn npm_discover_excludes_private_versionless_root() {
+fn npm_discover_excludes_private_versionless_packages() {
     // A discovered container would render a malformed versionless tag like
-    // "npm-root-monorepo-v" and get released.
+    // "npm-root-monorepo-v", and a discovered app would be bumped from 0.0.0.
     let temp = tempdir().unwrap();
     let root = temp.path();
 
@@ -463,11 +463,22 @@ fn npm_discover_excludes_private_versionless_root() {
     )
     .unwrap();
 
+    fs::create_dir_all(packages_dir.join("app")).unwrap();
+    fs::write(
+        packages_dir.join("app/package.json"),
+        r#"{ "name": "app", "private": true }"#,
+    )
+    .unwrap();
+
     let packages = NpmAdapter.discover(root).unwrap();
 
     assert!(
         !packages.iter().any(|p| p.name == "root-monorepo"),
         "private versionless root must be excluded from discovery"
+    );
+    assert!(
+        !packages.iter().any(|p| p.name == "app"),
+        "private versionless member must be excluded from discovery"
     );
     assert!(
         packages.iter().any(|p| p.name == "pkg-a"),
