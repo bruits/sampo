@@ -326,6 +326,15 @@ impl PackageAdapter {
             maven::validate_release_plan(&workspace.members, new_version_by_id)?;
         }
 
+        let has_npm = workspace
+            .members
+            .iter()
+            .any(|pkg| pkg.kind == PackageKind::Npm);
+
+        if has_npm {
+            npm::validate_release_plan(&workspace.members, new_version_by_id)?;
+        }
+
         let has_pypi = workspace
             .members
             .iter()

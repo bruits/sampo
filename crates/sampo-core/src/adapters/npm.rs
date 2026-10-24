@@ -1434,6 +1434,30 @@ fn detect_workspace_package_manager(workspace_root: &Path) -> Result<PackageMana
     ))
 }
 
+/// Fail before any manifest is written when a planned package cannot take its new
+/// version: [`update_manifest_versions`] has no `version` field to replace, and finding
+/// that out mid-release leaves the manifests written before it behind.
+pub(super) fn validate_release_plan(
+    members: &[PackageInfo],
+    new_version_by_id: &BTreeMap<String, String>,
+) -> Result<()> {
+    for member in members.iter().filter(|m| m.kind == PackageKind::Npm) {
+        if !new_version_by_id.contains_key(&member.identifier) {
+            continue;
+        }
+        // Discovery records an empty version when the manifest has no `version` string.
+        if member.version.is_empty() {
+            return Err(SampoError::Release(format!(
+                "Cannot release '{}': {} has no usable `version` field. Add a `version` for \
+                 Sampo to manage it, or leave the package out of the changeset.",
+                member.name,
+                NpmAdapter.manifest_path(&member.path).display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Update an npm manifest (`package.json`) by bumping the package version (if provided) and
 /// rewriting internal dependency specifiers when a new version is available.
 pub fn update_manifest_versions(

@@ -1806,6 +1806,17 @@ fn apply_dependency_cascade(
         by_id.insert(c.canonical_identifier().to_string(), c);
     }
 
+    // A package without a version has none to bump, so the cascade leaves it out and stops at
+    // it. Planned as 0.0.0 -> 0.0.1, it would fail the release on a manifest with no `version`
+    // to rewrite, or be logged under a version it never gets. Cargo is the exception: a
+    // release writes the crate's first version into `Cargo.toml`. A changeset can still name
+    // such a package, and `validate_release_plan` lets its adapter refuse that.
+    let is_left_out = |pkg_id: &str| {
+        by_id
+            .get(pkg_id)
+            .is_some_and(|info| info.version.is_empty() && info.kind != PackageKind::Cargo)
+    };
+
     let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
 
@@ -1815,6 +1826,10 @@ fn apply_dependency_cascade(
         // 1. Handle normal dependency relationships (unchanged → dependent)
         if let Some(deps) = dependents.get(&changed) {
             for dep_name in deps {
+                if is_left_out(dep_name) {
+                    continue;
+                }
+
                 // Check if this dependent package should be ignored
                 if let Some(info) = by_id.get(dep_name) {
                     match should_ignore_package(cfg, ws, info) {
@@ -1857,7 +1872,7 @@ fn apply_dependency_cascade(
         if let Some(group_idx) = find_fixed_group(&changed) {
             // All packages in the same fixed group should bump together
             for group_member in &resolved_fixed_groups[group_idx] {
-                if group_member == &changed {
+                if group_member == &changed || is_left_out(group_member) {
                     continue;
                 }
 

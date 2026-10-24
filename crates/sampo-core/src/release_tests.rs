@@ -3198,6 +3198,295 @@ end
         );
     }
 
+    const VERSIONLESS_APP: &str = r#"{
+  "name": "web",
+  "private": true,
+  "dependencies": { "lib": "^1.0.0" }
+}
+"#;
+
+    /// `packages/lib` is at `1.0.0`; `apps/web` is the manifest given.
+    fn write_npm_lib_and_app(root: &std::path::Path, web_manifest: &str, changeset: &str) {
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"monorepo","private":true,"workspaces":["packages/*","apps/*"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("packages/lib")).unwrap();
+        fs::write(
+            root.join("packages/lib/package.json"),
+            r#"{"name":"lib","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("apps/web")).unwrap();
+        fs::write(root.join("apps/web/package.json"), web_manifest).unwrap();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+        fs::write(root.join(".sampo/changesets/c.md"), changeset).unwrap();
+    }
+
+    fn manifest_version(manifest: &std::path::Path) -> String {
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manifest).unwrap()).unwrap();
+        json["version"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn dry_run_plan_leaves_out_a_dependent_without_a_version() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_app(
+            root,
+            VERSIONLESS_APP,
+            "---\nnpm/lib: patch\n---\n\nfix: a change\n",
+        );
+
+        let output =
+            run_release(root, true).expect("a versionless dependent must not fail the plan");
+
+        let planned: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(planned, ["lib"], "only lib has a version to bump");
+    }
+
+    #[test]
+    fn release_skips_a_dependent_without_a_version_and_still_releases_its_dependency() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_app(
+            root,
+            VERSIONLESS_APP,
+            "---\nnpm/lib: patch\n---\n\nfix: a change\n",
+        );
+
+        run_release(root, false).expect("a versionless dependent must not fail the release");
+
+        assert_eq!(
+            manifest_version(&root.join("packages/lib/package.json")),
+            "1.0.1"
+        );
+        assert!(root.join("packages/lib/CHANGELOG.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("apps/web/package.json")).unwrap(),
+            VERSIONLESS_APP,
+            "the app's manifest has no version to bump and stays as written"
+        );
+        assert!(!root.join("apps/web/CHANGELOG.md").exists());
+        assert!(
+            !root.join(".sampo/changesets/c.md").exists(),
+            "the release consumes the changeset"
+        );
+    }
+
+    #[test]
+    fn fixed_group_leaves_out_a_member_without_a_version() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        // Unlike `VERSIONLESS_APP`, `web` does not depend on `lib`, so only the group
+        // could pull it in.
+        let web_manifest = "{\"name\":\"web\",\"private\":true}\n";
+        write_npm_lib_and_app(
+            root,
+            web_manifest,
+            "---\nnpm/lib: patch\n---\n\nfix: a change\n",
+        );
+        fs::write(
+            root.join(".sampo/config.toml"),
+            "[packages]\nfixed = [[\"npm/lib\", \"npm/web\"]]\n",
+        )
+        .unwrap();
+
+        run_release(root, false).expect("a versionless group member must not fail the release");
+
+        assert_eq!(
+            manifest_version(&root.join("packages/lib/package.json")),
+            "1.0.1"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("apps/web/package.json")).unwrap(),
+            web_manifest
+        );
+        assert!(!root.join("apps/web/CHANGELOG.md").exists());
+    }
+
+    #[test]
+    fn cascade_stops_at_a_dependent_without_a_version() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        write_npm_lib_and_app(
+            root,
+            VERSIONLESS_APP,
+            "---\nnpm/lib: patch\n---\n\nfix: a change\n",
+        );
+        // `site` reaches `lib` only through `web`, which has no version to bump.
+        fs::create_dir_all(root.join("packages/site")).unwrap();
+        fs::write(
+            root.join("packages/site/package.json"),
+            r#"{"name":"site","version":"1.0.0","dependencies":{"web":"*"}}"#,
+        )
+        .unwrap();
+
+        let output =
+            run_release(root, true).expect("a versionless dependent must not fail the plan");
+
+        let planned: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(planned, ["lib"], "nothing propagates through `web`");
+    }
+
+    #[test]
+    fn pypi_dependent_without_a_version_is_left_out_too() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::write(
+            root.join("pyproject.toml"),
+            "[tool.uv.workspace]\nmembers = [\"lib\", \"app\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/pyproject.toml"),
+            "[project]\nname = \"lib\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        let app_manifest = "[project]\nname = \"app\"\ndependencies = [\"lib>=1.0\"]\n";
+        fs::write(root.join("app/pyproject.toml"), app_manifest).unwrap();
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\npypi/lib: patch\n---\n\nfix: a change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).expect("a versionless dependent must not fail the release");
+
+        assert!(
+            fs::read_to_string(root.join("lib/pyproject.toml"))
+                .unwrap()
+                .contains("version = \"1.0.1\"")
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("app/pyproject.toml")).unwrap(),
+            app_manifest
+        );
+        assert!(!root.join("app/CHANGELOG.md").exists());
+    }
+
+    #[test]
+    fn gleam_dependent_without_a_version_gets_no_changelog_entry() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
+
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(
+            root.join("lib/gleam.toml"),
+            "name = \"lib\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        fs::write(
+            root.join("app/gleam.toml"),
+            "name = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join(".sampo/changesets/c.md"),
+            "---\nhex/lib: patch\n---\n\nfix: a change\n",
+        )
+        .unwrap();
+
+        run_release(root, false).expect("a versionless dependent must not fail the release");
+
+        assert!(root.join("lib/CHANGELOG.md").exists());
+        assert!(
+            !root.join("app/CHANGELOG.md").exists(),
+            "a manifest without a version cannot hold the 0.0.1 the changelog would claim"
+        );
+    }
+
+    #[test]
+    fn cargo_dependent_without_a_version_still_gets_its_first_version() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("lib", "1.0.0")
+            .add_crate("app", "0.1.0");
+        // Without `version` or `publish`, discovery counts the crate as publishable.
+        let app_dir = workspace.crates["app"].clone();
+        fs::write(
+            app_dir.join("Cargo.toml"),
+            "[package]\nname=\"app\"\n\n[dependencies]\nlib = { path=\"../lib\" }\n",
+        )
+        .unwrap();
+        workspace.add_changeset(&["lib"], Bump::Patch, "fix: a change");
+
+        let output = workspace
+            .run_release(false)
+            .expect("a versionless Cargo crate must still be released");
+
+        let planned: Vec<&str> = output
+            .released_packages
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(planned, ["app", "lib"]);
+        workspace.assert_crate_version("app", "0.0.1");
+        workspace.assert_crate_version("lib", "1.0.1");
+    }
+
+    #[test]
+    fn changeset_naming_an_npm_package_without_a_version_fails_before_any_write() {
+        set_release_branch_main();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path();
+        // `lib` sorts before `web`, so a release writing in plan order would rewrite
+        // `lib` before reaching the manifest it cannot write.
+        write_npm_lib_and_app(
+            root,
+            VERSIONLESS_APP,
+            "---\nnpm/lib: minor\nnpm/web: minor\n---\n\nfeat: a change\n",
+        );
+        let lib_manifest = fs::read_to_string(root.join("packages/lib/package.json")).unwrap();
+
+        for dry_run in [true, false] {
+            let err = run_release(root, dry_run)
+                .expect_err("a changeset naming a versionless package must fail the run");
+            match err {
+                crate::errors::SampoError::Release(message) => {
+                    assert!(
+                        message.contains("'web'") && message.contains("`version`"),
+                        "the message must name the package and the missing field, got: {message}"
+                    );
+                }
+                other => panic!("expected Release error, got {other:?}"),
+            }
+
+            assert_eq!(
+                fs::read_to_string(root.join("packages/lib/package.json")).unwrap(),
+                lib_manifest,
+                "no manifest may be written when the plan is invalid (dry_run = {dry_run})"
+            );
+            assert!(!root.join("packages/lib/CHANGELOG.md").exists());
+            assert!(
+                root.join(".sampo/changesets/c.md").exists(),
+                "the changeset must survive a failed release"
+            );
+        }
+    }
+
     #[test]
     fn coupled_pair_advances_together_across_successive_prereleases() {
         set_release_branch_main();
