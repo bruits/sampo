@@ -1148,15 +1148,21 @@ fn publish_command_args_namespace_publishing_under_npm_on_berry_only() {
     };
 
     assert_eq!(
-        super::publish_command_args(Some(&berry), true, &info, &[]),
+        super::publish_command_args(PackageManager::Yarn, Some(&berry), true, &info, &[]),
         ["npm", "publish", "--dry-run"]
     );
     assert_eq!(
-        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        super::publish_command_args(
+            PackageManager::Yarn,
+            Some(&YarnPublish::Classic),
+            false,
+            &info,
+            &[]
+        ),
         ["publish"]
     );
     assert_eq!(
-        super::publish_command_args(None, true, &info, &[]),
+        super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
         ["publish", "--dry-run"]
     );
 }
@@ -1168,7 +1174,7 @@ fn publish_command_args_keep_the_existing_flag_handling() {
     info.publish_config.tag = Some("next".to_string());
 
     assert_eq!(
-        super::publish_command_args(None, true, &info, &[]),
+        super::publish_command_args(PackageManager::Npm, None, true, &info, &[]),
         [
             "publish",
             "--dry-run",
@@ -1183,7 +1189,7 @@ fn publish_command_args_keep_the_existing_flag_handling() {
 
     let overrides = ["--tag".to_string(), "beta".to_string()];
     assert_eq!(
-        super::publish_command_args(None, false, &info, &overrides),
+        super::publish_command_args(PackageManager::Npm, None, false, &info, &overrides),
         [
             "publish",
             "--registry",
@@ -1207,7 +1213,7 @@ fn publish_command_args_omit_registry_on_berry_which_rejects_the_flag() {
     };
 
     assert_eq!(
-        super::publish_command_args(Some(&berry), true, &info, &[]),
+        super::publish_command_args(PackageManager::Yarn, Some(&berry), true, &info, &[]),
         [
             "npm",
             "publish",
@@ -1219,7 +1225,13 @@ fn publish_command_args_omit_registry_on_berry_which_rejects_the_flag() {
         ]
     );
     assert_eq!(
-        super::publish_command_args(Some(&YarnPublish::Classic), false, &info, &[]),
+        super::publish_command_args(
+            PackageManager::Yarn,
+            Some(&YarnPublish::Classic),
+            false,
+            &info,
+            &[]
+        ),
         [
             "publish",
             "--registry",
@@ -1253,7 +1265,7 @@ fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
     let passthrough = ["--dry-run".to_string()];
 
     assert_eq!(
-        super::publish_command_args(None, true, &info, &passthrough),
+        super::publish_command_args(PackageManager::Npm, None, true, &info, &passthrough),
         ["publish", "--dry-run"]
     );
     let berry = YarnPublish::Berry {
@@ -1261,7 +1273,57 @@ fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
         dry_run: true,
     };
     assert_eq!(
-        super::publish_command_args(Some(&berry), true, &info, &passthrough),
+        super::publish_command_args(
+            PackageManager::Yarn,
+            Some(&berry),
+            true,
+            &info,
+            &passthrough
+        ),
         ["npm", "publish", "--dry-run"]
+    );
+}
+
+#[test]
+fn publish_command_args_turn_pnpm_git_checks_off() {
+    let mut info = manifest_info("@scope/pkg");
+    info.publish_config.tag = Some("next".to_string());
+    let passthrough = ["--otp=123456".to_string()];
+
+    assert_eq!(
+        super::publish_command_args(PackageManager::Pnpm, None, false, &info, &passthrough),
+        [
+            "publish",
+            "--access",
+            "public",
+            "--tag",
+            "next",
+            "--no-git-checks",
+            "--otp=123456"
+        ]
+    );
+}
+
+#[test]
+fn publish_command_args_keep_a_passthrough_git_checks_choice() {
+    let info = manifest_info("pkg");
+
+    for choice in ["--git-checks", "--git-checks=false", "--no-git-checks"] {
+        let passthrough = [choice.to_string()];
+        assert_eq!(
+            super::publish_command_args(PackageManager::Pnpm, None, false, &info, &passthrough),
+            ["publish", choice],
+            "{choice} must be forwarded alone"
+        );
+    }
+}
+
+#[test]
+fn publish_command_args_leave_bun_without_git_checks() {
+    let info = manifest_info("pkg");
+
+    assert_eq!(
+        super::publish_command_args(PackageManager::Bun, None, false, &info, &[]),
+        ["publish"]
     );
 }

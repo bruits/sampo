@@ -2547,6 +2547,80 @@ bar = { version = "1.0.0", path = "crates/bar" }
         );
     }
 
+    /// An npm workspace of `@acme/<name>` packages, all at 1.0.0, with the given Sampo config.
+    fn write_scoped_npm_workspace(root: &std::path::Path, names: &[&str], config: &str) {
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        for name in names {
+            let dir = root.join("packages").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("package.json"),
+                format!(r#"{{"name":"@acme/{name}","version":"1.0.0"}}"#),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(root.join(".sampo/config.toml"), config).unwrap();
+    }
+
+    fn released_versions(output: &ReleaseOutput) -> Vec<(&str, &str)> {
+        let mut released: Vec<_> = output
+            .released_packages
+            .iter()
+            .map(|package| (package.identifier.as_str(), package.new_version.as_str()))
+            .collect();
+        released.sort();
+        released
+    }
+
+    #[test]
+    fn release_reads_scoped_npm_names_in_changesets_without_the_ecosystem_prefix() {
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scoped_npm_workspace(root, &["a", "b"], "");
+        TestWorkspace::write_changeset_to_dir(
+            &root.join(".sampo/changesets"),
+            // Quoted, as Changesets writes a scoped name
+            &["\"@acme/a\""],
+            Bump::Patch,
+            "fix: a bug",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(released_versions(&output), [("npm/@acme/a", "1.0.1")]);
+    }
+
+    #[test]
+    fn fixed_group_reads_scoped_npm_names_without_the_ecosystem_prefix() {
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scoped_npm_workspace(
+            root,
+            &["a", "b"],
+            "[packages]\nfixed = [[\"@acme/a\", \"@acme/b\"]]\n",
+        );
+        TestWorkspace::write_changeset_to_dir(
+            &root.join(".sampo/changesets"),
+            &["\"@acme/a\""],
+            Bump::Minor,
+            "feat: a feature",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("npm/@acme/a", "1.1.0"), ("npm/@acme/b", "1.1.0")]
+        );
+    }
+
     #[test]
     fn pypi_constraint_violation_in_fixed_group_blocks_release() {
         let temp = tempfile::tempdir().unwrap();

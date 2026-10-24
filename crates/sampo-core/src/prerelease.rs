@@ -562,6 +562,25 @@ mod tests {
     }
 
     #[test]
+    fn enter_and_exit_read_scoped_npm_names_without_the_ecosystem_prefix() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"@acme/a","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let packages = [String::from("@acme/a")];
+
+        let entered = enter_prerelease(root, &packages, "alpha").unwrap();
+        assert_eq!(entered[0].new_version, "1.0.0-alpha");
+
+        let exited = exit_prerelease(root, &packages).unwrap();
+        assert_eq!(exited[0].new_version, "1.0.0");
+    }
+
+    #[test]
     fn restore_preserved_changesets_moves_files() {
         let temp = init_workspace();
         let root = temp.path();
