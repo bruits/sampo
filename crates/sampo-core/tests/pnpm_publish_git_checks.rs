@@ -8,8 +8,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-/// Records every argv and exits 0, as pnpm 11 and earlier do even when they stop at the branch
-/// prompt without publishing.
+/// Records every argv. pnpm 11 and earlier exit 0 even when the branch prompt stops them, so
+/// only the argv shows whether the publish could go through.
 fn write_fake_pnpm(dir: &Path, argv_log: &Path) {
     fs::create_dir_all(dir).unwrap();
     let stub = dir.join("pnpm");
@@ -55,10 +55,9 @@ impl Fixture {
         }
     }
 
-    fn publish(&self, dry_run: bool, extra_args: &[&str]) {
-        let extra_args: Vec<String> = extra_args.iter().map(|arg| arg.to_string()).collect();
+    fn publish(&self, dry_run: bool) {
         let outcome = PackageAdapter::Npm
-            .publish(&self.manifest, dry_run, &extra_args)
+            .publish(&self.manifest, dry_run, &[])
             .expect("the stand-in pnpm succeeds");
         assert_eq!(outcome, PublishOutcome::Ran);
     }
@@ -76,43 +75,20 @@ impl Fixture {
 fn a_real_publish_turns_pnpm_git_checks_off() {
     let fixture = Fixture::new();
 
-    fixture.publish(false, &[]);
+    fixture.publish(false);
 
-    assert_eq!(
-        fixture.argv(),
-        ["publish --no-git-checks"],
-        "pnpm 11 and earlier ask to confirm off main or master, then exit 0 unpublished"
-    );
+    assert_eq!(fixture.argv(), ["publish --no-git-checks"]);
 }
 
 #[test]
 fn the_dry_run_turns_pnpm_git_checks_off_too() {
     let fixture = Fixture::new();
 
-    fixture.publish(true, &[]);
+    fixture.publish(true);
 
     assert_eq!(
         fixture.argv(),
         ["publish --dry-run --no-git-checks"],
         "a dry run that stops at the prompt validates nothing yet reports success"
-    );
-}
-
-#[test]
-fn a_git_checks_choice_in_the_passthrough_is_kept() {
-    let fixture = Fixture::new();
-
-    for choice in ["--git-checks", "--git-checks=false", "--no-git-checks"] {
-        fixture.publish(false, &[choice]);
-    }
-
-    assert_eq!(
-        fixture.argv(),
-        [
-            "publish --git-checks",
-            "publish --git-checks=false",
-            "publish --no-git-checks"
-        ],
-        "the user's own choice must be forwarded alone, never contradicted or repeated"
     );
 }

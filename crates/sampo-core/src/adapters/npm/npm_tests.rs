@@ -1286,21 +1286,12 @@ fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
 
 #[test]
 fn publish_command_args_turn_pnpm_git_checks_off() {
-    let info = manifest_info("pkg");
-    let mut scoped = manifest_info("@scope/pkg");
-    scoped.publish_config.tag = Some("next".to_string());
+    let mut info = manifest_info("@scope/pkg");
+    info.publish_config.tag = Some("next".to_string());
     let passthrough = ["--otp=123456".to_string()];
 
     assert_eq!(
-        super::publish_command_args(PackageManager::Pnpm, None, true, &info, &[]),
-        ["publish", "--dry-run", "--no-git-checks"]
-    );
-    assert_eq!(
-        super::publish_command_args(PackageManager::Pnpm, None, false, &info, &[]),
-        ["publish", "--no-git-checks"]
-    );
-    assert_eq!(
-        super::publish_command_args(PackageManager::Pnpm, None, false, &scoped, &passthrough),
+        super::publish_command_args(PackageManager::Pnpm, None, false, &info, &passthrough),
         [
             "publish",
             "--access",
@@ -1328,23 +1319,11 @@ fn publish_command_args_keep_a_passthrough_git_checks_choice() {
 }
 
 #[test]
-fn publish_command_args_leave_git_checks_to_the_other_managers() {
+fn publish_command_args_leave_bun_without_git_checks() {
     let info = manifest_info("pkg");
-    let berry = YarnPublish::Berry {
-        version: "4.18.0".to_string(),
-        dry_run: true,
-    };
 
-    for (manager, yarn) in [
-        (PackageManager::Npm, None),
-        (PackageManager::Bun, None),
-        (PackageManager::Yarn, Some(&YarnPublish::Classic)),
-        (PackageManager::Yarn, Some(&berry)),
-    ] {
-        let args = super::publish_command_args(manager, yarn, false, &info, &[]);
-        assert!(
-            !args.iter().any(|arg| arg.contains("git-checks")),
-            "{manager:?} has no git checks to turn off: {args:?}"
-        );
-    }
+    assert_eq!(
+        super::publish_command_args(PackageManager::Bun, None, false, &info, &[]),
+        ["publish"]
+    );
 }

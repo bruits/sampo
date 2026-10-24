@@ -701,9 +701,8 @@ fn publish_command_args(
         args.push(tag.to_string());
     }
 
-    // Off its `publish-branch` (master or main by default), pnpm asks to confirm. With no
-    // terminal to answer, pnpm 12 fails and older pnpm exits 0 without publishing.
-    // `git.release_branches` already vets the branch.
+    // Off its `publish-branch`, pnpm asks to confirm. Without a terminal, pnpm 12 fails and
+    // older versions exit 0 without publishing. `git.release_branches` already vets the branch.
     if manager == PackageManager::Pnpm
         && !has_flag(extra_args, "--git-checks")
         && !has_flag(extra_args, "--no-git-checks")
