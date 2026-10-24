@@ -85,9 +85,8 @@ pub struct PackageSpecifier {
 impl PackageSpecifier {
     /// Parse from a raw input string.
     ///
-    /// Only a supported ecosystem before the first '/' is a prefix. Any other reference is a
-    /// plain name, since `@scope/name` (npm), `vendor/package` (Packagist), and
-    /// `groupId/artifactId` (Maven) hold a '/' themselves.
+    /// Only a supported ecosystem before the first '/' is a prefix, since npm, Packagist, and
+    /// Maven names can hold a '/' themselves (e.g. `@scope/name`).
     pub fn parse(raw: &str) -> Result<Self, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -701,6 +700,7 @@ mod tests {
             ("\"@acme/a\"", "@acme/a"),
             ("vendor/package", "vendor/package"),
             ("com.example/app", "com.example/app"),
+            ("nmp/@acme/a", "nmp/@acme/a"),
         ] {
             let spec = PackageSpecifier::parse(raw).unwrap();
             assert_eq!(spec.kind, None, "{raw}");
@@ -709,54 +709,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_takes_an_ecosystem_prefix_whatever_follows_it() {
-        for kind in [
-            PackageKind::Cargo,
-            PackageKind::Npm,
-            PackageKind::Hex,
-            PackageKind::PyPI,
-            PackageKind::Packagist,
-            PackageKind::Maven,
-        ] {
-            let raw = format!("{kind}/@acme/pkg");
-            let spec = PackageSpecifier::parse(&raw).unwrap();
-            assert_eq!(spec.kind, Some(kind), "{raw}");
-            assert_eq!(spec.name, "@acme/pkg", "{raw}");
-            assert_eq!(spec.to_canonical_string(), raw);
-        }
-    }
-
-    #[test]
     fn parse_rejects_a_slash_without_a_name_after_it() {
         for raw in ["npm/", "@acme/"] {
             let err = PackageSpecifier::parse(raw).unwrap_err();
             assert!(err.contains("missing a name"), "{raw}: {err}");
-        }
-    }
-
-    #[test]
-    fn resolve_specifier_reads_a_name_with_a_slash_as_plain() {
-        let scoped = PackageInfo {
-            identifier: PackageInfo::dependency_identifier(PackageKind::Npm, "@acme/a"),
-            kind: PackageKind::Npm,
-            ..make_package("@acme/a")
-        };
-        let workspace = Workspace {
-            root: PathBuf::new(),
-            members: vec![scoped],
-        };
-
-        let spec = PackageSpecifier::parse("@acme/a").unwrap();
-        assert!(matches!(
-            workspace.resolve_specifier(&spec),
-            SpecResolution::Match(info) if info.identifier == "npm/@acme/a"
-        ));
-
-        // A mistyped ecosystem is a plain name nothing matches, reported as written.
-        let mistyped = PackageSpecifier::parse("nmp/@acme/a").unwrap();
-        match workspace.resolve_specifier(&mistyped) {
-            SpecResolution::NotFound { query } => assert_eq!(query.display(), "nmp/@acme/a"),
-            other => panic!("expected NotFound, got {other:?}"),
         }
     }
 

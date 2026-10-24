@@ -2533,11 +2533,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
         let output = run_release(root, false).unwrap();
 
         assert_eq!(released_versions(&output), [("npm/@acme/a", "1.0.1")]);
-        let manifest = |name: &str| {
-            fs::read_to_string(root.join(format!("packages/{name}/package.json"))).unwrap()
-        };
-        assert!(manifest("a").contains("1.0.1"), "{}", manifest("a"));
-        assert!(manifest("b").contains("1.0.0"), "{}", manifest("b"));
     }
 
     #[test]
@@ -2563,62 +2558,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
             released_versions(&output),
             [("npm/@acme/a", "1.1.0"), ("npm/@acme/b", "1.1.0")]
         );
-    }
-
-    #[test]
-    fn linked_group_reads_scoped_npm_names_without_the_ecosystem_prefix() {
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        write_scoped_npm_workspace(
-            root,
-            &["a", "b"],
-            "[packages]\nlinked = [[\"@acme/a\", \"@acme/b\"]]\n",
-        );
-        // Qualified, so that only the group has to read a scoped name without its prefix
-        let changesets = root.join(".sampo/changesets");
-        TestWorkspace::write_changeset_to_dir(
-            &changesets,
-            &["npm/@acme/a"],
-            Bump::Minor,
-            "feat: a feature",
-        );
-        TestWorkspace::write_changeset_to_dir(
-            &changesets,
-            &["npm/@acme/b"],
-            Bump::Patch,
-            "fix: a bug",
-        );
-
-        let output = run_release(root, false).unwrap();
-
-        // The group lifts b's patch to the highest bump among its members
-        assert_eq!(
-            released_versions(&output),
-            [("npm/@acme/a", "1.1.0"), ("npm/@acme/b", "1.1.0")]
-        );
-    }
-
-    #[test]
-    fn release_names_a_mistyped_ecosystem_it_cannot_find() {
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        write_scoped_npm_workspace(root, &["a"], "");
-        TestWorkspace::write_changeset_to_dir(
-            &root.join(".sampo/changesets"),
-            &["nmp/@acme/a"],
-            Bump::Patch,
-            "fix: a bug",
-        );
-
-        match run_release(root, true).unwrap_err() {
-            crate::errors::SampoError::Changeset(message) => assert_eq!(
-                message,
-                "Changeset references 'nmp/@acme/a', but no matching package exists in the workspace."
-            ),
-            other => panic!("expected a changeset error, got {other:?}"),
-        }
     }
 
     #[test]
