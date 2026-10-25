@@ -61,6 +61,10 @@ async fn main() -> Result<()> {
     let private_key =
         EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).expect("Invalid private key format");
 
+    // Only signing reaches jsonwebtoken's crypto backend, so sign once to exit here
+    // when the binary was built with none or two of them.
+    create_jwt(app_id, &private_key).expect("GITHUB_PRIVATE_KEY cannot sign a GitHub App JWT");
+
     // Create octocrab instance (we'll update it per-request with installation tokens)
     let app_state = AppState {
         webhook_secret: Arc::new(secret),
@@ -1030,5 +1034,16 @@ mod tests {
             }
         });
         assert!(is_sampo_action_release_pr(&payload));
+    }
+
+    #[test]
+    fn create_jwt_signs_with_a_github_app_key() {
+        // A throwaway PKCS#1 key, the format GitHub issues for App private keys
+        let key = EncodingKey::from_rsa_pem(include_bytes!("test_app_key.pem")).unwrap();
+        let jwt = create_jwt(42, &key).unwrap();
+
+        let header = jsonwebtoken::decode_header(&jwt).unwrap();
+        assert_eq!(header.alg, Algorithm::RS256);
+        assert_eq!(jwt.split('.').count(), 3);
     }
 }
