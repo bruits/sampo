@@ -8,6 +8,8 @@ Not sure what Sampo is? Don't know where to start? Check out Sampo's [documentat
 
 Install the [GitHub App](https://github.com/apps/sampo-s-bot) on your repository. It will automatically request changesets on new pull requests.
 
+When a pull request has changesets, the bot comments with the updates they will release. It reads `.sampo/config.toml` at the pull request's latest commit, so the comment follows [`pull_request_changes`](https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#github-section) and accepts the [`tags`](https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#changesets-section) of `[changesets]`. Without a valid file, it uses the defaults.
+
 ## Development
 
 The bot is an [`axum`](https://docs.rs/axum/latest/axum/) service configured only by environment variables: `WEBHOOK_SECRET`, `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and optionally `PORT` and `ADDR`. Trying it locally takes a real GitHub App and a tunnel (e.g. `ngrok http 3000`) so GitHub reaches your machine. It talks to GitHub through [`octocrab`](https://docs.rs/octocrab/latest/octocrab/) and signs its tokens with [`jsonwebtoken`](https://docs.rs/jsonwebtoken/latest/jsonwebtoken/), so a refactor of its requests keeps rate limits and key handling in mind. A release deploys it to [Fly.io](https://fly.io) with `fly.toml`. A change to its configuration updates that file and the secrets set on Fly.io too.

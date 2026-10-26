@@ -197,6 +197,23 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `repository`: The GitHub repository slug in the format "owner/repo". If not set, Sampo uses the `GITHUB_REPOSITORY` environment variable or attempts to detect it from the `origin` git remote. This setting is used to enrich changelog messages with commit hash links and author acknowledgments, especially for first-time contributors.
 
+`pull_request_changes`: How the release pull request of the [GitHub Action](../sampo-github-action) and the comment of the [GitHub bot](../sampo-github-bot) list pending changes (default: `"packages"`). With `"packages"`, each package gets a section with its changes, so a changeset naming several packages appears under each of them. With `"changesets"`, a table of packages and their bumps (and versions, in the release pull request) comes first, then each changeset once, under the section of its highest bump or its tag, followed by the packages it names. A package's bump is named only where it differs from the section's. Changelogs are not affected.
+
+```md
+| Package | Bump | Version |
+| --- | --- | --- |
+| cli | minor | 1.0.0 -> 1.1.0 |
+| core | minor | 1.0.0 -> 1.1.0 |
+| server | patch | 1.0.0 -> 1.0.1 |
+
+### Minor changes
+
+- Added the `--json` flag to the `status` command.
+  Packages: cli, core, server (patch)
+```
+
+In the release pull request, automatic entries such as "Updated dependencies" are listed the same way, and with `automatic_entries = "collapse"`, packages bumped only to follow others stay in the collapsed list at the end. The bot reads this option from `.sampo/config.toml` at the pull request's latest commit.
+
 ### `[changesets]` section
 
 `tags`: An optional array of custom changelog section names (default: `[]`). When configured, changesets can use the `bump (Tag)` format to categorize entries under custom headings instead of the default bump-based sections. For example, `tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]` enables [Keep a Changelog](https://keepachangelog.com/) style formatting where `cargo/my-crate: minor (Added)` appears under `### Added` while still applying a minor version bump.
