@@ -1,5 +1,11 @@
 # sampo-github-bot
 
+## 0.4.14 — 2026-10-26
+
+### Patch changes
+
+- [43c9ff1](https://github.com/bruits/sampo/commit/43c9ff19b53afc3f71e47f8f98929a3c3e2a70f4) Fixed the GitHub bot silently skipping every pull request since 0.4.12, so it posts its changeset comment and approval again. — Thanks @goulvenclech!
+
 ## 0.4.13 — 2026-10-24
 
 ### Patch changes
