@@ -144,13 +144,13 @@ impl PackageFilter {
     }
 }
 
-/// Parse INPUT_CREATE_GITHUB_RELEASE, which also takes `1` for `true` as it did before it
-/// accepted package lists.
+/// Parse INPUT_CREATE_GITHUB_RELEASE, which also takes `1` and `0` for `true` and `false`
+/// as it did before it accepted package lists.
 fn parse_create_github_release(input: &str) -> PackageFilter {
-    if input.trim() == "1" {
-        PackageFilter::All
-    } else {
-        PackageFilter::parse(input)
+    match input.trim() {
+        "1" => PackageFilter::All,
+        "0" => PackageFilter::None,
+        _ => PackageFilter::parse(input),
     }
 }
 
@@ -1984,7 +1984,7 @@ mod tests {
                 "{input:?}"
             );
         }
-        for input in ["false", "", "  ", ",", " , ,"] {
+        for input in ["false", "0", "", "  ", ",", " , ,"] {
             assert_eq!(
                 parse_create_github_release(input),
                 PackageFilter::None,
