@@ -1,13 +1,14 @@
 use crate::error::{ActionError, Result};
-use sampo_core::format_markdown_list_item;
 use sampo_core::types::{
-    ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
+    Bump, ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
 };
 use sampo_core::{
-    AcknowledgmentStyle, Acknowledgments, AutomaticEntries, Config, PublishExtraArgs,
-    PublishOutput, detect_all_dependency_explanations, detect_github_repo_slug_with_config,
-    discover_workspace, enrich_changeset_message, filter_prerelease_entries,
-    get_commit_hash_for_path, load_changesets, run_publish as core_publish,
+    AcknowledgmentStyle, Acknowledgments, AutomaticEntries, ChangeEntry, Config, PackageSummary,
+    PublishExtraArgs, PublishOutput, PullRequestChanges, append_changes_by_changeset,
+    append_changes_section, detect_all_dependency_explanations,
+    detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
+    filter_prerelease_entries, format_markdown_list_item, get_commit_hash_for_path,
+    infer_bump_from_versions, load_changesets, run_publish as core_publish,
     run_release as core_release, run_stabilize_release as core_stabilize_release,
 };
 use std::collections::BTreeMap;
@@ -164,6 +165,10 @@ pub fn build_release_pr_body(
 
     // Group messages per canonical package id by category
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
+    // Each changeset once, with the released packages it names, for the changesets layout
+    let mut changeset_entries: Vec<(String, Vec<(String, ChangelogCategory)>)> = Vec::new();
+    // Highest bump asked for each package, as tagged categories don't carry it
+    let mut bump_by_pkg: BTreeMap<String, Bump> = BTreeMap::new();
 
     // Resolve GitHub slug and token for commit links and acknowledgments
     let repo_slug =
@@ -173,43 +178,53 @@ pub fn build_release_pr_body(
         .or_else(|| std::env::var("GH_TOKEN").ok());
 
     for cs in &changesets {
+        let mut packages: Vec<(String, ChangelogCategory)> = Vec::new();
         for (pkg_spec, bump, tag) in &cs.entries {
             let identifier = resolve_specifier_identifier(&ws, pkg_spec)?;
             if releases.contains_key(&identifier) {
-                // A pre-release moved preserved changesets, so look them up where they were added.
-                let added_at = changesets_dir.join(cs.path.file_name().unwrap_or_default());
-                let commit_hash = get_commit_hash_for_path(workspace, &added_at);
-                let enriched = if let Some(hash) = commit_hash {
-                    // This branch is rewritten on every push, so crediting someone
-                    // must not subscribe them to it.
-                    enrich_changeset_message(
-                        &cs.message,
-                        &hash,
-                        workspace,
-                        repo_slug.as_deref(),
-                        github_token.as_deref(),
-                        config.changelog_show_commit_hash,
-                        config
-                            .changelog_show_acknowledgments
-                            .then_some(Acknowledgments {
-                                style: AcknowledgmentStyle::Link,
-                                excluded: &config.changelog_exclude_acknowledgments,
-                            }),
-                    )
-                } else {
-                    cs.message.clone()
-                };
                 let category = if let Some(t) = tag {
                     ChangelogCategory::Tag(t.clone())
                 } else {
                     ChangelogCategory::Bump(*bump)
                 };
-                messages_by_pkg
-                    .entry(identifier)
-                    .or_default()
-                    .push((enriched, category));
+                raise_bump(&mut bump_by_pkg, &identifier, *bump);
+                packages.push((identifier, category));
             }
         }
+        if packages.is_empty() {
+            continue;
+        }
+
+        // A pre-release moved preserved changesets, so look them up where they were added.
+        let added_at = changesets_dir.join(cs.path.file_name().unwrap_or_default());
+        let commit_hash = get_commit_hash_for_path(workspace, &added_at);
+        let enriched = if let Some(hash) = commit_hash {
+            // This branch is rewritten on every push, so crediting someone
+            // must not subscribe them to it.
+            enrich_changeset_message(
+                &cs.message,
+                &hash,
+                workspace,
+                repo_slug.as_deref(),
+                github_token.as_deref(),
+                config.changelog_show_commit_hash,
+                config
+                    .changelog_show_acknowledgments
+                    .then_some(Acknowledgments {
+                        style: AcknowledgmentStyle::Link,
+                        excluded: &config.changelog_exclude_acknowledgments,
+                    }),
+            )
+        } else {
+            cs.message.clone()
+        };
+        for (identifier, category) in &packages {
+            messages_by_pkg
+                .entry(identifier.clone())
+                .or_default()
+                .push((enriched.clone(), category.clone()));
+        }
+        changeset_entries.push((enriched, packages));
     }
 
     // Add automatic dependency explanations using unified function
@@ -226,11 +241,14 @@ pub fn build_release_pr_body(
         detect_all_dependency_explanations(&changesets, &ws, config, &release_lookup)?;
 
     // Merge explanations into messages_by_pkg
-    for (pkg_name, explanations) in explanations {
+    for (pkg_name, explanations) in &explanations {
+        for (_, category) in explanations {
+            raise_bump(&mut bump_by_pkg, pkg_name, category.bump());
+        }
         messages_by_pkg
-            .entry(pkg_name)
+            .entry(pkg_name.clone())
             .or_default()
-            .extend(explanations);
+            .extend(explanations.iter().cloned());
     }
 
     // Compose header
@@ -240,16 +258,24 @@ pub fn build_release_pr_body(
     output.push_str(" When you're ready to do a release, you can merge this and the packages will be published automatically. ");
     output.push_str("Not ready yet? Just keep adding changesets to the default branch, and this PR will stay up to date.\n\n");
 
+    let pretty_names: BTreeMap<&String, String> = releases
+        .iter()
+        .map(|(identifier, (fallback_name, _, _))| {
+            let name = display_label_for_release(&ws, identifier, include_kind, fallback_name);
+            (identifier, name)
+        })
+        .collect();
     // Packages bumped only to follow others, listed compactly so they don't bury the real
     // entries, as their changelogs do in collapse mode.
     let mut bump_only: Vec<String> = Vec::new();
+    let mut table_ids: Vec<String> = Vec::new();
 
     // Deterministic crate order by name
     let mut crate_ids: Vec<_> = releases.keys().cloned().collect();
     crate_ids.sort();
     for identifier in crate_ids {
-        let (fallback_name, old_version, new_version) = &releases[&identifier];
-        let pretty_name = display_label_for_release(&ws, &identifier, include_kind, fallback_name);
+        let (_, old_version, new_version) = &releases[&identifier];
+        let pretty_name = &pretty_names[&identifier];
         if config.changelog_automatic_entries == AutomaticEntries::Collapse
             && messages_by_pkg.get(&identifier).is_none_or(Vec::is_empty)
         {
@@ -257,6 +283,10 @@ pub fn build_release_pr_body(
                 "{} {} -> {}",
                 pretty_name, old_version, new_version
             ));
+            continue;
+        }
+        if config.github_pull_request_changes == PullRequestChanges::Changesets {
+            table_ids.push(identifier);
             continue;
         }
         output.push_str(&format!(
@@ -294,9 +324,57 @@ pub fn build_release_pr_body(
         }
     }
 
+    if config.github_pull_request_changes == PullRequestChanges::Changesets {
+        let packages: Vec<PackageSummary> = table_ids
+            .iter()
+            .map(|identifier| {
+                let (_, old_version, new_version) = &releases[identifier];
+                // Groups can bump a package past what its changesets ask for, and the
+                // versions alone misread pre-releases, so take the higher of both.
+                let inferred = infer_bump_from_versions(old_version, new_version);
+                let requested = bump_by_pkg.get(identifier).copied().unwrap_or(inferred);
+                PackageSummary {
+                    name: pretty_names[identifier].clone(),
+                    bump: requested.max(inferred),
+                    versions: Some((old_version.clone(), new_version.clone())),
+                }
+            })
+            .collect();
+        let named = |packages: &[(String, ChangelogCategory)]| {
+            packages
+                .iter()
+                .map(|(identifier, category)| {
+                    let name = pretty_names.get(identifier).unwrap_or(identifier);
+                    (name.clone(), category.clone())
+                })
+                .collect()
+        };
+        let mut entries: Vec<ChangeEntry> = changeset_entries
+            .iter()
+            .map(|(message, packages)| ChangeEntry {
+                message: message.clone(),
+                packages: named(packages),
+            })
+            .collect();
+        for (identifier, explanations) in &explanations {
+            for (message, category) in explanations {
+                entries.push(ChangeEntry {
+                    message: message.clone(),
+                    packages: named(&[(identifier.clone(), category.clone())]),
+                });
+            }
+        }
+        append_changes_by_changeset(&mut output, &packages, &entries);
+    }
+
     append_bump_only_packages(&mut output, &bump_only);
 
     Ok(output)
+}
+
+fn raise_bump(bumps: &mut BTreeMap<String, Bump>, identifier: &str, bump: Bump) {
+    let current = bumps.entry(identifier.to_string()).or_insert(bump);
+    *current = (*current).max(bump);
 }
 
 fn resolve_specifier_identifier(
@@ -344,17 +422,6 @@ fn display_label_for_release(
         return spec.display_name(include_kind);
     }
     fallback.to_string()
-}
-
-/// Append a changes section to the output if the changes list is not empty
-fn append_changes_section(output: &mut String, section_title: &str, changes: &[String]) {
-    if !changes.is_empty() {
-        output.push_str(&format!("### {}\n\n", section_title));
-        for change in changes {
-            output.push_str(&format_markdown_list_item(change));
-        }
-        output.push('\n');
-    }
 }
 
 /// Append a collapsed list of the packages bumped only to follow other packages, if any
@@ -728,6 +795,194 @@ mod tests {
         assert!(!pr_body.contains("## c "));
         assert!(!pr_body.contains("Updated dependencies"));
         assert!(!pr_body.contains("Bumped due to fixed dependency group policy"));
+    }
+
+    /// Writes a Cargo workspace with the given crates, Sampo config and changesets.
+    fn write_workspace(
+        root: &Path,
+        crates: &[(&str, &str)],
+        config: &str,
+        changesets: &[(&str, &str)],
+    ) {
+        use std::fs;
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+        for (name, manifest) in crates {
+            let dir = root.join("crates").join(name);
+            fs::create_dir_all(dir.join("src")).unwrap();
+            fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+            fs::write(dir.join("src/lib.rs"), "").unwrap();
+        }
+        let sampo_dir = root.join(".sampo");
+        fs::create_dir_all(sampo_dir.join("changesets")).unwrap();
+        fs::write(sampo_dir.join("config.toml"), config).unwrap();
+        for (file, content) in changesets {
+            fs::write(sampo_dir.join("changesets").join(file), content).unwrap();
+        }
+    }
+
+    /// The PR body after its fixed introduction paragraph.
+    fn pr_body_changes(root: &Path) -> String {
+        let plan = capture_release_plan(root).unwrap();
+        let config = Config::load(root).unwrap();
+        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+        pr_body
+            .split_once("this PR will stay up to date.\n\n")
+            .expect("PR body introduction")
+            .1
+            .to_string()
+    }
+
+    /// Crates a, b (depending on a) and c, with a changeset naming a and c, and one naming c.
+    fn write_shared_changeset_workspace(root: &Path, config: &str) {
+        write_workspace(
+            root,
+            &[
+                ("a", "[package]\nname=\"a\"\nversion=\"1.0.0\"\n"),
+                (
+                    "b",
+                    "[package]\nname=\"b\"\nversion=\"1.0.0\"\n\n[dependencies]\na = { path=\"../a\", version=\"1.0.0\" }\n",
+                ),
+                ("c", "[package]\nname=\"c\"\nversion=\"1.0.0\"\n"),
+            ],
+            config,
+            &[
+                (
+                    "shared.md",
+                    "---\na: minor\nc: patch\n---\n\nfeat: shared change\n",
+                ),
+                ("only-c.md", "---\nc: major\n---\n\nfeat!: only c\n"),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_packages_layout_is_the_default() {
+        let _branch = EnvVarGuard::set_branch("main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_shared_changeset_workspace(root, "");
+        let default_layout = pr_body_changes(root);
+
+        assert_eq!(
+            default_layout,
+            "## a 1.0.0 -> 1.1.0\n\n### Minor changes\n\n- feat: shared change\n\n\
+             ## b 1.0.0 -> 1.0.1\n\n### Patch changes\n\n- Updated dependencies: a@1.1.0\n\n\
+             ## c 1.0.0 -> 2.0.0\n\n### Major changes\n\n- feat!: only c\n\n\
+             ### Patch changes\n\n- feat: shared change\n\n"
+        );
+
+        std::fs::write(
+            root.join(".sampo/config.toml"),
+            "[github]\npull_request_changes = \"packages\"\n",
+        )
+        .unwrap();
+        assert_eq!(pr_body_changes(root), default_layout);
+    }
+
+    #[test]
+    fn test_changesets_layout_in_pr_body() {
+        let _branch = EnvVarGuard::set_branch("main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_shared_changeset_workspace(root, "[github]\npull_request_changes = \"changesets\"\n");
+
+        assert_eq!(
+            pr_body_changes(root),
+            "| Package | Bump | Version |\n\
+             | --- | --- | --- |\n\
+             | a | minor | 1.0.0 -> 1.1.0 |\n\
+             | b | patch | 1.0.0 -> 1.0.1 |\n\
+             | c | major | 1.0.0 -> 2.0.0 |\n\
+             \n\
+             ### Major changes\n\
+             \n\
+             - feat!: only c\n  Packages: c\n\
+             \n\
+             ### Minor changes\n\
+             \n\
+             - feat: shared change\n  Packages: a, c (patch)\n\
+             \n\
+             ### Patch changes\n\
+             \n\
+             - Updated dependencies: a@1.1.0\n  Packages: b\n\
+             \n"
+        );
+    }
+
+    #[test]
+    fn test_changesets_layout_groups_automatic_entries() {
+        let _branch = EnvVarGuard::set_branch("main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_workspace(
+            root,
+            &[
+                ("a", "[package]\nname=\"a\"\nversion=\"1.0.0\"\n"),
+                ("b", "[package]\nname=\"b\"\nversion=\"1.0.0\"\n"),
+                ("c", "[package]\nname=\"c\"\nversion=\"1.0.0\"\n"),
+            ],
+            "[github]\npull_request_changes = \"changesets\"\n\n[packages]\nfixed = [[\"a\", \"b\", \"c\"]]\n",
+            &[(
+                "a-minor.md",
+                "---\na: minor\n---\n\nfeat: a adds new feature\n",
+            )],
+        );
+
+        assert_eq!(
+            pr_body_changes(root),
+            "| Package | Bump | Version |\n\
+             | --- | --- | --- |\n\
+             | a | minor | 1.0.0 -> 1.1.0 |\n\
+             | b | minor | 1.0.0 -> 1.1.0 |\n\
+             | c | minor | 1.0.0 -> 1.1.0 |\n\
+             \n\
+             ### Minor changes\n\
+             \n\
+             - feat: a adds new feature\n  Packages: a\n\
+             - Bumped due to fixed dependency group policy\n  Packages: b, c\n\
+             \n"
+        );
+    }
+
+    #[test]
+    fn test_changesets_layout_with_collapsed_automatic_entries() {
+        let _branch = EnvVarGuard::set_branch("main");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_workspace(
+            root,
+            &[
+                ("a", "[package]\nname=\"a\"\nversion=\"1.0.0\"\n"),
+                ("b", "[package]\nname=\"b\"\nversion=\"1.0.0\"\n"),
+                ("c", "[package]\nname=\"c\"\nversion=\"1.0.0\"\n"),
+            ],
+            "[github]\npull_request_changes = \"changesets\"\n\n[changelog]\nautomatic_entries = \"collapse\"\n\n[packages]\nfixed = [[\"a\", \"b\", \"c\"]]\n",
+            &[(
+                "a-b.md",
+                "---\na: minor\nb: patch\n---\n\nfeat: a and b change\n",
+            )],
+        );
+
+        assert_eq!(
+            pr_body_changes(root),
+            "| Package | Bump | Version |\n\
+             | --- | --- | --- |\n\
+             | a | minor | 1.0.0 -> 1.1.0 |\n\
+             | b | minor | 1.0.0 -> 1.1.0 |\n\
+             \n\
+             ### Minor changes\n\
+             \n\
+             - feat: a and b change\n  Packages: a, b (patch)\n\
+             \n\
+             <details>\n<summary>1 package bumped only to follow other packages</summary>\n\n\
+             - c 1.0.0 -> 1.1.0\n\
+             \n\
+             </details>\n"
+        );
     }
 
     #[test]

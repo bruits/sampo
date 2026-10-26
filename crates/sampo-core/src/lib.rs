@@ -22,7 +22,7 @@ pub use changeset::{
     ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown,
     render_changeset_markdown_with_tags,
 };
-pub use config::{AutomaticEntries, Config};
+pub use config::{AutomaticEntries, Config, PullRequestChanges};
 pub use enrichment::{
     AcknowledgmentStyle, Acknowledgments, CommitInfo, GitHubUserInfo, detect_github_repo_slug,
     detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
@@ -30,7 +30,10 @@ pub use enrichment::{
 pub use errors::{Result, SampoError, WorkspaceError};
 pub use filters::{filter_members, list_visible_packages, should_ignore_package, wildcard_match};
 pub use git::current_branch;
-pub use markdown::format_markdown_list_item;
+pub use markdown::{
+    ChangeEntry, PackageSummary, append_changes_by_changeset, append_changes_section,
+    format_markdown_list_item,
+};
 pub use prerelease::{
     VersionChange, enter_prerelease, exit_prerelease, restore_preserved_changesets,
     validate_prerelease_entry,

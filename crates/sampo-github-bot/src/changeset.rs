@@ -1,10 +1,17 @@
 use crate::error::{BotError, Result};
+use http::StatusCode;
 use octocrab::models::repos::{DiffEntry, DiffEntryStatus};
 use sampo_core::changeset::{ChangesetInfo, parse_changeset};
-use sampo_core::format_markdown_list_item;
 use sampo_core::types::{Bump, ChangelogCategory, PackageSpecifier};
-use std::collections::BTreeMap;
+use sampo_core::{
+    ChangeEntry, Config, PackageSummary, PullRequestChanges, append_changes_by_changeset,
+    append_changes_section,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use tracing::{debug, warn};
+
+const CONFIG_PATH: &str = ".sampo/config.toml";
 
 pub struct ChangesetAnalysis {
     pub has_changeset: bool,
@@ -75,7 +82,8 @@ pub async fn analyze_pr_changesets(
         });
     }
 
-    let parsed = parse_changeset_files(&files);
+    let config = load_repo_config(octo, owner, repo, head_ref).await;
+    let parsed = parse_changeset_files(&files, &config.changesets_tags);
 
     if parsed.valid.is_empty() {
         let comment = build_missing_changeset_comment(&parsed.issues);
@@ -85,13 +93,72 @@ pub async fn analyze_pr_changesets(
         });
     }
 
-    let packages = summarize_packages(&parsed.valid);
-    let comment = build_present_changeset_comment(&packages, &parsed.issues);
+    let comment = build_comment_for_config(&parsed, &config);
 
     Ok(ChangesetAnalysis {
         has_changeset: true,
         comment_markdown: comment,
     })
+}
+
+/// Read the repository's Sampo config at the PR head, so the comment follows the PR's own
+/// settings. A missing, unreadable or invalid file falls back to the defaults.
+async fn load_repo_config(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    head_ref: &str,
+) -> Config {
+    let content = match octo
+        .repos(owner, repo)
+        .get_content()
+        .path(CONFIG_PATH)
+        .r#ref(head_ref)
+        .send()
+        .await
+    {
+        Ok(mut response) => {
+            let content = response
+                .take_items()
+                .first()
+                .and_then(|item| item.decoded_content());
+            if content.is_none() {
+                warn!("could not decode {CONFIG_PATH} of {owner}/{repo}, using defaults");
+            }
+            content
+        }
+        Err(octocrab::Error::GitHub { source, .. })
+            if source.status_code == StatusCode::NOT_FOUND =>
+        {
+            debug!("no {CONFIG_PATH} in {owner}/{repo}, using defaults");
+            None
+        }
+        Err(err) => {
+            warn!("failed to fetch {CONFIG_PATH} of {owner}/{repo}, using defaults: {err}");
+            None
+        }
+    };
+    config_from_content(content.as_deref())
+}
+
+fn config_from_content(content: Option<&str>) -> Config {
+    let Some(text) = content else {
+        return Config::default();
+    };
+    Config::parse(text).unwrap_or_else(|err| {
+        warn!("ignoring invalid {CONFIG_PATH}, using defaults: {err}");
+        Config::default()
+    })
+}
+
+fn build_comment_for_config(parsed: &ParsedChangesets, config: &Config) -> String {
+    let packages = summarize_packages(&parsed.valid);
+    match config.github_pull_request_changes {
+        PullRequestChanges::Packages => build_present_changeset_comment(&packages, &parsed.issues),
+        PullRequestChanges::Changesets => {
+            build_changesets_comment(&parsed.valid, &packages, &parsed.issues)
+        }
+    }
 }
 
 fn build_missing_changeset_comment(issues: &[ChangesetIssue]) -> String {
@@ -126,6 +193,51 @@ fn build_present_changeset_comment(
     out
 }
 
+fn build_changesets_comment(
+    changesets: &[ChangesetInfo],
+    packages: &BTreeMap<String, PackagePreview>,
+    issues: &[ChangesetIssue],
+) -> String {
+    let mut out = String::new();
+    out.push_str("## 🧭 Changeset detected\n\n");
+    out.push_str("Merging this PR will release the following updates:\n\n");
+
+    // Like the release PR, name ecosystems only when the changesets mix them.
+    let kinds: BTreeSet<_> = packages.values().filter_map(|p| p.spec.kind).collect();
+    let include_kind = kinds.len() > 1;
+
+    let summaries: Vec<PackageSummary> = packages
+        .values()
+        .map(|package| PackageSummary {
+            name: package.spec.display_name(include_kind),
+            bump: package.highest_bump,
+            versions: None,
+        })
+        .collect();
+    let entries: Vec<ChangeEntry> = changesets
+        .iter()
+        .map(|cs| ChangeEntry {
+            message: cs.message.clone(),
+            packages: cs
+                .entries
+                .iter()
+                .map(|(spec, bump, tag)| {
+                    let category = match tag {
+                        Some(t) => ChangelogCategory::Tag(t.clone()),
+                        None => ChangelogCategory::Bump(*bump),
+                    };
+                    (spec.display_name(include_kind), category)
+                })
+                .collect(),
+        })
+        .collect();
+    append_changes_by_changeset(&mut out, &summaries, &entries);
+
+    append_issue_section(&mut out, issues);
+
+    out
+}
+
 fn append_package_preview(out: &mut String, package: &PackagePreview) {
     let include_kind = package.spec.kind.is_some();
     let display_name = package.spec.display_name(include_kind);
@@ -145,17 +257,6 @@ fn append_package_preview(out: &mut String, package: &PackagePreview) {
             append_changes_section(out, &category.heading(), changes);
         }
     }
-}
-
-fn append_changes_section(out: &mut String, title: &str, changes: &[String]) {
-    if changes.is_empty() {
-        return;
-    }
-    out.push_str(&format!("### {title}\n\n"));
-    for change in changes {
-        out.push_str(&format_markdown_list_item(change));
-    }
-    out.push('\n');
 }
 
 fn append_issue_section(out: &mut String, issues: &[ChangesetIssue]) {
@@ -284,16 +385,12 @@ fn content_from_patch(patch: &str) -> Option<String> {
     if has_lines { Some(content) } else { None }
 }
 
-fn parse_changeset_files(files: &[ChangesetFile]) -> ParsedChangesets {
+fn parse_changeset_files(files: &[ChangesetFile], allowed_tags: &[String]) -> ParsedChangesets {
     let mut valid = Vec::new();
     let mut issues = Vec::new();
 
-    // Bot doesn't have access to config, so we pass empty allowed_tags
-    // Tags will be validated later by the actual release process
-    let allowed_tags: Vec<String> = Vec::new();
-
     for file in files {
-        match parse_changeset(&file.content, Path::new(&file.path), &allowed_tags) {
+        match parse_changeset(&file.content, Path::new(&file.path), allowed_tags) {
             Ok(Some(info)) => valid.push(info),
             Ok(None) => issues.push(ChangesetIssue {
                 path: file.path.clone(),
@@ -467,5 +564,108 @@ index 0000000..f1c2d3e
         assert!(comment.contains("- feat: new feature"));
         assert!(comment.contains("### Patch changes"));
         assert!(comment.contains("- fix: bug fix"));
+    }
+
+    fn changeset_file(name: &str, content: &str) -> ChangesetFile {
+        ChangesetFile {
+            path: format!(".sampo/changesets/{name}"),
+            content: content.to_string(),
+        }
+    }
+
+    fn shared_changesets(allowed_tags: &[String]) -> ParsedChangesets {
+        parse_changeset_files(
+            &[
+                changeset_file(
+                    "shared.md",
+                    "---\ncargo/a: minor\ncargo/b: patch\n---\n\nfeat: shared change\n",
+                ),
+                changeset_file("only-b.md", "---\ncargo/b: patch\n---\n\nfix: only b\n"),
+                changeset_file("broken.md", "---\ncargo/a: patch\n---\n\n"),
+            ],
+            allowed_tags,
+        )
+    }
+
+    #[test]
+    fn changesets_comment_lists_each_changeset_once() {
+        let config = config_from_content(Some("[github]\npull_request_changes = \"changesets\"\n"));
+        let comment = build_comment_for_config(&shared_changesets(&[]), &config);
+
+        assert_eq!(
+            comment,
+            "## 🧭 Changeset detected\n\n\
+             Merging this PR will release the following updates:\n\n\
+             | Package | Bump |\n\
+             | --- | --- |\n\
+             | a | minor |\n\
+             | b | patch |\n\
+             \n\
+             ### Minor changes\n\
+             \n\
+             - feat: shared change\n  Packages: a, b (patch)\n\
+             \n\
+             ### Patch changes\n\
+             \n\
+             - fix: only b\n  Packages: b\n\
+             \n\
+             Detected issues with these files:\n\
+             - `.sampo/changesets/broken.md`: changeset missing package entries or summary message\n"
+        );
+    }
+
+    #[test]
+    fn changesets_comment_names_ecosystems_when_mixed() {
+        let config = config_from_content(Some("[github]\npull_request_changes = \"changesets\"\n"));
+        let parsed = parse_changeset_files(
+            &[changeset_file(
+                "mixed.md",
+                "---\ncargo/a: minor\nnpm/a: minor\n---\n\nfeat: both\n",
+            )],
+            &[],
+        );
+        let comment = build_comment_for_config(&parsed, &config);
+
+        assert!(comment.contains("| a (Cargo) | minor |\n| a (npm) | minor |\n"));
+        assert!(comment.contains("- feat: both\n  Packages: a (Cargo), a (npm)\n"));
+    }
+
+    #[test]
+    fn changesets_comment_uses_configured_tags() {
+        let config = config_from_content(Some(
+            "[github]\npull_request_changes = \"changesets\"\n\n[changesets]\ntags = [\"Added\", \"Fixed\"]\n",
+        ));
+        let parsed = parse_changeset_files(
+            &[changeset_file(
+                "tagged.md",
+                "---\ncargo/a: minor (Added)\ncargo/b: patch (Fixed)\n---\n\nfeat: tagged\n",
+            )],
+            &config.changesets_tags,
+        );
+        assert!(parsed.issues.is_empty());
+        let comment = build_comment_for_config(&parsed, &config);
+
+        assert!(comment.ends_with("### Added\n\n- feat: tagged\n  Packages: a, b (Fixed)\n\n"));
+    }
+
+    #[test]
+    fn missing_or_invalid_config_keeps_the_packages_layout() {
+        let parsed = shared_changesets(&[]);
+        let packages_layout =
+            build_present_changeset_comment(&summarize_packages(&parsed.valid), &parsed.issues);
+
+        for content in [
+            None,
+            Some("[github"),
+            Some("[github]\npull_request_changes = \"grouped\"\n"),
+            Some("[github]\npull_request_changes = \"packages\"\n"),
+        ] {
+            let config = config_from_content(content);
+            assert_eq!(
+                config.github_pull_request_changes,
+                PullRequestChanges::Packages
+            );
+            assert_eq!(build_comment_for_config(&parsed, &config), packages_layout);
+        }
     }
 }

@@ -24,12 +24,23 @@ pub enum AutomaticEntries {
     Collapse,
 }
 
+/// How the release pull request and the bot's comment lay out pending changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PullRequestChanges {
+    /// One section per package, repeating a changeset under each package it names.
+    #[default]
+    Packages,
+    /// A table of packages, then each changeset once with the packages it names.
+    Changesets,
+}
+
 /// Configuration for Sampo
 #[derive(Debug, Clone)]
 pub struct Config {
     #[allow(dead_code)]
     pub version: u64,
     pub github_repository: Option<String>,
+    pub github_pull_request_changes: PullRequestChanges,
     pub changelog_show_commit_hash: bool,
     pub changelog_show_acknowledgments: bool,
     pub changelog_exclude_acknowledgments: Vec<String>,
@@ -57,6 +68,7 @@ impl Default for Config {
         Self {
             version: 1,
             github_repository: None,
+            github_pull_request_changes: PullRequestChanges::default(),
             changelog_show_commit_hash: true,
             changelog_show_acknowledgments: true,
             changelog_exclude_acknowledgments: Vec::new(),
@@ -89,7 +101,12 @@ impl Config {
 
         let text = std::fs::read_to_string(&path)
             .map_err(|e| SampoError::Config(format!("failed to read {}: {e}", path.display())))?;
-        let value: toml::Value = toml::from_str(&text)
+        Self::parse(&text)
+    }
+
+    /// Parse configuration from the contents of a `.sampo/config.toml` file
+    pub fn parse(text: &str) -> Result<Self, SampoError> {
+        let value: toml::Value = toml::from_str(text)
             .map_err(|e| SampoError::Config(format!("invalid config.toml: {e}")))?;
 
         let version = value
@@ -99,12 +116,27 @@ impl Config {
 
         let version = u64::try_from(version).unwrap_or(1);
 
-        let github_repository = value
-            .get("github")
-            .and_then(|v| v.as_table())
+        let github_table = value.get("github").and_then(|v| v.as_table());
+
+        let github_repository = github_table
             .and_then(|t| t.get("repository"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+
+        let github_pull_request_changes = match github_table
+            .and_then(|t| t.get("pull_request_changes"))
+        {
+            Some(value) => match value.as_str() {
+                Some("packages") => PullRequestChanges::Packages,
+                Some("changesets") => PullRequestChanges::Changesets,
+                _ => {
+                    return Err(SampoError::Config(
+                        "github.pull_request_changes must be \"packages\" or \"changesets\"".into(),
+                    ));
+                }
+            },
+            None => PullRequestChanges::default(),
+        };
 
         let changelog_table = value.get("changelog").and_then(|v| v.as_table());
 
@@ -378,6 +410,7 @@ impl Config {
         Ok(Self {
             version,
             github_repository,
+            github_pull_request_changes,
             changelog_show_commit_hash,
             changelog_show_acknowledgments,
             changelog_exclude_acknowledgments,
@@ -475,6 +508,10 @@ mod tests {
         let config = Config::load(temp.path()).unwrap();
         assert_eq!(config.version, 1);
         assert!(config.github_repository.is_none());
+        assert_eq!(
+            config.github_pull_request_changes,
+            PullRequestChanges::Packages
+        );
         assert!(config.changelog_show_commit_hash);
         assert!(config.changelog_show_acknowledgments);
         assert!(config.changelog_exclude_acknowledgments.is_empty());
@@ -572,6 +609,52 @@ mod tests {
 
         let config = Config::load(temp.path()).unwrap();
         assert_eq!(config.github_repository.as_deref(), Some("owner/repo"));
+        assert_eq!(
+            config.github_pull_request_changes,
+            PullRequestChanges::Packages
+        );
+    }
+
+    #[test]
+    fn reads_pull_request_changes() {
+        let config = Config::parse("[github]\npull_request_changes = \"changesets\"\n").unwrap();
+        assert_eq!(
+            config.github_pull_request_changes,
+            PullRequestChanges::Changesets
+        );
+
+        let config = Config::parse("[github]\npull_request_changes = \"packages\"\n").unwrap();
+        assert_eq!(
+            config.github_pull_request_changes,
+            PullRequestChanges::Packages
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_pull_request_changes_value() {
+        for value in ["\"changeset\"", "true"] {
+            let err =
+                Config::parse(&format!("[github]\npull_request_changes = {value}\n")).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("github.pull_request_changes must be \"packages\" or \"changesets\""),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_matches_load() {
+        let text = "[github]\nrepository = \"owner/repo\"\n[changesets]\ntags = [\"Added\"]\n";
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(temp.path().join(".sampo/config.toml"), text).unwrap();
+
+        let loaded = Config::load(temp.path()).unwrap();
+        let parsed = Config::parse(text).unwrap();
+        assert_eq!(parsed.github_repository, loaded.github_repository);
+        assert_eq!(parsed.changesets_tags, loaded.changesets_tags);
+        assert!(Config::parse("[github").is_err());
     }
 
     #[test]

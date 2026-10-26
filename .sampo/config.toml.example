@@ -12,6 +12,11 @@ repository = "owner/repo"
 # 1. The GITHUB_REPOSITORY environment variable (useful in GitHub Actions)
 # 2. The git remote origin URL
 
+# How the release PR and the bot's comment list pending changes (default: "packages")
+# "packages" gives each package a section with its changes
+# "changesets" shows a table of packages, then each changeset once with its packages
+pull_request_changes = "packages"
+
 # Changelog generation options
 [changelog]
 # Whether to include commit hash links in changelog entries (default: true)
