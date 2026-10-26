@@ -30,6 +30,9 @@ const VERSION_BUMP_ONLY_ENTRY: &str = "Version bump only, to follow other packag
 /// Joins the first and last version in the heading of a collapsed section.
 const VERSION_RANGE_SEPARATOR: &str = "...";
 
+/// Opens the changelog entry of a package bumped because internal dependencies were.
+const DEPENDENCY_UPDATES_PREFIX: &str = "Updated dependencies: ";
+
 /// Format dependency updates for changelog display
 ///
 /// Creates a message in the style of Changesets for dependency updates,
@@ -95,7 +98,7 @@ pub fn format_dependency_updates_message(updates: &[DependencyUpdate]) -> Option
         .collect::<Vec<_>>()
         .join(", ");
 
-    Some(format!("Updated dependencies: {}", dep_list))
+    Some(format!("{DEPENDENCY_UPDATES_PREFIX}{dep_list}"))
 }
 
 /// Convert a list of (name, version) tuples into DependencyUpdate structs
@@ -2584,6 +2587,25 @@ pub fn header_matches_release_version(header_text: &str, version: &str) -> bool 
         )
 }
 
+/// Whether a changelog section body (without its `## ` heading) holds only entries Sampo
+/// writes for a package bumped by other packages: dependency updates, fixed group or
+/// structural coupling bumps, or the collapsed version-bump-only line.
+pub fn is_automatic_changelog_section(body: &str) -> bool {
+    let (fixed_group_entry, _) = create_fixed_dependency_policy_entry(Bump::Patch);
+    let (structural_entry, _) = create_structural_version_coupling_entry(Bump::Patch);
+    body.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty() && !line.starts_with("### "))
+        .all(|line| {
+            line == VERSION_BUMP_ONLY_ENTRY
+                || line.strip_prefix("- ").is_some_and(|entry| {
+                    entry == fixed_group_entry
+                        || entry == structural_entry
+                        || entry.starts_with(DEPENDENCY_UPDATES_PREFIX)
+                })
+        })
+}
+
 fn header_is_prerelease_of(header_text: &str, version: &str) -> bool {
     let (Some((_, last)), Ok(version)) = (heading_versions(header_text), Version::parse(version))
     else {
@@ -2910,6 +2932,26 @@ mod tests {
         assert!(header_matches_release_version("0.2.0 ... 0.4.0", "0.3.0"));
         assert!(!header_matches_release_version("0.2.0 ...", "0.2.0"));
         assert!(!header_matches_release_version("0.2.0 to 0.4.0", "0.2.0"));
+    }
+
+    #[test]
+    fn is_automatic_changelog_section_accepts_only_automatic_entries() {
+        for body in [
+            "Version bump only, to follow other packages.",
+            "### Patch changes\n\n- Updated dependencies: a@1.1.0, b@2.0.0",
+            "### Minor changes\n\n- Bumped due to fixed dependency group policy\n",
+            "### Patch changes\n\n- Bumped to stay aligned with the packages it shares a version with",
+            "",
+        ] {
+            assert!(is_automatic_changelog_section(body), "{body:?}");
+        }
+        for body in [
+            "### Patch changes\n\n- Updated dependencies: a@1.1.0\n- Fixed a crash",
+            "### Minor changes\n\n- Added a flag\n  - with details",
+            "Some prose written by hand.",
+        ] {
+            assert!(!is_automatic_changelog_section(body), "{body:?}");
+        }
     }
 
     #[test]

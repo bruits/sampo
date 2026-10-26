@@ -358,7 +358,7 @@ fn append_changes_section(output: &mut String, section_title: &str, changes: &[S
 }
 
 /// Append a collapsed list of the packages bumped only to follow other packages, if any
-fn append_bump_only_packages(output: &mut String, packages: &[String]) {
+pub fn append_bump_only_packages(output: &mut String, packages: &[String]) {
     if packages.is_empty() {
         return;
     }

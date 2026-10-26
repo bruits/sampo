@@ -697,6 +697,99 @@ fn test_publish_dry_run_shows_would_push_message() {
     );
 }
 
+/// Workspace of unpublished crates, each of which gets a new tag on publish.
+fn setup_multi_package_publish_workspace(ws: &TestWorkspace, names: &[&str]) {
+    fs::create_dir_all(ws.file_path(".sampo")).expect("failed to create .sampo directory");
+    ws.write_file(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/*\"]\n",
+    );
+    for name in names {
+        ws.write_file(
+            format!("crates/{name}/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.4.0\"\nedition = \"2021\"\npublish = false\n"
+            ),
+        );
+        ws.write_file(format!("crates/{name}/src/lib.rs"), "");
+    }
+    init_git_repo(ws.path());
+    for args in [&["add", "."][..], &["commit", "-m", "Initial commit"]] {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(ws.path())
+            .status()
+            .expect("failed to run git");
+        assert!(status.success(), "git {:?} failed: {:?}", args, status);
+    }
+}
+
+fn run_publish_dry_run_with_releases(ws: &TestWorkspace, create_github_release: &str) -> String {
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "true".to_string());
+    env_vars.insert(
+        "INPUT_CREATE_GITHUB_RELEASE".to_string(),
+        create_github_release.to_string(),
+    );
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+    // The client is built before publishing; a dry run never calls the API.
+    env_vars.insert("GITHUB_REPOSITORY".to_string(), "acme/app".to_string());
+    env_vars.insert("GITHUB_TOKEN".to_string(), "unused".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(
+        output.status.success(),
+        "publish dry-run should succeed, stdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
+}
+
+#[test]
+fn test_publish_dry_run_releases_only_listed_packages() {
+    let ws = TestWorkspace::new();
+    setup_multi_package_publish_workspace(&ws, &["app", "core", "proto"]);
+
+    let stdout = run_publish_dry_run_with_releases(&ws, " app ");
+
+    let releases = stdout
+        .split_once("Would create 1 GitHub releases")
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("expected one planned release, got stdout: {}", stdout));
+    assert!(
+        releases.contains("  - app-v0.4.0\n    with the notes of 2 other new tags"),
+        "expected app release with folded notes, got stdout: {}",
+        stdout
+    );
+    assert!(!releases.contains("core-v0.4.0"));
+    assert!(!releases.contains("proto-v0.4.0"));
+}
+
+#[test]
+fn test_publish_dry_run_without_listed_tag_creates_no_release() {
+    let ws = TestWorkspace::new();
+    setup_multi_package_publish_workspace(&ws, &["core", "proto"]);
+
+    let stdout = run_publish_dry_run_with_releases(&ws, "app");
+
+    assert!(
+        stdout.contains(
+            "No package listed in create-github-release (app) has a new tag, so no GitHub release is created."
+        ),
+        "expected no-release message, got stdout: {}",
+        stdout
+    );
+    assert!(!stdout.contains("Would create"));
+    assert!(stdout.contains("Would push 2 new tags"));
+}
+
 #[test]
 fn test_auto_mode_detects_changesets() {
     let ws = TestWorkspace::new();
