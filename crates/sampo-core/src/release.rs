@@ -2470,7 +2470,9 @@ fn stabilize_base(parsed: &Version, bump: Bump) -> std::result::Result<String, S
 }
 
 /// `sampo pre exit` leaves the changelog on the pre-release cycle: a stable version whose top
-/// section is a pre-release of it is unreleased, unless its tag exists.
+/// section is a pre-release of it is unreleased, unless its tag exists. A package that
+/// `git.tag_unpublished` leaves untagged never has one, so it stays unreleased until
+/// `sampo release` writes its section, as nothing else marks it as shipped.
 fn exited_prerelease(
     ws: &Workspace,
     config: &Config,

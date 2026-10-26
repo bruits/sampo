@@ -22,13 +22,16 @@ pub use changeset::{
     ChangesetInfo, load_changesets, parse_changeset, render_changeset_markdown,
     render_changeset_markdown_with_tags,
 };
-pub use config::{AutomaticEntries, Config};
+pub use config::{AutomaticEntries, Config, TagUnpublished};
 pub use enrichment::{
     AcknowledgmentStyle, Acknowledgments, CommitInfo, GitHubUserInfo, detect_github_repo_slug,
     detect_github_repo_slug_with_config, enrich_changeset_message, get_commit_hash_for_path,
 };
 pub use errors::{Result, SampoError, WorkspaceError};
-pub use filters::{filter_members, list_visible_packages, should_ignore_package, wildcard_match};
+pub use filters::{
+    filter_members, list_visible_packages, should_ignore_package, should_tag_unpublished,
+    wildcard_match,
+};
 pub use git::current_branch;
 pub use markdown::format_markdown_list_item;
 pub use prerelease::{

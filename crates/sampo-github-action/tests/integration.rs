@@ -511,6 +511,53 @@ fn test_publish_private_packages_creates_tags_and_reports_published() {
     );
 }
 
+#[test]
+fn test_publish_with_tag_unpublished_false_reports_not_published() {
+    let ws = TestWorkspace::new();
+    setup_publish_workspace(&ws);
+    write_git_config(&ws, "[git]\ntag_unpublished = false\n");
+
+    let output_file = ws.file_path("github_output");
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        output_file.to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "false".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+
+    let output = run_action(&[], &env_vars, ws.path());
+    if !output.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(output.status.success(), "publish command should succeed");
+
+    let outputs = parse_outputs(&output_file);
+    assert_eq!(
+        outputs.get("published").map(String::as_str),
+        Some("false"),
+        "published should be false when no package gets a tag"
+    );
+
+    let tag_output = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(ws.path())
+        .output()
+        .expect("failed to list git tags");
+    let tags = String::from_utf8_lossy(&tag_output.stdout);
+    assert!(
+        tags.trim().is_empty(),
+        "No tag should be created for the private package, got tags: {}",
+        tags
+    );
+}
+
 /// Regression test: dry-run mode should NOT push tags or create GitHub releases.
 /// This prevents accidental side effects when validating publish commands.
 #[test]

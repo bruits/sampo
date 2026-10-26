@@ -24,6 +24,17 @@ pub enum AutomaticEntries {
     Collapse,
 }
 
+/// Which packages that are not publishable `sampo publish` tags. Publishable packages are
+/// always tagged.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TagUnpublished {
+    #[default]
+    All,
+    Never,
+    /// Only those matching one of these patterns, matched like `packages.ignore`.
+    Matching(Vec<String>),
+}
+
 /// Configuration for Sampo
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -50,6 +61,7 @@ pub struct Config {
     pub git_short_tags: Option<String>,
     pub git_tag_format: TagTemplate,
     pub git_short_tags_format: TagTemplate,
+    pub git_tag_unpublished: TagUnpublished,
 }
 
 impl Default for Config {
@@ -74,6 +86,7 @@ impl Default for Config {
             git_short_tags: None,
             git_tag_format: TagTemplate::from_static(DEFAULT_TAG_FORMAT),
             git_short_tags_format: TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
+            git_tag_unpublished: TagUnpublished::default(),
         }
     }
 }
@@ -375,6 +388,27 @@ impl Config {
             None => TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
         };
 
+        let tag_unpublished_error = || {
+            SampoError::Config(
+                "git.tag_unpublished must be true, false, or an array of package patterns".into(),
+            )
+        };
+        let git_tag_unpublished = match git_table.and_then(|t| t.get("tag_unpublished")) {
+            None | Some(toml::Value::Boolean(true)) => TagUnpublished::All,
+            Some(toml::Value::Boolean(false)) => TagUnpublished::Never,
+            Some(toml::Value::Array(items)) => TagUnpublished::Matching(
+                items
+                    .iter()
+                    .map(|item| {
+                        item.as_str()
+                            .map(|s| s.to_string())
+                            .ok_or_else(tag_unpublished_error)
+                    })
+                    .collect::<Result<Vec<String>, SampoError>>()?,
+            ),
+            Some(_) => return Err(tag_unpublished_error()),
+        };
+
         Ok(Self {
             version,
             github_repository,
@@ -395,6 +429,7 @@ impl Config {
             git_short_tags,
             git_tag_format,
             git_short_tags_format,
+            git_tag_unpublished,
         })
     }
 
@@ -487,6 +522,7 @@ mod tests {
         assert!(config.is_release_branch("main"));
         assert_eq!(config.git_release_branches, Vec::<String>::new());
         assert!(config.git_short_tags.is_none());
+        assert_eq!(config.git_tag_unpublished, TagUnpublished::All);
     }
 
     #[test]
@@ -607,6 +643,55 @@ mod tests {
         assert!(config.is_release_branch("release"));
         assert!(config.is_release_branch("3.x"));
         assert!(!config.is_release_branch("main"));
+    }
+
+    fn load_git_config(git_section: &str) -> Result<Config, SampoError> {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            format!("[git]\n{git_section}\n"),
+        )
+        .unwrap();
+        Config::load(temp.path())
+    }
+
+    #[test]
+    fn reads_tag_unpublished() {
+        assert_eq!(
+            load_git_config("tag_unpublished = true")
+                .unwrap()
+                .git_tag_unpublished,
+            TagUnpublished::All
+        );
+        assert_eq!(
+            load_git_config("tag_unpublished = false")
+                .unwrap()
+                .git_tag_unpublished,
+            TagUnpublished::Never
+        );
+        assert_eq!(
+            load_git_config("tag_unpublished = [\"cargo/app\", \"tools/*\"]")
+                .unwrap()
+                .git_tag_unpublished,
+            TagUnpublished::Matching(vec!["cargo/app".to_string(), "tools/*".to_string()])
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_tag_unpublished() {
+        for value in ["\"cargo/app\"", "1", "[\"cargo/app\", 1]"] {
+            let err = load_git_config(&format!("tag_unpublished = {value}")).unwrap_err();
+            assert!(
+                matches!(err, SampoError::Config(_)),
+                "{value}: unexpected error: {err}"
+            );
+            assert!(
+                err.to_string()
+                    .contains("git.tag_unpublished must be true, false, or an array"),
+                "{value}: unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
