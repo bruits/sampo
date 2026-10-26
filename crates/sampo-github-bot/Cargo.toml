@@ -10,11 +10,13 @@ repository = "https://github.com/bruits/sampo"
 readme = "README.md"
 keywords = ["changeset", "versioning", "publishing", "semver", "monorepo"]
 categories = ["development-tools"]
+exclude = ["src/test_app_key.pem"]
 
 [dependencies]
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-octocrab = "0.54"
+# octocrab's defaults with `jwt-aws-lc-rs`, so jsonwebtoken gets a single crypto backend
+octocrab = { version = "0.54", default-features = false, features = ["follow-redirect", "retry", "rustls", "timeout", "tracing", "default-client", "rustls-ring", "jwt-aws-lc-rs"] }
 hmac = "0.13"
 sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
@@ -23,6 +25,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 http = "1"
 thiserror = "2"
-jsonwebtoken = { version = "10.4", default-features = false, features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "10.4", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 reqwest = { version = "0.13", features = ["json"] }
 sampo-core = { version = "0.19.0", path = "../sampo-core" }
