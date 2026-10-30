@@ -1279,6 +1279,7 @@ fn parse_pep440_version(s: &str) -> Option<(u64, u64, u64)> {
 
     let parts: Vec<&str> = s.split('.').collect();
     match parts.len() {
+        1 => Some((parts[0].parse().ok()?, 0, 0)),
         2 => Some((parts[0].parse().ok()?, parts[1].parse().ok()?, 0)),
         3 => Some((
             parts[0].parse().ok()?,
@@ -1347,7 +1348,11 @@ fn satisfies_single_pep440_specifier(spec: &str, version: (u64, u64, u64)) -> Op
     // ~=
     if let Some(rest) = spec.strip_prefix("~=") {
         let rest = rest.trim();
-        let parts_count = rest.split('.').count();
+        let parts_count = strip_post_release_suffix(rest).split('.').count();
+        // PEP 440 forbids `~=` on a single segment.
+        if parts_count < 2 {
+            return None;
+        }
         let parsed = parse_pep440_version(rest)?;
         let (lower, upper) = expand_compatible_release(parsed, parts_count);
         return Some(version >= lower && version < upper);

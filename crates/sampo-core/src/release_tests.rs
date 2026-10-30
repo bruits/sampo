@@ -3021,12 +3021,13 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
     #[test]
     fn pypi_constraint_violation_in_fixed_group_blocks_release() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
+        for requirement in ["pkg-b>=1.0,<2.0", "pkg-b>=1.0,<2"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
 
-        fs::write(
-            root.join("pyproject.toml"),
-            r#"
+            fs::write(
+                root.join("pyproject.toml"),
+                r#"
 [project]
 name = "workspace-root"
 version = "1.0.0"
@@ -3035,43 +3036,46 @@ dependencies = []
 [tool.uv.workspace]
 members = ["packages/*"]
 "#,
-        )
-        .unwrap();
+            )
+            .unwrap();
 
-        fs::create_dir_all(root.join("packages/pkg-a")).unwrap();
-        fs::write(
-            root.join("packages/pkg-a/pyproject.toml"),
-            r#"
+            fs::create_dir_all(root.join("packages/pkg-a")).unwrap();
+            fs::write(
+                root.join("packages/pkg-a/pyproject.toml"),
+                format!(
+                    r#"
 [project]
 name = "pkg-a"
 version = "1.0.0"
-dependencies = ["pkg-b>=1.0,<2.0"]
-"#,
-        )
-        .unwrap();
+dependencies = ["{requirement}"]
+"#
+                ),
+            )
+            .unwrap();
 
-        fs::create_dir_all(root.join("packages/pkg-b")).unwrap();
-        fs::write(
-            root.join("packages/pkg-b/pyproject.toml"),
-            r#"
+            fs::create_dir_all(root.join("packages/pkg-b")).unwrap();
+            fs::write(
+                root.join("packages/pkg-b/pyproject.toml"),
+                r#"
 [project]
 name = "pkg-b"
 version = "1.5.0"
 dependencies = []
 "#,
-        )
-        .unwrap();
+            )
+            .unwrap();
 
-        setup_sampo_root(
-            root,
-            "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"pypi/pkg-a\", \"pypi/pkg-b\"]]\n",
-            &["pypi/pkg-b"],
-            Bump::Major,
-            "bump pkg-b major",
-        );
+            setup_sampo_root(
+                root,
+                "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"pypi/pkg-a\", \"pypi/pkg-b\"]]\n",
+                &["pypi/pkg-b"],
+                Bump::Major,
+                "bump pkg-b major",
+            );
 
-        // pkg-b 1.5.0 -> 2.0.0 violates `>=1.0,<2.0` on pkg-a.
-        assert_constraint_violation_blocks(run_release(root, true));
+            // pkg-b 1.5.0 -> 2.0.0 violates the upper bound on pkg-a.
+            assert_constraint_violation_blocks(run_release(root, true));
+        }
     }
 
     #[test]
