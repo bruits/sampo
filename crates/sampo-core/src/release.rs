@@ -1,5 +1,5 @@
 use crate::adapters::PackageAdapter;
-use crate::adapters::cargo::ManifestMetadata;
+use crate::adapters::cargo::{ManifestMetadata, update_workspace_root_manifest};
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::types::{
@@ -439,6 +439,7 @@ pub fn detect_fixed_dependency_policy_packages(
     }
 
     // Find packages affected by normal dependency cascade
+    let skip_unreleased = config.bump_dependents == BumpDependents::OutOfRange;
     let mut packages_affected_by_cascade = BTreeSet::new();
     for pkg_with_changeset in &packages_with_changesets {
         let mut queue = vec![pkg_with_changeset.clone()];
@@ -452,6 +453,9 @@ pub fn detect_fixed_dependency_policy_packages(
 
             if let Some(deps) = dependents.get(&pkg) {
                 for dep in deps {
+                    if skip_unreleased && !bumped_packages.contains(dep) {
+                        continue;
+                    }
                     packages_affected_by_cascade.insert(dep.clone());
                     queue.push(dep.clone());
                 }
@@ -940,6 +944,16 @@ fn compute_plan_state(
     let direct_targets: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
 
     let dependents = build_dependency_graph(workspace, config);
+    let cargo_metadata = if config.bump_dependents == BumpDependents::OutOfRange
+        && workspace
+            .members
+            .iter()
+            .any(|p| p.kind == PackageKind::Cargo)
+    {
+        Some(ManifestMetadata::load(workspace)?)
+    } else {
+        None
+    };
     let new_version_of = |info: &PackageInfo, bump: Bump| {
         planned_version(
             info,
@@ -962,6 +976,7 @@ fn compute_plan_state(
             config,
             workspace,
             &new_version_of,
+            cargo_metadata.as_ref(),
         )?;
         if !apply_linked_dependencies(&mut bump_by_pkg, config, workspace)? {
             break;
@@ -1161,10 +1176,8 @@ pub(crate) fn validate_dependency_constraints(
     Ok(warnings)
 }
 
-/// Checks `pkg_info`'s requirement on `dep_info` against `new_dep_version`. Other
-/// ecosystems read the requirement from the manifest, while Cargo reads it from `cargo
-/// metadata`. A Cargo pin (bare `1.2.3` or exact `=1.2.3`) is skipped: the release
-/// rewrites it to the new version.
+/// A Cargo pin (bare `1.2.3` or exact `=1.2.3`) is skipped, as the release rewrites it to
+/// the new version. So is a requirement `cargo metadata` does not list.
 fn check_internal_dependency(
     pkg_info: &PackageInfo,
     dep_info: &PackageInfo,
@@ -1181,8 +1194,13 @@ fn check_internal_dependency(
                     reason: "pinned version".to_string(),
                 });
             }
-            meta.get_dependency_constraint(&manifest_path, &dep_info.name)
-                .unwrap_or_else(|| "*".to_string())
+            let Some(constraint) = meta.get_dependency_constraint(&manifest_path, &dep_info.name)
+            else {
+                return Ok(ConstraintCheckResult::Skipped {
+                    reason: "requirement not found".to_string(),
+                });
+            };
+            constraint
         }
         _ => "*".to_string(),
     };
@@ -1193,6 +1211,54 @@ fn check_internal_dependency(
         &constraint,
         new_dep_version,
     )
+}
+
+/// Whether `dependent` can stay out of the release when `dependency` moves to `new_version`:
+/// its requirement must still cover it and the release must leave its manifest as written.
+/// A pin in any section is rewritten, so a range declared beside it is not enough.
+fn dependent_in_range(
+    dependent: &PackageInfo,
+    dependency: &PackageInfo,
+    new_version: &str,
+    ws: &Workspace,
+    cfg: &Config,
+    cargo_metadata: Option<&ManifestMetadata>,
+) -> Result<bool> {
+    // `pre exit` left it on a version no release has written yet.
+    if exited_prerelease(ws, cfg, dependent, &dependent.version)?
+        || !matches!(
+            check_internal_dependency(dependent, dependency, new_version, cargo_metadata)?,
+            ConstraintCheckResult::Satisfied
+        )
+    {
+        return Ok(false);
+    }
+    // Hex rewrites every requirement it can parse, covered or not, so its rewrite says
+    // nothing about a pin.
+    if dependency.kind != dependent.kind || dependent.kind == PackageKind::Hex {
+        return Ok(true);
+    }
+
+    let new_versions = BTreeMap::from([(dependency.name.clone(), new_version.to_string())]);
+    let adapter = PackageAdapter::from_kind(dependent.kind);
+    let manifest_path = adapter.manifest_path(&dependent.path);
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|err| SampoError::Io(io_error_with_path(err, &manifest_path)))?;
+    let (updated, _) =
+        adapter.update_manifest_versions(&manifest_path, &manifest, None, &new_versions)?;
+    if updated != manifest {
+        return Ok(false);
+    }
+
+    // A requirement inherited from `[workspace.dependencies]` is rewritten in the root.
+    if dependent.kind == PackageKind::Cargo {
+        let root_path = ws.root.join("Cargo.toml");
+        let root = fs::read_to_string(&root_path)
+            .map_err(|err| SampoError::Io(io_error_with_path(err, &root_path)))?;
+        let (_, changed) = update_workspace_root_manifest(&root_path, &root, None, &new_versions)?;
+        return Ok(!changed);
+    }
+    Ok(true)
 }
 
 /// A pin the release rewrite will not touch, pointing at a package that is moving.
@@ -1817,16 +1883,14 @@ fn build_dependency_graph(ws: &Workspace, cfg: &Config) -> BTreeMap<String, BTre
     dependents
 }
 
-/// Apply dependency cascade logic and fixed dependency groups.
-///
-/// `new_version_of` gives the version a package releases at with a bump, which
-/// `packages.bump_dependents = "out-of-range"` checks dependents' requirements against.
+/// Apply dependency cascade logic and fixed dependency groups
 fn apply_dependency_cascade(
     bump_by_pkg: &mut BTreeMap<String, Bump>,
     dependents: &BTreeMap<String, BTreeSet<String>>,
     cfg: &Config,
     ws: &Workspace,
     new_version_of: &impl Fn(&PackageInfo, Bump) -> Result<String>,
+    cargo_metadata: Option<&ManifestMetadata>,
 ) -> Result<()> {
     let resolved_fixed_groups = enforced_fixed_groups(ws, cfg)?;
 
@@ -1844,12 +1908,11 @@ fn apply_dependency_cascade(
     }
 
     let skip_dependents_in_range = cfg.bump_dependents == BumpDependents::OutOfRange;
-    let cargo_metadata =
-        if skip_dependents_in_range && ws.members.iter().any(|p| p.kind == PackageKind::Cargo) {
-            Some(ManifestMetadata::load(ws)?)
-        } else {
-            None
-        };
+    let linked_groups = if skip_dependents_in_range {
+        resolve_config_groups(ws, &cfg.linked_dependencies, "packages.linked")?
+    } else {
+        Vec::new()
+    };
 
     let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
@@ -1878,19 +1941,20 @@ fn apply_dependency_cascade(
                     }
                 }
 
-                // Only a requirement Sampo can check, and that still covers the new version,
-                // spares the dependent: anything else may be rewritten or go stale.
+                // Members of a `linked` group follow each other whatever their ranges say.
                 if let Some((changed_info, new_version)) = &changed_release
                     && let Some(dependent_info) = by_id.get(dep_name)
-                    && matches!(
-                        check_internal_dependency(
-                            dependent_info,
-                            changed_info,
-                            new_version,
-                            cargo_metadata.as_ref(),
-                        )?,
-                        ConstraintCheckResult::Satisfied
-                    )
+                    && !linked_groups
+                        .iter()
+                        .any(|group| group.contains(&changed) && group.contains(dep_name))
+                    && dependent_in_range(
+                        dependent_info,
+                        changed_info,
+                        new_version,
+                        ws,
+                        cfg,
+                        cargo_metadata,
+                    )?
                 {
                     continue;
                 }
@@ -2064,7 +2128,6 @@ fn prepare_release_plan(
     Ok(releases)
 }
 
-/// The current and new version of `info` released with `bump`.
 fn planned_version(
     info: &PackageInfo,
     bump: Bump,
@@ -3234,6 +3297,7 @@ mod tests {
             &config,
             &workspace,
             &new_version_of,
+            None,
         )
         .unwrap();
 
