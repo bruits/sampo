@@ -193,6 +193,8 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `short_tags_format`: Template applied to the package selected by `short_tags` (default: `"v{version}"`). Same placeholders as `tag_format`.
 
+`tag_unpublished`: Which unpublishable packages `sampo publish` tags (default: `true`, all of them). Set it to `false` to tag none, or to a list of patterns, matched like `packages.ignore`, to tag only those matching one.
+
 ### `[github]` section
 
 `repository`: The GitHub repository slug in the format "owner/repo". If not set, Sampo uses the `GITHUB_REPOSITORY` environment variable or attempts to detect it from the `origin` git remote. This setting is used to enrich changelog messages with commit hash links and author acknowledgments, especially for first-time contributors.
@@ -224,7 +226,7 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 You can ignore certain packages, so they do not appear in the CLI commands, changesets, releases, or publishing steps. This is useful for packages that are not meant to be published or versioned, such as internal tools, examples, or documentation packages. Changesets targeting only ignored packages are left unconsumed.
 
-`ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust crates, `"private": true` in a workspace `package.json` for npm packages, or a `Private :: Do Not Upload` classifier in `pyproject.toml` for Python packages. By default, Sampo still tracks versioning and changelogs for those packages, but will not attempt to publish them to their registries.
+`ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust crates, `"private": true` in a workspace `package.json` for npm packages, or a `Private :: Do Not Upload` classifier in `pyproject.toml` for Python packages. By default, Sampo still tracks versioning and changelogs for those packages, and tags their releases, but will not attempt to publish them to their registries. To keep their versions and changelogs without tagging them, leave this option off and set `git.tag_unpublished` instead.
 
 > [!NOTE]
 > This tracking still requires a declared `version`. A package that is both not publishable **and** has no `version` (typically a workspace root or an app) is skipped entirely, so it never gets a version tag or release.

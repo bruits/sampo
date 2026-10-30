@@ -4,7 +4,7 @@ use crate::types::{PackageInfo, PackageKind, PublishOutput};
 use crate::{
     Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
-    filters::should_ignore_package,
+    filters::{should_ignore_package, should_tag_unpublished},
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -49,7 +49,8 @@ impl PublishExtraArgs {
 /// them in topological order (dependencies first).
 ///
 /// After publishing, git tags are created for all packages that have been released
-/// (including non-publishable packages), as long as they are not ignored by the configuration.
+/// (including non-publishable packages, unless `git.tag_unpublished` leaves them out), as long
+/// as they are not ignored by the configuration.
 ///
 /// Returns a `PublishOutput` containing the tags that were created (non-dry-run) or would
 /// be created (dry-run), allowing callers to know what happened or would happen.
@@ -94,18 +95,16 @@ pub fn run_publish(
         )));
     }
 
-    // Determine which packages are publishable and not ignored
+    // Determine which packages are publishable and which get tagged, among those not ignored
     let mut id_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
-    let mut all_non_ignored: Vec<&PackageInfo> = Vec::new();
+    let mut taggable: Vec<&PackageInfo> = Vec::new();
 
     for c in &ws.members {
         // Skip ignored packages
         if should_ignore_package(&config, &ws, c)? {
             continue;
         }
-
-        all_non_ignored.push(c);
 
         let adapter = match c.kind {
             crate::types::PackageKind::Cargo => PackageAdapter::Cargo,
@@ -118,15 +117,19 @@ pub fn run_publish(
 
         let manifest = adapter.manifest_path(&c.path);
         if !adapter.is_publishable(&manifest)? {
+            if should_tag_unpublished(&config, &ws, c) {
+                taggable.push(c);
+            }
             continue;
         }
 
+        taggable.push(c);
         let identifier = c.canonical_identifier().to_string();
         publishable.insert(identifier.clone());
         id_to_package.insert(identifier, c);
     }
 
-    if publishable.is_empty() && all_non_ignored.is_empty() {
+    if publishable.is_empty() && taggable.is_empty() {
         println!("No publishable packages were found in the workspace.");
         return Ok(PublishOutput {
             tags: Vec::new(),
@@ -136,12 +139,12 @@ pub fn run_publish(
 
     // Versionless packages are never tagged, so skip them in conflict detection
     // to avoid a spurious abort.
-    let taggable: Vec<&PackageInfo> = all_non_ignored
+    let versioned: Vec<&PackageInfo> = taggable
         .iter()
         .copied()
         .filter(|p| !p.version.trim().is_empty())
         .collect();
-    for warning in check_tag_conflicts(&config, &taggable)? {
+    for warning in check_tag_conflicts(&config, &versioned)? {
         eprintln!("Warning: {warning}");
     }
 
@@ -304,7 +307,7 @@ pub fn run_publish(
     //   2. There exist private packages whose current version does not have a tag yet
     // This avoids creating tags during no-op invocations (e.g., auto mode with no releases)
     let mut private_packages_to_tag: Vec<&PackageInfo> = Vec::new();
-    for package in &all_non_ignored {
+    for package in &taggable {
         if publishable.contains(package.canonical_identifier()) {
             continue;
         }
@@ -372,8 +375,8 @@ pub fn run_publish(
     })
 }
 
-/// Two-tier tag-conflict diagnostics, scoped to all non-ignored packages
-/// (private ones get tagged too):
+/// Two-tier tag-conflict diagnostics, scoped to the packages that get tagged
+/// (private ones too, unless `git.tag_unpublished` leaves them out):
 ///
 /// - Errors when two packages currently render to the *same* git tag (a release
 ///   right now would collide).
@@ -2183,6 +2186,106 @@ edition = "2021"
             "Private package should receive a tag in mixed workspace. Got tags: {:?}",
             tag_lines
         );
+    }
+
+    fn list_tags(root: &Path) -> Vec<String> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["tag", "--list"])
+            .output()
+            .expect("git tag list should succeed");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn tag_unpublished_false_still_tags_publishable_packages() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("lib-core", "1.0.0")
+            .add_crate("internal-service", "0.5.0")
+            .set_publishable("internal-service", false)
+            .set_config("[git]\ntag_unpublished = false\n");
+
+        init_git_repo_for_test(&workspace.root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let output = workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        assert_eq!(output.tags, vec!["lib-core-v1.0.0".to_string()]);
+        assert_eq!(list_tags(&workspace.root), vec!["lib-core-v1.0.0"]);
+    }
+
+    #[test]
+    fn tag_unpublished_false_creates_no_tags_in_private_only_workspace() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("private-one", "1.0.0")
+            .add_crate("private-two", "1.0.0")
+            .set_publishable("private-one", false)
+            .set_publishable("private-two", false)
+            .set_config("[git]\ntag_unpublished = false\n");
+
+        init_git_repo_for_test(&workspace.root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let output = workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        assert!(output.tags.is_empty(), "{:?}", output.tags);
+        assert!(list_tags(&workspace.root).is_empty());
+    }
+
+    #[test]
+    fn tag_unpublished_list_with_short_tags_tags_only_the_shipped_binary() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("acme", "0.4.0")
+            .add_crate("acme-core", "0.4.0")
+            .add_crate("acme-cli", "0.4.0")
+            .set_publishable("acme", false)
+            .set_publishable("acme-core", false)
+            .set_publishable("acme-cli", false)
+            .set_config("[git]\nshort_tags = \"acme\"\ntag_unpublished = [\"cargo/acme\"]\n");
+
+        init_git_repo_for_test(&workspace.root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let output = workspace
+            .run_publish(false)
+            .expect("publish should succeed");
+
+        assert_eq!(output.tags, vec!["v0.4.0".to_string()]);
+        assert_eq!(list_tags(&workspace.root), vec!["v0.4.0"]);
+    }
+
+    #[test]
+    fn tag_unpublished_skips_conflict_check_for_untagged_packages() {
+        // Both crates render "cargo-v1.0.0", which would abort the publish if both were tagged.
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("app", "1.0.0")
+            .add_crate("helper", "1.0.0")
+            .set_publishable("app", false)
+            .set_publishable("helper", false)
+            .set_config(
+                "[git]\ntag_format = \"{ecosystem}-v{version}\"\ntag_unpublished = [\"app\"]\n",
+            );
+
+        init_git_repo_for_test(&workspace.root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        workspace
+            .run_publish(false)
+            .expect("an untagged package must not cause a tag conflict");
+
+        assert_eq!(list_tags(&workspace.root), vec!["cargo-v1.0.0"]);
     }
 
     #[test]
