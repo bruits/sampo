@@ -25,6 +25,7 @@ permissions:
   contents: write      # Create tags and releases
   pull-requests: write # Create and update release PRs
   discussions: write   # Open GitHub Discussions (optional)
+  id-token: write      # Publish to npm through trusted publishing (optional)
 
 jobs:
   release:
@@ -41,7 +42,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_TOKEN: ${{ secrets.CARGO_TOKEN }}     # For Cargo packages (optional)
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}         # For npm packages (optional, uses .npmrc if not set)
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}         # For npm packages (optional, not needed with trusted publishing)
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}     # For Hex packages (optional)
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }} # For PyPI packages via uv (optional)
           # Maven packages read credentials from ~/.m2/settings.xml (see actions/setup-java)
@@ -49,6 +50,9 @@ jobs:
 
 > [!WARNING]
 > If your repository commits a lockfile, install the matching package manager in the workflow before this step. Runners ship `npm` and `yarn`, but not `pnpm` or `bun`.
+
+> [!NOTE]
+> npm packages can publish without `NPM_TOKEN` through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), with provenance for public repositories. Grant `id-token: write`, add a trusted publisher on npmjs.com for each package (this workflow's filename, with `npm publish` allowed), and set up npm 11.5.1 or later, for example with Node 24 through `actions/setup-node`. It works on GitHub-hosted runners only, and a new package's first version still needs a token. In Bun workspaces, Sampo packs with Bun and publishes with npm.
 
 ### Creating GitHub Releases and Discussions
 
