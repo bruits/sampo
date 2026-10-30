@@ -54,6 +54,14 @@ jobs:
 
 Set the `create-github-release` input to `true` to create a GitHub Release for each new tag created when publishing packages. The release notes are generated from the changesets included in the release.
 
+In a monorepo that ships one product built from many packages, set `create-github-release` to a comma-separated list of package names instead. Only those packages get a GitHub Release, and the release of the package listed first also carries the notes of every other package published with it: an "Other packages" section with each package's version and changelog section, and a collapsed list of the packages bumped only to follow others. If none of the listed packages has a new tag, no release is created, though all tags are still pushed. When the notes exceed GitHub's limit of 125,000 characters, the last packages are left out with a note pointing to their changelogs.
+
+```yaml
+- uses: bruits/sampo/crates/sampo-github-action@main
+  with:
+    create-github-release: my-app # one release per publish, for my-app
+```
+
 To also open a GitHub Discussion for each release, set `open-discussion` to `true` (all packages) or a comma-separated list of package names (e.g., `sampo,sampo-github-action`). Use `discussion-category` to specify the target category.
 
 ### Uploading release assets in GitHub Releases
@@ -124,8 +132,8 @@ The action supports the following inputs:
 - `pr-title`: title of the release PR that `auto` prepares (defaults to `Release (<current-branch>)`).
 - `stabilize-pr-branch`: working branch used for the stabilize PR that `auto` prepares (defaults to `stabilize/<current-branch>` with `/` replaced by `-`).
 - `stabilize-pr-title`: title of the stabilize PR that `auto` prepares (defaults to `Release stable (<current-branch>)`).
-- `create-github-release`: if `true`, create GitHub Releases for new tags.
-- `open-discussion`: create a GitHub Discussion for released packages. Accepts `true` (all packages), `false` (none, default), or a comma-separated list of package names to filter (e.g., `sampo,sampo-github-action`). Requires `create-github-release: true`.
+- `create-github-release`: create GitHub Releases for new tags. Accepts `true` (one per new tag), `false` (none, default), or a comma-separated list of package names that get a release, the first listed one gathering the other packages' notes (see [Creating GitHub Releases and Discussions](#creating-github-releases-and-discussions)).
+- `open-discussion`: create a GitHub Discussion for released packages. Accepts `true` (all packages), `false` (none, default), or a comma-separated list of package names to filter (e.g., `sampo,sampo-github-action`). Only applies to the releases `create-github-release` creates.
 - `discussion-category`: preferred Discussions category slug when creating releases.
 - `release-assets`: comma or newline separated list of paths or glob patterns for pre-built artifacts to upload when creating GitHub releases. Use `=>` to rename matches (e.g. `dist/*.zip => my-tool.zip`). Placeholders `{{tag}}`, `{{crate}}`, and `{{version}}` are available.
 - `github-token`: GitHub token to create/update PRs (defaults to `GITHUB_TOKEN` env).
