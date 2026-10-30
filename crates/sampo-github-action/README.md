@@ -84,7 +84,7 @@ Example:
 The action exposes two outputs:
 
 - `released`: `"true"` when release automation ran (release PR prepared, stabilize PR prepared, or `sampo release` executed).
-- `published`: `"true"` when `sampo publish` completed successfully and created version tags.
+- `published`: `"true"` when `sampo publish` completed successfully and created version tags. With `git.tag_unpublished` set to `false` or a list, a release of only untagged packages creates no tag and reports `"false"`.
 
 These outputs can be used to gate subsequent steps, example:
 

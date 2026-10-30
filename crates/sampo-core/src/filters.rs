@@ -2,6 +2,7 @@ use crate::errors::Result;
 use crate::{
     Config,
     adapters::PackageAdapter,
+    config::TagUnpublished,
     types::{PackageInfo, Workspace},
 };
 use std::collections::BTreeSet;
@@ -29,24 +30,34 @@ pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -
     }
 
     // 2) explicit ignore patterns
-    if !cfg.ignore.is_empty() {
-        let rel = info
-            .path
-            .strip_prefix(&ws.root)
-            .unwrap_or(&info.path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        for pat in &cfg.ignore {
-            if wildcard_match(pat, info.canonical_identifier())
-                || wildcard_match(pat, &info.name)
-                || wildcard_match(pat, &rel)
-            {
-                return Ok(true);
-            }
-        }
-    }
+    Ok(matches_any_pattern(&cfg.ignore, ws, info))
+}
 
-    Ok(false)
+/// Whether `sampo publish` tags a package that is not publishable, per `git.tag_unpublished`.
+pub fn should_tag_unpublished(cfg: &Config, ws: &Workspace, info: &PackageInfo) -> bool {
+    match &cfg.git_tag_unpublished {
+        TagUnpublished::All => true,
+        TagUnpublished::Never => false,
+        TagUnpublished::Matching(patterns) => matches_any_pattern(patterns, ws, info),
+    }
+}
+
+/// Matches patterns against the canonical identifier, plain name, or workspace-relative path.
+fn matches_any_pattern(patterns: &[String], ws: &Workspace, info: &PackageInfo) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let rel = info
+        .path
+        .strip_prefix(&ws.root)
+        .unwrap_or(&info.path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    patterns.iter().any(|pat| {
+        wildcard_match(pat, info.canonical_identifier())
+            || wildcard_match(pat, &info.name)
+            || wildcard_match(pat, &rel)
+    })
 }
 
 /// Filters workspace members according to the configuration.
@@ -216,6 +227,32 @@ mod tests {
         let filtered = filter_members(&ws, &cfg).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "normal");
+    }
+
+    #[test]
+    fn should_tag_unpublished_follows_config() {
+        let ws = dummy_ws();
+        let [internal, examples, normal] = [&ws.members[0], &ws.members[1], &ws.members[2]];
+
+        let all = Config::default();
+        assert!(should_tag_unpublished(&all, &ws, internal));
+
+        let never = Config {
+            git_tag_unpublished: TagUnpublished::Never,
+            ..Default::default()
+        };
+        assert!(!should_tag_unpublished(&never, &ws, internal));
+
+        let matching = Config {
+            git_tag_unpublished: TagUnpublished::Matching(vec![
+                "cargo/internal-*".into(),
+                "examples/*".into(),
+            ]),
+            ..Default::default()
+        };
+        assert!(should_tag_unpublished(&matching, &ws, internal));
+        assert!(should_tag_unpublished(&matching, &ws, examples));
+        assert!(!should_tag_unpublished(&matching, &ws, normal));
     }
 
     #[test]
