@@ -4,7 +4,7 @@ cargo/sampo: minor
 cargo/sampo-github-action: minor
 ---
 
-Added the `tag_unpublished` option to the `[git]` section. `sampo publish` tags packages that are not publishable by default; set it to `false` to tag only publishable packages, or to a list of patterns to tag only the unpublishable packages matching one of them.
+Added the `tag_unpublished` option to the `[git]` section, which sets the unpublishable packages `sampo publish` tags: all by default, none with `false`, or those matching a list of patterns.
 
 ```toml
 [git]

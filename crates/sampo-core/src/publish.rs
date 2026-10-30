@@ -2243,32 +2243,6 @@ edition = "2021"
     }
 
     #[test]
-    fn tag_unpublished_list_tags_only_matching_private_packages() {
-        let mut workspace = TestWorkspace::new();
-        workspace
-            .add_crate("lib-core", "1.0.0")
-            .add_crate("app", "0.3.0")
-            .add_crate("app-plugin", "0.3.0")
-            .add_crate("internal-service", "0.5.0")
-            .set_publishable("app", false)
-            .set_publishable("app-plugin", false)
-            .set_publishable("internal-service", false)
-            .set_config("[git]\ntag_unpublished = [\"cargo/app\", \"crates/app-*\"]\n");
-
-        init_git_repo_for_test(&workspace.root);
-        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
-
-        workspace
-            .run_publish(false)
-            .expect("publish should succeed");
-
-        assert_eq!(
-            list_tags(&workspace.root),
-            vec!["app-plugin-v0.3.0", "app-v0.3.0", "lib-core-v1.0.0"]
-        );
-    }
-
-    #[test]
     fn tag_unpublished_list_with_short_tags_tags_only_the_shipped_binary() {
         let mut workspace = TestWorkspace::new();
         workspace

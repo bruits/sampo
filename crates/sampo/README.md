@@ -193,15 +193,7 @@ linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
 
 `short_tags_format`: Template applied to the package selected by `short_tags` (default: `"v{version}"`). Same placeholders as `tag_format`.
 
-`tag_unpublished`: Which packages that are not publishable get a git tag from `sampo publish` (default: `true`). By default, every released package is tagged, even one Sampo doesn't publish, so workflows can react to its release. Set it to `false` to tag only publishable packages, or to a list of patterns to tag only the unpublishable packages matching one of them, by canonical identifier, plain name, or relative path, like `packages.ignore`. Publishable packages are always tagged. For example, a workspace shipping one binary built from many internal crates can tag only that binary:
-
-```toml
-[git]
-short_tags = "my-cli"
-tag_unpublished = ["cargo/my-cli"]
-```
-
-Packages left untagged get no GitHub release from the GitHub Action, and a publish that creates no tag at all reports `published` as `false`.
+`tag_unpublished`: Which unpublishable packages `sampo publish` tags (default: `true`, all of them). Set it to `false` to tag none, or to a list of patterns, matched like `packages.ignore`, to tag only those matching one.
 
 ### `[github]` section
 
