@@ -845,6 +845,7 @@ fn try_update_dependency_spec_preserves_satisfied_range() {
         None
     );
     assert_eq!(try_update_dependency_spec("requests>1.0", &versions), None);
+    assert_eq!(try_update_dependency_spec("requests>=2", &versions), None);
     assert_eq!(
         try_update_dependency_spec("requests!=1.0.0", &versions),
         None
@@ -2468,6 +2469,42 @@ dependencies = ["test-dep{}"]
     #[test]
     fn compound_and_whitespace_satisfied() {
         assert_satisfied(">=1.0, <2.0", "1.5.0");
+    }
+
+    #[test]
+    fn one_segment_bound_satisfied() {
+        assert_satisfied(">=2.8.1,<4", "2.9.0");
+    }
+
+    #[test]
+    fn one_segment_bound_not_satisfied() {
+        assert_not_satisfied(">=1.0,<2", "3.0.0");
+    }
+
+    #[test]
+    fn exact_one_segment_satisfied() {
+        assert_satisfied("==4", "4.0.0");
+    }
+
+    #[test]
+    fn exact_one_segment_not_satisfied() {
+        assert_not_satisfied("==4", "4.1.0");
+    }
+
+    #[test]
+    fn skip_compatible_release_with_one_segment() {
+        assert_skipped("~=2", "2.5.0");
+        assert_skipped("~=2.post1", "2.5.0");
+    }
+
+    #[test]
+    fn skip_bare_one_segment_version_as_pinned() {
+        assert_eq!(
+            check_pep440_constraint("4", "5.0.0").unwrap(),
+            ConstraintCheckResult::Skipped {
+                reason: "pinned version".to_string()
+            }
+        );
     }
 
     #[test]
