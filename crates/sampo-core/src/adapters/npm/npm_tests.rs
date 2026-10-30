@@ -1426,3 +1426,58 @@ fn publish_command_args_fall_back_when_the_first_identifier_cannot_be_a_tag() {
         );
     }
 }
+
+fn github_identity(key: &str) -> Option<String> {
+    match key {
+        "ACTIONS_ID_TOKEN_REQUEST_URL" => Some("https://token.actions.example/".to_string()),
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN" => Some("request-token".to_string()),
+        _ => None,
+    }
+}
+
+#[test]
+fn trusted_publishing_needs_the_whole_github_identity() {
+    assert!(super::trusted_publishing_available(github_identity));
+    assert!(!super::trusted_publishing_available(|key| {
+        (key == "ACTIONS_ID_TOKEN_REQUEST_URL").then(|| "https://token.actions.example/".into())
+    }));
+    assert!(!super::trusted_publishing_available(|_| None));
+}
+
+#[test]
+fn trusted_publishing_takes_an_injected_id_token() {
+    assert!(super::trusted_publishing_available(|key| {
+        (key == "NPM_ID_TOKEN").then(|| "jwt".to_string())
+    }));
+}
+
+#[test]
+fn any_publish_token_keeps_trusted_publishing_off() {
+    for token_var in super::PUBLISH_TOKEN_VARS {
+        assert!(
+            !super::trusted_publishing_available(|key| if key == token_var {
+                Some("token".to_string())
+            } else {
+                github_identity(key)
+            }),
+            "{token_var} must keep the token path"
+        );
+    }
+}
+
+#[test]
+fn a_blank_token_does_not_keep_trusted_publishing_off() {
+    // An unset CI secret expands to an empty string.
+    assert!(super::trusted_publishing_available(|key| match key {
+        "NPM_TOKEN" => Some(String::new()),
+        _ => github_identity(key),
+    }));
+}
+
+#[test]
+fn the_setup_node_placeholder_is_not_a_token() {
+    assert!(super::trusted_publishing_available(|key| match key {
+        "NODE_AUTH_TOKEN" => Some(super::SETUP_NODE_PLACEHOLDER_TOKEN.to_string()),
+        _ => github_identity(key),
+    }));
+}

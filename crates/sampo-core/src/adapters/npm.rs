@@ -10,6 +10,7 @@ use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -113,6 +114,19 @@ impl NpmAdapter {
         let dry_run = wants_dry_run(dry_run, extra_args);
 
         let manager = detect_package_manager(manifest_dir, &info);
+        if manager == PackageManager::Bun
+            && trusted_publishing_available(|key| std::env::var(key).ok())
+        {
+            return publish_bun_through_npm(
+                manifest_path,
+                manifest_dir,
+                &manifest,
+                &info,
+                dry_run,
+                extra_args,
+            );
+        }
+
         let manager_name = match manager {
             PackageManager::Npm => "npm",
             PackageManager::Pnpm => "pnpm",
@@ -144,31 +158,11 @@ impl NpmAdapter {
         ));
         cmd.current_dir(manifest_dir);
 
-        println!("Running: {}", format_command_display(&cmd));
-
-        let status = cmd.status().map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                SampoError::Publish(format!(
-                    "{} not found in PATH; ensure {} is installed to publish packages",
-                    manager_name, manager_name
-                ))
-            } else {
-                SampoError::Io(err)
-            }
-        })?;
-        if !status.success() {
-            let attempted = match yarn {
-                Some(YarnPublish::Berry { .. }) => "yarn npm publish".to_string(),
-                _ => format!("{manager_name} publish"),
-            };
-            return Err(SampoError::Publish(format!(
-                "{} failed for {} (package '{}') with status {}",
-                attempted,
-                manifest_path.display(),
-                info.name,
-                status
-            )));
-        }
+        let attempted = match yarn {
+            Some(YarnPublish::Berry { .. }) => "yarn npm publish".to_string(),
+            _ => format!("{manager_name} publish"),
+        };
+        run_publish_step(cmd, manager_name, &attempted, manifest_path, &info.name)?;
 
         Ok(PublishOutcome::Ran)
     }
@@ -653,6 +647,152 @@ fn wants_dry_run(dry_run: bool, extra_args: &[String]) -> bool {
                 }
                 None => false,
             })
+}
+
+fn run_publish_step(
+    mut cmd: Command,
+    program: &str,
+    attempted: &str,
+    manifest_path: &Path,
+    package: &str,
+) -> Result<()> {
+    println!("Running: {}", format_command_display(&cmd));
+
+    let status = cmd.status().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            SampoError::Publish(format!(
+                "{program} not found in PATH; ensure {program} is installed to publish packages"
+            ))
+        } else {
+            SampoError::Io(err)
+        }
+    })?;
+    if !status.success() {
+        return Err(SampoError::Publish(format!(
+            "{} failed for {} (package '{}') with status {}",
+            attempted,
+            manifest_path.display(),
+            package,
+            status
+        )));
+    }
+    Ok(())
+}
+
+const PUBLISH_TOKEN_VARS: [&str; 5] = [
+    "NPM_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "NPM_CONFIG_TOKEN",
+    "npm_config_token",
+    "BUN_CONFIG_TOKEN",
+];
+
+/// The `NODE_AUTH_TOKEN` that `actions/setup-node` exports when `registry-url` is set and no token is.
+const SETUP_NODE_PLACEHOLDER_TOKEN: &str = "XXXXX-XXXXX-XXXXX-XXXXX";
+
+/// A CI identity npm can trade for a publish token, and no token to publish with instead.
+fn trusted_publishing_available(lookup: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |key: &str| lookup(key).is_some_and(|value| !value.trim().is_empty());
+    let token = |key: &str| {
+        lookup(key).is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != SETUP_NODE_PLACEHOLDER_TOKEN
+        })
+    };
+    let identity = set("NPM_ID_TOKEN")
+        || (set("ACTIONS_ID_TOKEN_REQUEST_URL") && set("ACTIONS_ID_TOKEN_REQUEST_TOKEN"));
+    identity && !PUBLISH_TOKEN_VARS.into_iter().any(token)
+}
+
+/// `bun publish` has no npm trusted publishing (oven-sh/bun#22423), and `npm publish` would
+/// ship `workspace:` and `catalog:` ranges unresolved, so bun packs and npm uploads the tarball.
+fn publish_bun_through_npm(
+    manifest_path: &Path,
+    manifest_dir: &Path,
+    manifest: &JsonValue,
+    info: &NpmManifestInfo,
+    dry_run: bool,
+    extra_args: &[String],
+) -> Result<PublishOutcome> {
+    require_npm_trusted_publishing(manifest_dir)?;
+
+    // `bun publish` runs these around the upload, while `bun pm pack` and `npm publish <tarball>`
+    // skip them; `prepublishOnly` often builds what gets packed.
+    let run_script = |script: &str| -> Result<()> {
+        if manifest.pointer(&format!("/scripts/{script}")).is_none() {
+            return Ok(());
+        }
+        let mut hook = command("bun");
+        hook.args(["run", script]).current_dir(manifest_dir);
+        let attempted = format!("bun run {script}");
+        run_publish_step(hook, "bun", &attempted, manifest_path, &info.name)
+    };
+    run_script("prepublishOnly")?;
+
+    let pack_dir = tempfile::tempdir()?;
+    let mut pack = command("bun");
+    pack.args(["pm", "pack", "--destination"])
+        .arg(pack_dir.path())
+        .current_dir(manifest_dir);
+    run_publish_step(pack, "bun", "bun pm pack", manifest_path, &info.name)?;
+
+    let tarball = fs::read_dir(pack_dir.path())?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .find(|path| path.extension().is_some_and(|ext| ext == "tgz"))
+        .ok_or_else(|| {
+            SampoError::Publish(format!(
+                "bun pm pack wrote no tarball for package '{}'",
+                info.name
+            ))
+        })?;
+
+    let mut args = publish_command_args(PackageManager::Npm, None, dry_run, info, extra_args);
+    args.insert(1, tarball.to_string_lossy().into_owned());
+    let mut publish = command("npm");
+    publish.args(args).current_dir(manifest_dir);
+    run_publish_step(publish, "npm", "npm publish", manifest_path, &info.name)?;
+
+    run_script("publish")?;
+    run_script("postpublish")?;
+    Ok(PublishOutcome::Ran)
+}
+
+const NPM_TRUSTED_PUBLISHING_FLOOR: (u32, u32, u32) = (11, 5, 1);
+
+fn require_npm_trusted_publishing(dir: &Path) -> Result<()> {
+    const HINT: &str = "Sampo publishes bun packages through npm for npm trusted publishing, \
+                        which needs npm 11.5.1 or later (Node 24 ships one); set \
+                        NPM_CONFIG_TOKEN instead to keep `bun publish`";
+
+    let output = command("npm")
+        .arg("--version")
+        .current_dir(dir)
+        .output()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                SampoError::Publish(format!("npm not found in PATH. {HINT}"))
+            } else {
+                SampoError::Io(err)
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let snippet: String = stderr.trim().chars().take(400).collect();
+        return Err(SampoError::Publish(format!(
+            "`npm --version` failed with status {}: {snippet}. {HINT}",
+            output.status
+        )));
+    }
+
+    let reported = String::from_utf8_lossy(&output.stdout);
+    match parse_bare_version(&reported) {
+        Some((_, parsed)) if parsed >= NPM_TRUSTED_PUBLISHING_FLOOR => Ok(()),
+        _ => Err(SampoError::Publish(format!(
+            "`npm --version` reported {:?}. {HINT}",
+            reported.trim()
+        ))),
+    }
 }
 
 fn publish_command_args(

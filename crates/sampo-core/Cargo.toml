@@ -23,7 +23,7 @@ changesets = "0.4"
 semver = "1.0"
 serde_json = { version = "1.0", features = ["raw_value"] }
 serde_yaml = "0.9"
-tempfile = { version = "3.13", optional = true }
+tempfile = "3.13"
 serde = { version = "1.0", features = ["derive"] }
 tokio = { version = "1.52", features = ["rt", "macros"] }
 reqwest = { version = "0.13", features = ["json", "blocking"] }
@@ -34,9 +34,6 @@ tree-sitter-elixir = "0.3"
 tree-sitter-erlang = "0.20"
 tree-sitter-xml = "0.7"
 
-[dev-dependencies]
-tempfile = "3.13"
-
 [features]
 default = []
-testing = ["tempfile"]
+testing = []
