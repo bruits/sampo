@@ -1,6 +1,6 @@
 # @bruits/sampo-win32-x64
 
-## 0.23.0 — 2026-10-24
+## 0.23.0 ... 0.24.0 — 2026-10-30
 
 Version bump only, to follow other packages.
 
