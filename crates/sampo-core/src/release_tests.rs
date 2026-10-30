@@ -2548,6 +2548,222 @@ bar = { version = "1.0.0", path = "crates/bar" }
         }
     }
 
+    #[test]
+    fn dependents_in_range_are_bumped_by_default() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency_with_constraint("a", "b", "^0.1")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        let output = workspace.run_release(true).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("cargo/a", "0.1.1"), ("cargo/b", "0.1.1")]
+        );
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_leaves_dependents_in_range_unreleased() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency_with_constraint("a", "b", "^0.1")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        let output = workspace.run_release(false).unwrap();
+
+        assert_eq!(released_versions(&output), [("cargo/b", "0.1.1")]);
+        workspace.assert_crate_version("a", "0.1.0");
+        workspace.assert_dependency_version("a", "b", "^0.1");
+        assert!(!workspace.crates["a"].join("CHANGELOG.md").exists());
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_bumps_dependents_the_new_version_leaves() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "~1.0.0")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n")
+            .add_changeset(&["b"], Bump::Minor, "feat: b minor");
+
+        let output = workspace.run_release(true).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("cargo/a", "1.0.1"), ("cargo/b", "1.1.0")]
+        );
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_bumps_pinned_dependents() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_dependency("a", "b", "0.1.0")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("a", "0.1.1");
+        workspace.assert_dependency_version("a", "b", "0.1.1");
+        workspace.assert_changelog_contains("a", "Updated dependencies: b@0.1.1");
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_stops_the_cascade_at_dependents_in_range() {
+        // c pins a, so a release of a would pull it in.
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_crate("c", "0.1.0")
+            .add_dependency_with_constraint("a", "b", "^0.1")
+            .add_dependency("c", "a", "0.1.0")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n")
+            .add_changeset(&["b"], Bump::Patch, "fix: b patch fix");
+
+        let output = workspace.run_release(true).unwrap();
+
+        assert_eq!(released_versions(&output), [("cargo/b", "0.1.1")]);
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_rewrites_a_pin_beside_a_range() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("a", "b", "^1.0")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n")
+            .add_changeset(&["b"], Bump::Minor, "feat: b minor");
+        let manifest = workspace.crates["a"].join("Cargo.toml");
+        let content = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            content + "\n[dev-dependencies]\nb = { path=\"../b\", version=\"=1.0.0\" }\n",
+        )
+        .unwrap();
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("a", "1.0.1");
+        let content = fs::read_to_string(&manifest).unwrap();
+        assert!(content.contains("version = \"=1.1.0\""), "{content}");
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_follows_a_pin_inherited_from_the_workspace() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n")
+            .add_changeset(&["b"], Bump::Minor, "feat: b minor");
+        fs::write(
+            workspace.root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n\n[workspace.dependencies]\nb = { path=\"crates/b\", version=\"1.0.0\" }\n",
+        )
+        .unwrap();
+        let manifest = workspace.crates["a"].join("Cargo.toml");
+        let content = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            content + "\n[dependencies]\nb.workspace = true\n",
+        )
+        .unwrap();
+
+        let output = workspace.run_release(true).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("cargo/a", "1.0.1"), ("cargo/b", "1.1.0")]
+        );
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_releases_dependents_leaving_a_prerelease() {
+        let mut workspace = TestWorkspace::new();
+        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("b", "a", "^1.0")
+            .set_config("[packages]\nbump_dependents = \"out-of-range\"\n");
+        let packages = [String::from("a"), String::from("b")];
+        enter_prerelease(&workspace.root, &packages, "alpha").unwrap();
+        workspace.add_changeset(&["a"], Bump::Minor, "feat: a minor");
+        workspace.run_release(false).unwrap();
+        workspace.assert_crate_version("b", "1.0.1-alpha");
+
+        exit_prerelease(&workspace.root, &packages).unwrap();
+        let output = workspace.run_release(false).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("cargo/a", "1.1.0"), ("cargo/b", "1.0.1")]
+        );
+        workspace.assert_changelog_contains("b", "## 1.0.1 ");
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_keeps_linked_members_together() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_dependency_with_constraint("b", "a", "^1.0")
+            .set_config(
+                "[packages]\nbump_dependents = \"out-of-range\"\nlinked = [[\"a\", \"b\"]]\n",
+            )
+            .add_changeset(&["a"], Bump::Minor, "feat: a minor");
+
+        let output = workspace.run_release(true).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("cargo/a", "1.1.0"), ("cargo/b", "1.1.0")]
+        );
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_explains_a_fixed_member_behind_a_skipped_dependent() {
+        // b is in range of a, so c is only released because d is, through their fixed group.
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_crate("c", "1.0.0")
+            .add_crate("d", "1.0.0")
+            .add_dependency_with_constraint("b", "a", "^1.0")
+            .add_dependency_with_constraint("c", "b", "^1.0")
+            .set_config(
+                "[packages]\nbump_dependents = \"out-of-range\"\nfixed = [[\"c\", \"d\"]]\n",
+            )
+            .add_changeset(&["a"], Bump::Minor, "feat: a minor")
+            .add_changeset(&["d"], Bump::Patch, "fix: d patch");
+
+        let output = workspace.run_release(false).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [
+                ("cargo/a", "1.1.0"),
+                ("cargo/c", "1.0.1"),
+                ("cargo/d", "1.0.1")
+            ]
+        );
+        workspace.assert_changelog_contains("c", "Bumped due to fixed dependency group policy");
+    }
+
     /// Pins `SAMPO_RELEASE_BRANCH=main` under a briefly-held lock; a long-lived
     /// `EnvVarGuard` would serialise every parallel test against this one.
     fn setup_sampo_root(
@@ -2856,6 +3072,164 @@ dependencies = []
 
         // pkg-b 1.5.0 -> 2.0.0 violates `>=1.0,<2.0` on pkg-a.
         assert_constraint_violation_blocks(run_release(root, true));
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_checks_npm_ranges() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: 9\n").unwrap();
+        fs::write(
+            root.join("package.json"),
+            r#"{
+  "name": "root-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        // `workspace:*` is published as the exact current version.
+        for (name, dependencies) in [
+            ("pkg-core", ""),
+            (
+                "pkg-ranged",
+                r#", "dependencies": { "pkg-core": "^1.0.0" }"#,
+            ),
+            (
+                "pkg-pinned",
+                r#", "dependencies": { "pkg-core": "^1.0.0" }, "devDependencies": { "pkg-core": "1.0.0" }"#,
+            ),
+            (
+                "pkg-protocol",
+                r#", "dependencies": { "pkg-core": "workspace:*" }"#,
+            ),
+        ] {
+            fs::create_dir_all(root.join("packages").join(name)).unwrap();
+            fs::write(
+                root.join("packages").join(name).join("package.json"),
+                format!(r#"{{ "name": "{name}", "version": "1.0.0"{dependencies} }}"#),
+            )
+            .unwrap();
+        }
+
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nbump_dependents = \"out-of-range\"\n",
+            &["npm/pkg-core"],
+            Bump::Minor,
+            "feat: pkg-core minor",
+        );
+
+        let output = run_release(root, true).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [
+                ("npm/pkg-core", "1.1.0"),
+                ("npm/pkg-pinned", "1.0.1"),
+                ("npm/pkg-protocol", "1.0.1")
+            ]
+        );
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_leaves_hex_ranges_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("mix.exs"),
+            r#"
+defmodule Workspace.MixProject do
+  use Mix.Project
+
+  def project do
+    [apps_path: "apps", version: "0.0.0"]
+  end
+end
+"#,
+        )
+        .unwrap();
+        // `~> 1.0` covers 1.1.0, although Hex would rewrite it to `~> 1.1.0` on a release.
+        for (module, app, deps) in [
+            ("PkgA", "pkg_a", r#"[{:pkg_b, "~> 1.0"}]"#),
+            ("PkgB", "pkg_b", "[]"),
+        ] {
+            fs::create_dir_all(root.join("apps").join(app)).unwrap();
+            fs::write(
+                root.join("apps").join(app).join("mix.exs"),
+                format!(
+                    "defmodule {module}.MixProject do\n  use Mix.Project\n\n  def project do\n    [app: :{app}, version: \"1.0.0\", deps: deps()]\n  end\n\n  defp deps do\n    {deps}\n  end\nend\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nbump_dependents = \"out-of-range\"\n",
+            &["hex/pkg_b"],
+            Bump::Minor,
+            "feat: pkg_b minor",
+        );
+
+        let output = run_release(root, true).unwrap();
+
+        assert_eq!(released_versions(&output), [("hex/pkg_b", "1.1.0")]);
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_checks_pypi_specifiers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::write(
+            root.join("pyproject.toml"),
+            r#"
+[project]
+name = "workspace-root"
+version = "1.0.0"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        for (name, dependencies) in [
+            ("pkg-core", ""),
+            ("pkg-ranged", r#""pkg-core>=2.0,<4.0""#),
+            ("pkg-capped", r#""pkg-core>=2.0,<3.0""#),
+        ] {
+            fs::create_dir_all(root.join("packages").join(name)).unwrap();
+            fs::write(
+                root.join("packages").join(name).join("pyproject.toml"),
+                format!(
+                    "[project]\nname = \"{name}\"\nversion = \"2.4.0\"\ndependencies = [{dependencies}]\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nbump_dependents = \"out-of-range\"\n",
+            &["pypi/pkg-core"],
+            Bump::Major,
+            "feat!: pkg-core major",
+        );
+
+        let output = run_release(root, true).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("pypi/pkg-capped", "2.4.1"), ("pypi/pkg-core", "3.0.0")]
+        );
     }
 
     #[test]

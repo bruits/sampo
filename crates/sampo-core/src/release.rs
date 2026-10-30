@@ -1,5 +1,5 @@
 use crate::adapters::PackageAdapter;
-use crate::adapters::cargo::ManifestMetadata;
+use crate::adapters::cargo::{ManifestMetadata, update_workspace_root_manifest};
 use crate::errors::{Result, SampoError, io_error_with_path};
 use crate::filters::should_ignore_package;
 use crate::types::{
@@ -10,7 +10,7 @@ use crate::types::{
 use crate::{
     AcknowledgmentStyle, Acknowledgments,
     changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
-    config::{AutomaticEntries, Config},
+    config::{AutomaticEntries, BumpDependents, Config},
     current_branch, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
     publish::package_tag_exists,
@@ -439,6 +439,7 @@ pub fn detect_fixed_dependency_policy_packages(
     }
 
     // Find packages affected by normal dependency cascade
+    let skip_unreleased = config.bump_dependents == BumpDependents::OutOfRange;
     let mut packages_affected_by_cascade = BTreeSet::new();
     for pkg_with_changeset in &packages_with_changesets {
         let mut queue = vec![pkg_with_changeset.clone()];
@@ -452,6 +453,9 @@ pub fn detect_fixed_dependency_policy_packages(
 
             if let Some(deps) = dependents.get(&pkg) {
                 for dep in deps {
+                    if skip_unreleased && !bumped_packages.contains(dep) {
+                        continue;
+                    }
                     packages_affected_by_cascade.insert(dep.clone());
                     queue.push(dep.clone());
                 }
@@ -940,11 +944,40 @@ fn compute_plan_state(
     let direct_targets: BTreeSet<String> = bump_by_pkg.keys().cloned().collect();
 
     let dependents = build_dependency_graph(workspace, config);
+    let cargo_metadata = if config.bump_dependents == BumpDependents::OutOfRange
+        && workspace
+            .members
+            .iter()
+            .any(|p| p.kind == PackageKind::Cargo)
+    {
+        Some(ManifestMetadata::load(workspace)?)
+    } else {
+        None
+    };
+    let new_version_of = |info: &PackageInfo, bump: Bump| {
+        planned_version(
+            info,
+            bump,
+            workspace,
+            config,
+            preserved_targets,
+            stabilize,
+            &direct_targets,
+        )
+        .map(|(_, new_version)| new_version)
+    };
     // A linked raise can outrun the coupling the cascade just settled, so re-settle until
     // linked has nothing left to raise. Bumps only ever rise through three levels over a
     // finite set of packages, so this converges; with no `packages.linked` it runs once.
     loop {
-        apply_dependency_cascade(&mut bump_by_pkg, &dependents, config, workspace)?;
+        apply_dependency_cascade(
+            &mut bump_by_pkg,
+            &dependents,
+            config,
+            workspace,
+            &new_version_of,
+            cargo_metadata.as_ref(),
+        )?;
         if !apply_linked_dependencies(&mut bump_by_pkg, config, workspace)? {
             break;
         }
@@ -1060,30 +1093,11 @@ pub(crate) fn validate_dependency_constraints(
                 continue;
             };
 
-            // Pinned versions (bare `1.2.3` or exact `=1.2.3`) will be rewritten during
-            // manifest updates, so only range constraints need validation here.
-            // Other ecosystems skip validation (their adapters return Skipped).
-            let constraint = match pkg_info.kind {
-                PackageKind::Cargo => {
-                    if let Some(ref meta) = cargo_metadata {
-                        // Skip pinned deps — they will be rewritten to the exact new version
-                        if meta.is_dependency_pinned(&manifest_path, &dep_info.name) {
-                            continue;
-                        }
-                        meta.get_dependency_constraint(&manifest_path, &dep_info.name)
-                            .unwrap_or_else(|| "*".to_string())
-                    } else {
-                        "*".to_string()
-                    }
-                }
-                _ => "*".to_string(),
-            };
-
-            let check_result = adapter.check_dependency_constraint(
-                &manifest_path,
-                &dep_info.name,
-                &constraint,
+            let check_result = check_internal_dependency(
+                pkg_info,
+                dep_info,
                 new_dep_version,
+                cargo_metadata.as_ref(),
             )?;
 
             match check_result {
@@ -1160,6 +1174,91 @@ pub(crate) fn validate_dependency_constraints(
     }
 
     Ok(warnings)
+}
+
+/// A Cargo pin (bare `1.2.3` or exact `=1.2.3`) is skipped, as the release rewrites it to
+/// the new version. So is a requirement `cargo metadata` does not list.
+fn check_internal_dependency(
+    pkg_info: &PackageInfo,
+    dep_info: &PackageInfo,
+    new_dep_version: &str,
+    cargo_metadata: Option<&ManifestMetadata>,
+) -> Result<ConstraintCheckResult> {
+    let adapter = PackageAdapter::from_kind(pkg_info.kind);
+    let manifest_path = adapter.manifest_path(&pkg_info.path);
+
+    let constraint = match (pkg_info.kind, cargo_metadata) {
+        (PackageKind::Cargo, Some(meta)) => {
+            if meta.is_dependency_pinned(&manifest_path, &dep_info.name) {
+                return Ok(ConstraintCheckResult::Skipped {
+                    reason: "pinned version".to_string(),
+                });
+            }
+            let Some(constraint) = meta.get_dependency_constraint(&manifest_path, &dep_info.name)
+            else {
+                return Ok(ConstraintCheckResult::Skipped {
+                    reason: "requirement not found".to_string(),
+                });
+            };
+            constraint
+        }
+        _ => "*".to_string(),
+    };
+
+    adapter.check_dependency_constraint(
+        &manifest_path,
+        &dep_info.name,
+        &constraint,
+        new_dep_version,
+    )
+}
+
+/// Whether `dependent` can stay out of the release when `dependency` moves to `new_version`:
+/// its requirement must still cover it and the release must leave its manifest as written.
+/// A pin in any section is rewritten, so a range declared beside it is not enough.
+fn dependent_in_range(
+    dependent: &PackageInfo,
+    dependency: &PackageInfo,
+    new_version: &str,
+    ws: &Workspace,
+    cfg: &Config,
+    cargo_metadata: Option<&ManifestMetadata>,
+) -> Result<bool> {
+    // `pre exit` left it on a version no release has written yet.
+    if exited_prerelease(ws, cfg, dependent, &dependent.version)?
+        || !matches!(
+            check_internal_dependency(dependent, dependency, new_version, cargo_metadata)?,
+            ConstraintCheckResult::Satisfied
+        )
+    {
+        return Ok(false);
+    }
+    // Hex rewrites every requirement it can parse, covered or not, so its rewrite says
+    // nothing about a pin.
+    if dependency.kind != dependent.kind || dependent.kind == PackageKind::Hex {
+        return Ok(true);
+    }
+
+    let new_versions = BTreeMap::from([(dependency.name.clone(), new_version.to_string())]);
+    let adapter = PackageAdapter::from_kind(dependent.kind);
+    let manifest_path = adapter.manifest_path(&dependent.path);
+    let manifest = fs::read_to_string(&manifest_path)
+        .map_err(|err| SampoError::Io(io_error_with_path(err, &manifest_path)))?;
+    let (updated, _) =
+        adapter.update_manifest_versions(&manifest_path, &manifest, None, &new_versions)?;
+    if updated != manifest {
+        return Ok(false);
+    }
+
+    // A requirement inherited from `[workspace.dependencies]` is rewritten in the root.
+    if dependent.kind == PackageKind::Cargo {
+        let root_path = ws.root.join("Cargo.toml");
+        let root = fs::read_to_string(&root_path)
+            .map_err(|err| SampoError::Io(io_error_with_path(err, &root_path)))?;
+        let (_, changed) = update_workspace_root_manifest(&root_path, &root, None, &new_versions)?;
+        return Ok(!changed);
+    }
+    Ok(true)
 }
 
 /// A pin the release rewrite will not touch, pointing at a package that is moving.
@@ -1790,6 +1889,8 @@ fn apply_dependency_cascade(
     dependents: &BTreeMap<String, BTreeSet<String>>,
     cfg: &Config,
     ws: &Workspace,
+    new_version_of: &impl Fn(&PackageInfo, Bump) -> Result<String>,
+    cargo_metadata: Option<&ManifestMetadata>,
 ) -> Result<()> {
     let resolved_fixed_groups = enforced_fixed_groups(ws, cfg)?;
 
@@ -1806,11 +1907,24 @@ fn apply_dependency_cascade(
         by_id.insert(c.canonical_identifier().to_string(), c);
     }
 
+    let skip_dependents_in_range = cfg.bump_dependents == BumpDependents::OutOfRange;
+    let linked_groups = if skip_dependents_in_range {
+        resolve_config_groups(ws, &cfg.linked_dependencies, "packages.linked")?
+    } else {
+        Vec::new()
+    };
+
     let mut queue: Vec<String> = bump_by_pkg.keys().cloned().collect();
     let mut seen: BTreeSet<String> = queue.iter().cloned().collect();
 
     while let Some(changed) = queue.pop() {
         let changed_bump = bump_by_pkg.get(&changed).copied().unwrap_or(Bump::Patch);
+        let changed_release = match by_id.get(&changed) {
+            Some(info) if skip_dependents_in_range => {
+                Some((*info, new_version_of(info, changed_bump)?))
+            }
+            _ => None,
+        };
 
         // 1. Handle normal dependency relationships (unchanged → dependent)
         if let Some(deps) = dependents.get(&changed) {
@@ -1825,6 +1939,24 @@ fn apply_dependency_cascade(
                             // This maintains backwards compatibility and avoids silent failures
                         }
                     }
+                }
+
+                // Members of a `linked` group follow each other whatever their ranges say.
+                if let Some((changed_info, new_version)) = &changed_release
+                    && let Some(dependent_info) = by_id.get(dep_name)
+                    && !linked_groups
+                        .iter()
+                        .any(|group| group.contains(&changed) && group.contains(dep_name))
+                    && dependent_in_range(
+                        dependent_info,
+                        changed_info,
+                        new_version,
+                        ws,
+                        cfg,
+                        cargo_metadata,
+                    )?
+                {
+                    continue;
                 }
 
                 // Determine bump level for this dependent
@@ -1980,30 +2112,52 @@ fn prepare_release_plan(
     let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
     for (identifier, bump) in bump_by_pkg {
         if let Some(info) = by_id.get(identifier) {
-            let old = if info.version.is_empty() {
-                "0.0.0".to_string()
-            } else {
-                info.version.clone()
-            };
-
-            let parsed = parse_version_string(&old)
-                .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
-            let newv = if stabilize && !parsed.pre.is_empty() {
-                stabilize_version_from_parsed(&parsed, *bump)
-            } else if parsed.pre.is_empty() && exited_prerelease(ws, config, info, &old)? {
-                stabilize_base(&parsed, *bump)
-            } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
-                bump_prerelease_entry(&parsed, *bump)
-            } else {
-                bump_version_from_parsed(&parsed, *bump)
-            }
-            .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
-
+            let (old, newv) = planned_version(
+                info,
+                *bump,
+                ws,
+                config,
+                preserved_targets,
+                stabilize,
+                direct_targets,
+            )?;
             releases.push((identifier.clone(), old, newv));
         }
     }
 
     Ok(releases)
+}
+
+fn planned_version(
+    info: &PackageInfo,
+    bump: Bump,
+    ws: &Workspace,
+    config: &Config,
+    preserved_targets: &BTreeSet<String>,
+    stabilize: bool,
+    direct_targets: &BTreeSet<String>,
+) -> Result<(String, String)> {
+    let identifier = info.canonical_identifier();
+    let old = if info.version.is_empty() {
+        "0.0.0".to_string()
+    } else {
+        info.version.clone()
+    };
+
+    let parsed = parse_version_string(&old)
+        .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
+    let newv = if stabilize && !parsed.pre.is_empty() {
+        stabilize_version_from_parsed(&parsed, bump)
+    } else if parsed.pre.is_empty() && exited_prerelease(ws, config, info, &old)? {
+        stabilize_base(&parsed, bump)
+    } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
+        bump_prerelease_entry(&parsed, bump)
+    } else {
+        bump_version_from_parsed(&parsed, bump)
+    }
+    .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
+
+    Ok((old, newv))
 }
 
 /// Print the planned releases
@@ -3134,7 +3288,18 @@ mod tests {
         bump_by_pkg.insert("cargo/main-package".to_string(), Bump::Minor);
 
         // Apply dependency cascade
-        apply_dependency_cascade(&mut bump_by_pkg, &dependents, &config, &workspace).unwrap();
+        let new_version_of = |info: &PackageInfo, bump: Bump| {
+            bump_version(&info.version, bump).map_err(SampoError::Release)
+        };
+        apply_dependency_cascade(
+            &mut bump_by_pkg,
+            &dependents,
+            &config,
+            &workspace,
+            &new_version_of,
+            None,
+        )
+        .unwrap();
 
         // The ignored packages should NOT be added to bump_by_pkg
         assert_eq!(bump_by_pkg.len(), 1);

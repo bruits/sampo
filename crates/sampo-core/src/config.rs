@@ -24,6 +24,17 @@ pub enum AutomaticEntries {
     Collapse,
 }
 
+/// Which packages a release bumps because they depend on a package it releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BumpDependents {
+    /// Every dependent gets at least a patch bump.
+    #[default]
+    Always,
+    /// Only dependents whose requirement no longer covers the new version, or that Sampo
+    /// cannot check, get a bump.
+    OutOfRange,
+}
+
 /// Which packages that are not publishable `sampo publish` tags. Publishable packages are
 /// always tagged.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -53,6 +64,7 @@ pub struct Config {
     pub changesets_tags: Vec<String>,
     pub fixed_dependencies: Vec<Vec<String>>,
     pub linked_dependencies: Vec<Vec<String>>,
+    pub bump_dependents: BumpDependents,
     pub ignore_unpublished: bool,
     pub ignore: Vec<String>,
     pub git_default_branch: Option<String>,
@@ -79,6 +91,7 @@ impl Default for Config {
             changesets_tags: Vec::new(),
             fixed_dependencies: Vec::new(),
             linked_dependencies: Vec::new(),
+            bump_dependents: BumpDependents::default(),
             ignore_unpublished: false,
             ignore: Vec::new(),
             git_default_branch: None,
@@ -243,6 +256,23 @@ impl Config {
             .transpose()
             .map_err(SampoError::Config)?
             .unwrap_or_default();
+
+        let bump_dependents = match value
+            .get("packages")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("bump_dependents"))
+        {
+            Some(value) => match value.as_str() {
+                Some("always") => BumpDependents::Always,
+                Some("out-of-range") => BumpDependents::OutOfRange,
+                _ => {
+                    return Err(SampoError::Config(
+                        "packages.bump_dependents must be \"always\" or \"out-of-range\"".into(),
+                    ));
+                }
+            },
+            None => BumpDependents::default(),
+        };
 
         let ignore_unpublished = value
             .get("packages")
@@ -422,6 +452,7 @@ impl Config {
             changesets_tags,
             fixed_dependencies,
             linked_dependencies,
+            bump_dependents,
             ignore_unpublished,
             ignore,
             git_default_branch,
@@ -732,6 +763,44 @@ mod tests {
         let config = Config::load(temp.path()).unwrap();
         assert!(!config.ignore_unpublished);
         assert!(config.ignore.is_empty());
+    }
+
+    #[test]
+    fn reads_bump_dependents() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Config::load(temp.path()).unwrap().bump_dependents,
+            BumpDependents::Always
+        );
+
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[packages]\nbump_dependents = \"out-of-range\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Config::load(temp.path()).unwrap().bump_dependents,
+            BumpDependents::OutOfRange
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_bump_dependents_value() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[packages]\nbump_dependents = \"never\"\n",
+        )
+        .unwrap();
+
+        let err = Config::load(temp.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("packages.bump_dependents must be \"always\" or \"out-of-range\""),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
