@@ -52,7 +52,7 @@ jobs:
 > If your repository commits a lockfile, install the matching package manager in the workflow before this step. Runners ship `npm` and `yarn`, but not `pnpm` or `bun`.
 
 > [!NOTE]
-> npm packages can publish without `NPM_TOKEN` through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), with provenance for public repositories. Grant `id-token: write`, add a trusted publisher on npmjs.com for each package (this workflow's filename, with `npm publish` allowed), and set up npm 11.5.1 or later, for example with Node 24 through `actions/setup-node`. It works on GitHub-hosted runners only, and a new package's first version still needs a token. In Bun workspaces, Sampo packs with Bun and publishes with npm.
+> npm packages can publish without `NPM_TOKEN` through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). Grant `id-token: write`, add a trusted publisher on npmjs.com for each package, with this workflow's filename and `npm publish` allowed, and use npm 11.5.1 or later (Node 24 ships one). In Bun workspaces, Sampo packs with Bun and publishes with npm. With [`packages.npm_stage`](https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#packages-section), allow `npm stage publish` instead, and approve each version on npmjs.com.
 
 ### Creating GitHub Releases and Discussions
 
