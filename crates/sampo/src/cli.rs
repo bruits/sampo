@@ -53,7 +53,7 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n  - Also tags packages that are not publishable, unless git.tag_unpublished leaves them out.\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, --packagist-args, or --maven-args to forward\narguments to a specific ecosystem only.")]
+Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n  - Also tags packages that are not publishable, unless git.tag_unpublished leaves them out.\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, --packagist-args, --maven-args, or --rubygems-args to forward\narguments to a specific ecosystem only.")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]
@@ -82,6 +82,10 @@ pub struct PublishArgs {
     /// Extra arguments forwarded only to Maven (e.g. --maven-args -DskipTests)
     #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
     pub maven_args: Option<Vec<String>>,
+
+    /// Extra arguments forwarded only to `gem push` (e.g. --rubygems-args --otp 123456)
+    #[arg(long, num_args = 1.., value_delimiter = ' ', allow_hyphen_values = true)]
+    pub rubygems_args: Option<Vec<String>>,
 
     /// Extra flags passed through to ALL underlying publish commands (must follow `--`)
     #[arg(last = true, value_name = "PUBLISH_ARG")]
@@ -388,6 +392,7 @@ mod tests {
             "--pypi-args=--skip-existing",
             "--packagist-args=--no-interaction",
             "--maven-args=-DskipTests",
+            "--rubygems-args=--key=ci",
         ])
         .unwrap();
         match cli.command {
@@ -401,6 +406,7 @@ mod tests {
                     Some(vec!["--no-interaction".to_string()])
                 );
                 assert_eq!(args.maven_args, Some(vec!["-DskipTests".to_string()]));
+                assert_eq!(args.rubygems_args, Some(vec!["--key=ci".to_string()]));
             }
             _ => panic!("wrong variant"),
         }

@@ -23,6 +23,7 @@ pub struct PublishExtraArgs {
     pub pypi: Vec<String>,
     pub packagist: Vec<String>,
     pub maven: Vec<String>,
+    pub rubygems: Vec<String>,
 }
 
 impl PublishExtraArgs {
@@ -35,6 +36,7 @@ impl PublishExtraArgs {
             PackageKind::PyPI => &self.pypi,
             PackageKind::Packagist => &self.packagist,
             PackageKind::Maven => &self.maven,
+            PackageKind::RubyGems => &self.rubygems,
         };
         let mut merged = self.universal.clone();
         merged.extend(ecosystem_args.iter().cloned());
@@ -114,6 +116,7 @@ pub fn run_publish(
             crate::types::PackageKind::PyPI => PackageAdapter::PyPI,
             crate::types::PackageKind::Packagist => PackageAdapter::Packagist,
             crate::types::PackageKind::Maven => PackageAdapter::Maven,
+            crate::types::PackageKind::RubyGems => PackageAdapter::RubyGems,
         };
 
         let manifest = adapter.manifest_path(&c.path);

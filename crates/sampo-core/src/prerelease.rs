@@ -288,7 +288,16 @@ fn validate_version_updates(
     workspace: &Workspace,
     new_versions: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let new_version_by_id: BTreeMap<String, String> = workspace
+    PackageAdapter::validate_release_plan(workspace, &versions_by_id(workspace, new_versions))
+        .map_err(to_prerelease)
+}
+
+/// `sampo pre` plans by name, so a shared name is bumped in every ecosystem holding it.
+fn versions_by_id(
+    workspace: &Workspace,
+    new_versions: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    workspace
         .members
         .iter()
         .filter_map(|member| {
@@ -296,8 +305,7 @@ fn validate_version_updates(
                 .get(&member.name)
                 .map(|version| (member.canonical_identifier().to_string(), version.clone()))
         })
-        .collect();
-    PackageAdapter::validate_release_plan(workspace, &new_version_by_id).map_err(to_prerelease)
+        .collect()
 }
 
 fn apply_version_updates(
@@ -354,7 +362,9 @@ fn apply_version_updates(
         }
     }
 
-    PackageAdapter::finalize_workspace_roots(workspace, new_versions).map_err(to_prerelease)?;
+    let new_version_by_id = versions_by_id(workspace, new_versions);
+    PackageAdapter::finalize_workspace_roots(workspace, new_versions, &new_version_by_id)
+        .map_err(to_prerelease)?;
 
     regenerate_lockfile(workspace, &updated_kinds).map_err(to_prerelease)?;
 
@@ -678,6 +688,34 @@ bar = { version = "1.0.0", path = "crates/bar" }
         assert_eq!(
             ws_dep_foo_version, "1.0.0-alpha",
             "root workspace deps not updated: {root_manifest}"
+        );
+    }
+
+    #[test]
+    fn enter_and_exit_rewrite_a_gem_version_constant() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::create_dir_all(root.join("lib/core")).unwrap();
+        fs::write(
+            root.join("core.gemspec"),
+            "require_relative \"lib/core/version\"\nGem::Specification.new do |spec|\n  \
+             spec.name = \"core\"\n  spec.version = Core::VERSION\nend\n",
+        )
+        .unwrap();
+        let version_rb = root.join("lib/core/version.rb");
+        fs::write(&version_rb, "module Core\n  VERSION = \"1.0.0\"\nend\n").unwrap();
+
+        enter_prerelease(root, &["rubygems/core".to_string()], "alpha").unwrap();
+        assert_eq!(
+            fs::read_to_string(&version_rb).unwrap(),
+            "module Core\n  VERSION = \"1.0.0.alpha\"\nend\n"
+        );
+
+        exit_prerelease(root, &["rubygems/core".to_string()]).unwrap();
+        assert_eq!(
+            fs::read_to_string(&version_rb).unwrap(),
+            "module Core\n  VERSION = \"1.0.0\"\nend\n"
         );
     }
 

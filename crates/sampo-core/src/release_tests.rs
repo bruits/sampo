@@ -4564,4 +4564,198 @@ end
             "the coupled parent reference must still advance: {app}"
         );
     }
+
+    /// A `bundle gem` scaffold: the gemspec reads `<Module>::VERSION` from
+    /// `lib/<name>/version.rb`.
+    fn write_scaffolded_gem(dir: &std::path::Path, name: &str, version: &str, deps: &str) {
+        let module = name[..1].to_uppercase() + &name[1..];
+        fs::create_dir_all(dir.join("lib").join(name)).unwrap();
+        fs::write(
+            dir.join(format!("{name}.gemspec")),
+            format!(
+                "require_relative \"lib/{name}/version\"\n\nGem::Specification.new do |spec|\n  \
+                 spec.name = \"{name}\"\n  spec.version = {module}::VERSION\n{deps}end\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("lib").join(name).join("version.rb"),
+            format!("module {module}\n  VERSION = \"{version}\"\nend\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn ruby_release_writes_version_files_and_sibling_requirements() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scaffolded_gem(&root.join("core"), "core", "1.4.0", "");
+        write_scaffolded_gem(
+            &root.join("app"),
+            "app",
+            "0.1.0",
+            "  spec.add_dependency \"core\", \"~> 1.4\"\n",
+        );
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n",
+            &["rubygems/core"],
+            Bump::Major,
+            "feat!: core major",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("rubygems/app", "0.1.1"), ("rubygems/core", "2.0.0")]
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("core/lib/core/version.rb")).unwrap(),
+            "module Core\n  VERSION = \"2.0.0\"\nend\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("app/lib/app/version.rb")).unwrap(),
+            "module App\n  VERSION = \"0.1.1\"\nend\n"
+        );
+        assert!(
+            fs::read_to_string(root.join("app/app.gemspec"))
+                .unwrap()
+                .contains("spec.add_dependency \"core\", \"~> 2.0\"\n")
+        );
+    }
+
+    #[test]
+    fn shared_name_gem_version_file_is_left_alone_when_only_the_crate_releases() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("crates/foo/src")).unwrap();
+        fs::write(
+            root.join("crates/foo/Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/foo/src/lib.rs"), "").unwrap();
+        write_scaffolded_gem(&root.join("gems/foo"), "foo", "0.3.0", "");
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n",
+            &["cargo/foo"],
+            Bump::Minor,
+            "feat: crate only",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(released_versions(&output), [("cargo/foo", "1.1.0")]);
+        assert_eq!(
+            fs::read_to_string(root.join("gems/foo/lib/foo/version.rb")).unwrap(),
+            "module Foo\n  VERSION = \"0.3.0\"\nend\n"
+        );
+    }
+
+    #[test]
+    fn out_of_range_bump_dependents_checks_gem_requirements() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scaffolded_gem(&root.join("core"), "core", "1.4.0", "");
+        write_scaffolded_gem(
+            &root.join("ranged"),
+            "ranged",
+            "0.1.0",
+            "  spec.add_dependency \"core\", \"~> 1.4\"\n",
+        );
+        write_scaffolded_gem(
+            &root.join("pinned"),
+            "pinned",
+            "0.1.0",
+            "  spec.add_dependency \"core\", \"= 1.4.0\"\n",
+        );
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n[packages]\nbump_dependents = \"out-of-range\"\n",
+            &["rubygems/core"],
+            Bump::Minor,
+            "feat: core minor",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(
+            released_versions(&output),
+            [("rubygems/core", "1.5.0"), ("rubygems/pinned", "0.1.1")]
+        );
+        assert!(
+            fs::read_to_string(root.join("ranged/ranged.gemspec"))
+                .unwrap()
+                .contains("\"~> 1.4\"")
+        );
+        assert!(
+            fs::read_to_string(root.join("pinned/pinned.gemspec"))
+                .unwrap()
+                .contains("\"= 1.5.0\"")
+        );
+    }
+
+    #[test]
+    fn gem_pin_in_a_fixed_group_is_rewritten_not_a_violation() {
+        for requirement in ["= 1.4.0", "1.4.0"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            write_scaffolded_gem(&root.join("core"), "core", "1.4.0", "");
+            write_scaffolded_gem(
+                &root.join("app"),
+                "app",
+                "0.1.0",
+                &format!("  spec.add_dependency \"core\", \"{requirement}\"\n"),
+            );
+            setup_sampo_root(
+                root,
+                "[git]\nrelease_branches = [\"main\"]\n[packages]\nfixed = [[\"rubygems/core\", \"rubygems/app\"]]\n",
+                &["rubygems/core"],
+                Bump::Minor,
+                "feat: core minor",
+            );
+
+            let output = run_release(root, false)
+                .unwrap_or_else(|err| panic!("pin `{requirement}` blocked the release: {err}"));
+
+            assert_eq!(
+                released_versions(&output),
+                [("rubygems/app", "0.2.0"), ("rubygems/core", "1.5.0")]
+            );
+            assert!(
+                fs::read_to_string(root.join("app/app.gemspec"))
+                    .unwrap()
+                    .contains(&requirement.replace("1.4.0", "1.5.0"))
+            );
+        }
+    }
+
+    #[test]
+    fn hand_written_gem_prerelease_round_trips_through_a_release() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write_scaffolded_gem(root, "core", "1.0.0.rc1", "");
+        setup_sampo_root(
+            root,
+            "[git]\nrelease_branches = [\"main\"]\n",
+            &["rubygems/core"],
+            Bump::Patch,
+            "fix: a bug",
+        );
+
+        let output = run_release(root, false).unwrap();
+
+        assert_eq!(released_versions(&output), [("rubygems/core", "1.0.1-rc1")]);
+        assert_eq!(
+            fs::read_to_string(root.join("lib/core/version.rb")).unwrap(),
+            "module Core\n  VERSION = \"1.0.1.rc1\"\nend\n"
+        );
+    }
 }

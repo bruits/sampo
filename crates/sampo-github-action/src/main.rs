@@ -166,6 +166,9 @@ struct Config {
     /// Extra arguments forwarded only to Maven
     maven_args: Option<String>,
 
+    /// Extra arguments forwarded only to RubyGems
+    rubygems_args: Option<String>,
+
     /// Base branch for the Release PR (default: current ref name or 'main')
     base_branch: Option<String>,
 
@@ -242,6 +245,10 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
 
+        let rubygems_args = std::env::var("INPUT_RUBYGEMS_ARGS")
+            .ok()
+            .filter(|v| !v.is_empty());
+
         let base_branch = std::env::var("INPUT_BASE_BRANCH")
             .ok()
             .filter(|v| !v.is_empty());
@@ -290,6 +297,7 @@ impl Config {
             pypi_args,
             packagist_args,
             maven_args,
+            rubygems_args,
             base_branch,
             pr_branch,
             pr_title,
@@ -764,6 +772,7 @@ fn build_publish_extra_args(config: &Config) -> PublishExtraArgs {
         pypi: parse_args_string(config.pypi_args.as_deref()),
         packagist: parse_args_string(config.packagist_args.as_deref()),
         maven: parse_args_string(config.maven_args.as_deref()),
+        rubygems: parse_args_string(config.rubygems_args.as_deref()),
     }
 }
 
@@ -1287,6 +1296,7 @@ mod tests {
             pypi_args: None,
             packagist_args: None,
             maven_args: None,
+            rubygems_args: None,
             base_branch: None,
             pr_branch: None,
             pr_title: None,
