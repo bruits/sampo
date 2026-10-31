@@ -220,9 +220,7 @@ fn git(root: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-#[test]
-fn a_staged_and_tagged_version_is_not_staged_again() {
-    let fixture = Fixture::new("npm@11.15.0").stub("npm", "11.15.0");
+fn commit_repo(fixture: &Fixture, config: &str) {
     let root = fixture.temp.path();
     std::os::unix::fs::symlink(which_git(), fixture.bin.join("git")).unwrap();
     unsafe {
@@ -239,6 +237,18 @@ fn a_staged_and_tagged_version_is_not_staged_again() {
         }
     }
 
+    fs::create_dir_all(root.join(".sampo")).unwrap();
+    fs::write(root.join(".sampo/config.toml"), config).unwrap();
+    fs::write(root.join(".gitignore"), "fake-bin/\nargv.log\n").unwrap();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+}
+
+#[test]
+fn a_staged_and_tagged_version_is_not_staged_again() {
+    let fixture = Fixture::new("npm@11.15.0").stub("npm", "11.15.0");
+    let root = fixture.temp.path();
     fs::write(
         root.join("package.json"),
         format!(
@@ -247,25 +257,63 @@ fn a_staged_and_tagged_version_is_not_staged_again() {
         ),
     )
     .unwrap();
-    fs::create_dir_all(root.join(".sampo")).unwrap();
-    fs::write(root.join(".sampo/config.toml"), "[npm]\nstage = true\n").unwrap();
-    fs::write(root.join(".gitignore"), "fake-bin/\nargv.log\n").unwrap();
-    git(root, &["init", "-q", "-b", "main"]);
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-qm", "init"]);
+    commit_repo(&fixture, "[packages]\nnpm_stage = true\n");
 
     let first = sampo_core::run_publish(root, false, &PublishExtraArgs::default()).unwrap();
     assert_eq!(first.tags, ["pkg-v1.0.0"]);
-    let stages = |argv: &[String]| {
-        argv.iter()
+    let stages = || {
+        fixture
+            .argv()
+            .iter()
             .filter(|line| line.starts_with("npm stage publish"))
             .count()
     };
-    assert_eq!(stages(&fixture.argv()), 2, "a dry run, then the stage");
+    assert_eq!(stages(), 2, "a dry run, then the stage");
 
     let second = sampo_core::run_publish(root, false, &PublishExtraArgs::default()).unwrap();
     assert!(second.tags.is_empty(), "{:?}", second.tags);
-    assert_eq!(stages(&fixture.argv()), 2, "nothing staged again");
+    assert_eq!(stages(), 2, "nothing staged again");
+}
+
+#[test]
+fn a_list_stages_only_the_packages_it_names() {
+    let fixture = Fixture::new("npm@11.15.0").stub("npm", "11.15.0");
+    let root = fixture.temp.path();
+    fs::write(
+        root.join("package.json"),
+        r#"{"name":"root","private":true,"workspaces":["packages/*"],"packageManager":"npm@11.15.0"}"#,
+    )
+    .unwrap();
+    let registry = serve_missing_versions();
+    for name in ["a", "b"] {
+        fs::create_dir_all(root.join("packages").join(name)).unwrap();
+        fs::write(
+            root.join("packages").join(name).join("package.json"),
+            // A registry path per package tells their publish commands apart.
+            format!(
+                r#"{{"name":"{name}","version":"1.0.0","publishConfig":{{"registry":"{registry}{name}/"}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+    commit_repo(&fixture, "[packages]\nnpm_stage = [\"npm/a\"]\n");
+
+    let output = sampo_core::run_publish(root, false, &PublishExtraArgs::default()).unwrap();
+
+    assert_eq!(output.tags, ["a-v1.0.0", "b-v1.0.0"]);
+    let argv = fixture.argv();
+    let runs = |prefix: &str, name: &str| {
+        argv.iter()
+            .filter(|line| line.starts_with(prefix) && line.contains(&format!("/{name}/")))
+            .count()
+    };
+    assert_eq!(runs("npm stage publish", "a"), 2, "{argv:?}");
+    assert_eq!(runs("npm publish", "b"), 2, "{argv:?}");
+    assert_eq!(
+        runs("npm stage publish", "b") + runs("npm publish", "a"),
+        0,
+        "{argv:?}"
+    );
 }
 
 fn which_git() -> PathBuf {

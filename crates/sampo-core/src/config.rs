@@ -35,15 +35,34 @@ pub enum BumpDependents {
     OutOfRange,
 }
 
-/// Which packages that are not publishable `sampo publish` tags. Publishable packages are
-/// always tagged.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum TagUnpublished {
-    #[default]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackageSelection {
     All,
     Never,
     /// Only those matching one of these patterns, matched like `packages.ignore`.
     Matching(Vec<String>),
+}
+
+impl PackageSelection {
+    fn parse(value: Option<&toml::Value>, key: &str, default: Self) -> Result<Self, SampoError> {
+        let error = || {
+            SampoError::Config(format!(
+                "{key} must be true, false, or an array of package patterns"
+            ))
+        };
+        Ok(match value {
+            None => default,
+            Some(toml::Value::Boolean(true)) => Self::All,
+            Some(toml::Value::Boolean(false)) => Self::Never,
+            Some(toml::Value::Array(items)) => Self::Matching(
+                items
+                    .iter()
+                    .map(|item| item.as_str().map(|s| s.to_string()).ok_or_else(error))
+                    .collect::<Result<Vec<String>, SampoError>>()?,
+            ),
+            Some(_) => return Err(error()),
+        })
+    }
 }
 
 /// Configuration for Sampo
@@ -73,8 +92,11 @@ pub struct Config {
     pub git_short_tags: Option<String>,
     pub git_tag_format: TagTemplate,
     pub git_short_tags_format: TagTemplate,
-    pub git_tag_unpublished: TagUnpublished,
-    pub npm_stage: bool,
+    /// Which packages that are not publishable `sampo publish` tags. Publishable packages are
+    /// always tagged.
+    pub git_tag_unpublished: PackageSelection,
+    /// Which npm packages `sampo publish` stages for approval.
+    pub npm_stage: PackageSelection,
 }
 
 impl Default for Config {
@@ -100,8 +122,8 @@ impl Default for Config {
             git_short_tags: None,
             git_tag_format: TagTemplate::from_static(DEFAULT_TAG_FORMAT),
             git_short_tags_format: TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
-            git_tag_unpublished: TagUnpublished::default(),
-            npm_stage: false,
+            git_tag_unpublished: PackageSelection::All,
+            npm_stage: PackageSelection::Never,
         }
     }
 }
@@ -420,37 +442,20 @@ impl Config {
             None => TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
         };
 
-        let tag_unpublished_error = || {
-            SampoError::Config(
-                "git.tag_unpublished must be true, false, or an array of package patterns".into(),
-            )
-        };
-        let git_tag_unpublished = match git_table.and_then(|t| t.get("tag_unpublished")) {
-            None | Some(toml::Value::Boolean(true)) => TagUnpublished::All,
-            Some(toml::Value::Boolean(false)) => TagUnpublished::Never,
-            Some(toml::Value::Array(items)) => TagUnpublished::Matching(
-                items
-                    .iter()
-                    .map(|item| {
-                        item.as_str()
-                            .map(|s| s.to_string())
-                            .ok_or_else(tag_unpublished_error)
-                    })
-                    .collect::<Result<Vec<String>, SampoError>>()?,
-            ),
-            Some(_) => return Err(tag_unpublished_error()),
-        };
+        let git_tag_unpublished = PackageSelection::parse(
+            git_table.and_then(|t| t.get("tag_unpublished")),
+            "git.tag_unpublished",
+            PackageSelection::All,
+        )?;
 
-        // A non-boolean must fail, or a publish meant to wait for approval goes out directly.
-        let npm_stage = match value
-            .get("npm")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("stage"))
-        {
-            None => false,
-            Some(toml::Value::Boolean(stage)) => *stage,
-            Some(_) => return Err(SampoError::Config("npm.stage must be true or false".into())),
-        };
+        let npm_stage = PackageSelection::parse(
+            value
+                .get("packages")
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get("npm_stage")),
+            "packages.npm_stage",
+            PackageSelection::Never,
+        )?;
 
         Ok(Self {
             version,
@@ -567,7 +572,7 @@ mod tests {
         assert!(config.is_release_branch("main"));
         assert_eq!(config.git_release_branches, Vec::<String>::new());
         assert!(config.git_short_tags.is_none());
-        assert_eq!(config.git_tag_unpublished, TagUnpublished::All);
+        assert_eq!(config.git_tag_unpublished, PackageSelection::All);
     }
 
     #[test]
@@ -707,19 +712,19 @@ mod tests {
             load_git_config("tag_unpublished = true")
                 .unwrap()
                 .git_tag_unpublished,
-            TagUnpublished::All
+            PackageSelection::All
         );
         assert_eq!(
             load_git_config("tag_unpublished = false")
                 .unwrap()
                 .git_tag_unpublished,
-            TagUnpublished::Never
+            PackageSelection::Never
         );
         assert_eq!(
             load_git_config("tag_unpublished = [\"cargo/app\", \"tools/*\"]")
                 .unwrap()
                 .git_tag_unpublished,
-            TagUnpublished::Matching(vec!["cargo/app".to_string(), "tools/*".to_string()])
+            PackageSelection::Matching(vec!["cargo/app".to_string(), "tools/*".to_string()])
         );
     }
 
@@ -820,30 +825,42 @@ mod tests {
     #[test]
     fn reads_npm_stage() {
         let temp = tempfile::tempdir().unwrap();
-        assert!(!Config::load(temp.path()).unwrap().npm_stage);
+        assert_eq!(
+            Config::load(temp.path()).unwrap().npm_stage,
+            PackageSelection::Never
+        );
 
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
-        fs::write(
-            temp.path().join(".sampo/config.toml"),
-            "[npm]\nstage = true\n",
-        )
-        .unwrap();
-        assert!(Config::load(temp.path()).unwrap().npm_stage);
+        for (value, expected) in [
+            ("true", PackageSelection::All),
+            (
+                "[\"npm/web\"]",
+                PackageSelection::Matching(vec!["npm/web".to_string()]),
+            ),
+        ] {
+            fs::write(
+                temp.path().join(".sampo/config.toml"),
+                format!("[packages]\nnpm_stage = {value}\n"),
+            )
+            .unwrap();
+            assert_eq!(Config::load(temp.path()).unwrap().npm_stage, expected);
+        }
     }
 
     #[test]
-    fn rejects_a_non_boolean_npm_stage() {
+    fn rejects_an_invalid_npm_stage() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join(".sampo")).unwrap();
         fs::write(
             temp.path().join(".sampo/config.toml"),
-            "[npm]\nstage = \"true\"\n",
+            "[packages]\nnpm_stage = \"true\"\n",
         )
         .unwrap();
 
         let err = Config::load(temp.path()).unwrap_err();
         assert!(
-            err.to_string().contains("npm.stage must be true or false"),
+            err.to_string()
+                .contains("packages.npm_stage must be true, false, or an array"),
             "unexpected error: {err}"
         );
     }

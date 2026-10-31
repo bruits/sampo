@@ -166,9 +166,7 @@ ignore = [
 ]
 fixed = [["cargo/pkg-a", "cargo/pkg-b"], ["cargo/pkg-c", "cargo/pkg-d"]]
 linked = [["cargo/pkg-e", "cargo/pkg-f"], ["cargo/pkg-g", "cargo/pkg-h"]]
-
-[npm]
-stage = true
+npm_stage = false
 ```
 
 ### `[git]` section
@@ -248,6 +246,8 @@ Sampo detects packages within the same monorepo (even one mixing ecosystems) tha
 
 `bump_dependents`: Which dependents the cascade bumps (default: `"always"`). With `"out-of-range"`, a dependent is only bumped when its requirement no longer covers the new version, for example when `a` requires `b` through `~1.0` and `b` is released as `1.1.0`. A requirement that still covers it, such as `^1.0` or `>=1.0,<3.0`, is left as written, so the dependent is not released and the cascade stops there. Pinned versions, which Sampo rewrites to the new one, and requirements it cannot check (such as `workspace:*` or pre-releases) are still bumped. A bare Cargo version such as `1.0.0` counts as a pin while `1.0` or `^1.0.0` are ranges, and `*` or a path dependency without a version does not trigger a bump on its own. A crate listed in `[workspace.dependencies]` with a version Sampo rewrites bumps all its Cargo dependents.
 
+`npm_stage`: Which npm packages `sampo publish` stages through [npm staged publishing](https://docs.npmjs.com/staged-publishing) (default: `false`). Set it to `true` for all of them, or to a list of patterns, matched like `ignore`, to stage only the npm packages matching one. A pattern that matches no npm package is an error. A staged version only becomes installable once a maintainer approves it with two-factor authentication, on npmjs.com or with `npm stage approve <stage-id>`. Sampo still tags it when staging, so the GitHub Action can still create its release, and skips a tagged version npm holds staged on later runs. If the version is rejected on npm, the tag stays and Sampo keeps skipping it, so release a new version or delete the tag to stage it again. A run that fails after staging a version but before pushing its tag leaves that version untagged, and npm refuses to stage it again until it is approved or rejected. Staging needs npm 11.15.0, pnpm 11.3.0, or Yarn 4.16.0 or later, and Yarn Classic cannot stage. Bun packages are packed with Bun and staged with npm, which needs its own credentials (an `_authToken` in `.npmrc`, or trusted publishing).
+
 `fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages and can mix ecosystems. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo/a", "cargo/b"], ["cargo/c", "cargo/d"]]` and `cargo/a` is updated to `2.0.0` (major), then `cargo/b` will also be bumped to `2.0.0`, but `cargo/c` and `cargo/d` remain unchanged.
 
 `linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages and may include multiple ecosystems. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo/a", "cargo/b"]]` where `cargo/a` depends on `cargo/b`, when `cargo/b` is updated to `2.0.0` (major), then `cargo/a` will also be bumped to `2.0.0`. If `cargo/a` is later updated to `2.1.0` (minor), `cargo/b` remains at `2.0.0` since it's not affected. Finally, if `cargo/b` has a patch update, both `cargo/a` and `cargo/b` will be bumped with patch level since it's the highest bump in the group.
@@ -257,10 +257,6 @@ Sampo detects packages within the same monorepo (even one mixing ecosystems) tha
 
 > [!NOTE]
 > Sampo supports range constraints (e.g., `^1.0`, `~1.2`) for internal dependencies. In this case, when a package is released, Sampo validates that the updated version still satisfies the specified range constraints. If not, you'll get an error for packages in `fixed` or `linked` groups, or a warning otherwise.
-
-### `[npm]` section
-
-`stage`: If `true` (default: `false`), `sampo publish` stages npm packages through [npm staged publishing](https://docs.npmjs.com/staged-publishing), so a version only becomes installable once a maintainer approves it with two-factor authentication, on npmjs.com or with `npm stage approve <stage-id>`. Sampo still tags the version when staging, so the GitHub Action can still create its release, and skips a tagged version npm holds staged on later runs. To stage the same version again after rejecting it, delete its tag. A run that fails after staging a version but before pushing its tag leaves that version untagged, and npm refuses to stage it again until it is approved or rejected. Staging needs npm 11.15.0, pnpm 11.3.0, or Yarn 4.16.0 or later, and Yarn Classic cannot stage. Bun packages are packed with Bun and staged with npm, which needs its own credentials (an `_authToken` in `.npmrc`, or trusted publishing).
 
 ## Commands
 

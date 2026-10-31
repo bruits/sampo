@@ -4,7 +4,7 @@ use crate::types::{PackageInfo, PackageKind, PublishOutput};
 use crate::{
     Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
-    filters::{should_ignore_package, should_tag_unpublished},
+    filters::{npm_packages_to_stage, should_ignore_package, should_tag_unpublished},
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -99,6 +99,7 @@ pub fn run_publish(
     let mut id_to_package: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     let mut publishable: BTreeSet<String> = BTreeSet::new();
     let mut taggable: Vec<&PackageInfo> = Vec::new();
+    let staged_on_npm = npm_packages_to_stage(&config, &ws)?;
 
     for c in &ws.members {
         // Skip ignored packages
@@ -178,7 +179,7 @@ pub fn run_publish(
     // Compute publish order (topological: deps first) for all publishable crates.
     let order = topo_order(&id_to_package, &publishable)?;
 
-    let stages = |kind: PackageKind| config.npm_stage && kind == PackageKind::Npm;
+    let stages = |package: &PackageInfo| staged_on_npm.contains(package.canonical_identifier());
 
     // Build list of packages that actually need publishing (version doesn't exist on registry).
     // We check version_exists() BEFORE dry-run validation to avoid unnecessary compilation
@@ -206,7 +207,7 @@ pub fn run_publish(
             }
             // npm hides a staged version until it is approved, but tagged it when staging.
             Ok(false)
-                if stages(package.kind)
+                if stages(package)
                     && package_tag_exists(
                         &ws.root,
                         &config,
@@ -251,21 +252,21 @@ pub fn run_publish(
         println!("Validating publish commands (dry-run)…");
 
         let mut packages_by_kind: BTreeMap<
-            crate::types::PackageKind,
+            (crate::types::PackageKind, bool),
             Vec<(&PackageInfo, &std::path::Path)>,
         > = BTreeMap::new();
         for (package, _, manifest) in &publish_targets {
             packages_by_kind
-                .entry(package.kind)
+                .entry((package.kind, stages(package)))
                 .or_default()
                 .push((*package, manifest.as_path()));
         }
 
         let mut not_validated: Vec<String> = Vec::new();
-        for (kind, packages) in &packages_by_kind {
+        for ((kind, staged), packages) in &packages_by_kind {
             let adapter = PackageAdapter::from_kind(*kind);
             let args = extra_args.args_for_kind(*kind);
-            not_validated.extend(if stages(*kind) {
+            not_validated.extend(if *staged {
                 adapter.stage_dry_run(packages, &args)?
             } else {
                 adapter.publish_dry_run(&ws.root, packages, &args)?
@@ -289,7 +290,7 @@ pub fn run_publish(
 
     for (package, adapter, manifest) in &publish_targets {
         let args = extra_args.args_for_kind(package.kind);
-        let outcome = if stages(package.kind) {
+        let outcome = if stages(package) {
             adapter.stage(manifest.as_path(), dry_run, &args)?
         } else {
             adapter.publish(manifest.as_path(), dry_run, &args)?

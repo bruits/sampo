@@ -24,3 +24,9 @@ exclude_acknowledgments = []
 # "Updated dependencies: ..." (default: "list")
 # "collapse" keeps one section per run of releases with nothing else
 automatic_entries = "list"
+
+# Package options
+[packages]
+# Which npm packages `sampo publish` stages for approval on npm (default: false)
+# true stages all of them, a list of patterns (e.g. ["npm/web-*"]) only those matching one
+npm_stage = false

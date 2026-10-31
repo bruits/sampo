@@ -806,13 +806,15 @@ const BUN_TRUSTED_PUBLISHING_HINT: &str = "Sampo publishes bun packages through 
                                            keep `bun publish`";
 
 const NPM_STAGE_FLOOR: (u32, u32, u32) = (11, 15, 0);
-const NPM_STAGE_HINT: &str = "npm.stage needs npm 11.15.0 or later for `npm stage publish`";
-const BUN_STAGE_HINT: &str = "npm.stage stages bun packages through npm, which needs npm 11.15.0 \
-                              or later, as `bun publish` cannot stage";
+const NPM_STAGE_HINT: &str =
+    "packages.npm_stage needs npm 11.15.0 or later for `npm stage publish`";
+const BUN_STAGE_HINT: &str = "packages.npm_stage stages bun packages through npm, which needs npm \
+                              11.15.0 or later, as `bun publish` cannot stage";
 
 /// Older pnpm reads `pnpm stage` as `pnpm run stage`.
 const PNPM_STAGE_FLOOR: (u32, u32, u32) = (11, 3, 0);
-const PNPM_STAGE_HINT: &str = "npm.stage needs pnpm 11.3.0 or later for `pnpm stage publish`";
+const PNPM_STAGE_HINT: &str =
+    "packages.npm_stage needs pnpm 11.3.0 or later for `pnpm stage publish`";
 
 fn require_version(program: &str, dir: &Path, floor: (u32, u32, u32), hint: &str) -> Result<()> {
     let output = command(program)
@@ -977,7 +979,7 @@ impl YarnPublish {
         let version = match self {
             Self::Classic => {
                 return Err(SampoError::Publish(
-                    "npm.stage needs Yarn 4.16.0 or later: Yarn Classic cannot stage a publish"
+                    "packages.npm_stage needs Yarn 4.16.0 or later: Yarn Classic cannot stage a publish"
                         .to_string(),
                 ));
             }
@@ -986,7 +988,7 @@ impl YarnPublish {
         match parse_bare_version(version) {
             Some((_, parsed)) if parsed >= YARN_STAGE_FLOOR => Ok(()),
             _ => Err(SampoError::Publish(format!(
-                "npm.stage needs Yarn {}.{}.{} or later for `yarn npm publish --staged`, and this is {version}",
+                "packages.npm_stage needs Yarn {}.{}.{} or later for `yarn npm publish --staged`, and this is {version}",
                 YARN_STAGE_FLOOR.0, YARN_STAGE_FLOOR.1, YARN_STAGE_FLOOR.2
             ))),
         }

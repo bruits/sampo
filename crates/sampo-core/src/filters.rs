@@ -1,9 +1,9 @@
-use crate::errors::Result;
+use crate::errors::{Result, SampoError};
 use crate::{
     Config,
     adapters::PackageAdapter,
-    config::TagUnpublished,
-    types::{PackageInfo, Workspace},
+    config::PackageSelection,
+    types::{PackageInfo, PackageKind, Workspace},
 };
 use std::collections::BTreeSet;
 
@@ -35,10 +35,37 @@ pub fn should_ignore_package(cfg: &Config, ws: &Workspace, info: &PackageInfo) -
 
 /// Whether `sampo publish` tags a package that is not publishable, per `git.tag_unpublished`.
 pub fn should_tag_unpublished(cfg: &Config, ws: &Workspace, info: &PackageInfo) -> bool {
-    match &cfg.git_tag_unpublished {
-        TagUnpublished::All => true,
-        TagUnpublished::Never => false,
-        TagUnpublished::Matching(patterns) => matches_any_pattern(patterns, ws, info),
+    selects(&cfg.git_tag_unpublished, ws, info)
+}
+
+/// Errors on a pattern that matches no npm package, since that package would be published
+/// directly.
+pub fn npm_packages_to_stage(cfg: &Config, ws: &Workspace) -> Result<BTreeSet<String>> {
+    let npm = || {
+        ws.members
+            .iter()
+            .filter(|info| info.kind == PackageKind::Npm)
+    };
+    if let PackageSelection::Matching(patterns) = &cfg.npm_stage
+        && let Some(pattern) = patterns.iter().find(|pattern| {
+            !npm().any(|info| matches_any_pattern(std::slice::from_ref(*pattern), ws, info))
+        })
+    {
+        return Err(SampoError::Config(format!(
+            "packages.npm_stage lists '{pattern}', which matches no npm package"
+        )));
+    }
+    Ok(npm()
+        .filter(|info| selects(&cfg.npm_stage, ws, info))
+        .map(|info| info.canonical_identifier().to_string())
+        .collect())
+}
+
+fn selects(selection: &PackageSelection, ws: &Workspace, info: &PackageInfo) -> bool {
+    match selection {
+        PackageSelection::All => true,
+        PackageSelection::Never => false,
+        PackageSelection::Matching(patterns) => matches_any_pattern(patterns, ws, info),
     }
 }
 
@@ -238,13 +265,13 @@ mod tests {
         assert!(should_tag_unpublished(&all, &ws, internal));
 
         let never = Config {
-            git_tag_unpublished: TagUnpublished::Never,
+            git_tag_unpublished: PackageSelection::Never,
             ..Default::default()
         };
         assert!(!should_tag_unpublished(&never, &ws, internal));
 
         let matching = Config {
-            git_tag_unpublished: TagUnpublished::Matching(vec![
+            git_tag_unpublished: PackageSelection::Matching(vec![
                 "cargo/internal-*".into(),
                 "examples/*".into(),
             ]),
@@ -253,6 +280,47 @@ mod tests {
         assert!(should_tag_unpublished(&matching, &ws, internal));
         assert!(should_tag_unpublished(&matching, &ws, examples));
         assert!(!should_tag_unpublished(&matching, &ws, normal));
+    }
+
+    #[test]
+    fn npm_packages_to_stage_follow_config() {
+        use crate::types::PackageKind;
+        let mut ws = dummy_ws();
+        ws.members.push(PackageInfo {
+            name: "normal".into(),
+            identifier: "npm/normal".into(),
+            version: "0.1.0".into(),
+            path: PathBuf::from("/repo/packages/normal"),
+            internal_deps: Default::default(),
+            internal_dev_deps: BTreeSet::new(),
+            kind: PackageKind::Npm,
+        });
+        let stage = |npm_stage| {
+            let cfg = Config {
+                npm_stage,
+                ..Default::default()
+            };
+            npm_packages_to_stage(&cfg, &ws).map(|ids| ids.into_iter().collect::<Vec<_>>())
+        };
+        let matching = |patterns: &[&str]| {
+            PackageSelection::Matching(patterns.iter().map(|p| p.to_string()).collect())
+        };
+
+        assert!(stage(PackageSelection::Never).unwrap().is_empty());
+        assert_eq!(stage(PackageSelection::All).unwrap(), ["npm/normal"]);
+        assert_eq!(stage(matching(&["npm/normal"])).unwrap(), ["npm/normal"]);
+        // A plain name or a glob may match other ecosystems too; only npm packages stage.
+        assert_eq!(stage(matching(&["normal", "*"])).unwrap(), ["npm/normal"]);
+
+        for pattern in ["cargo/normal", "npm/typo"] {
+            let err = stage(matching(&["npm/normal", pattern]))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(&format!("'{pattern}', which matches no npm package")),
+                "{err}"
+            );
+        }
     }
 
     #[test]
