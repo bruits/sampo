@@ -178,6 +178,8 @@ pub fn run_publish(
     // Compute publish order (topological: deps first) for all publishable crates.
     let order = topo_order(&id_to_package, &publishable)?;
 
+    let stages = |kind: PackageKind| config.npm_stage && kind == PackageKind::Npm;
+
     // Build list of packages that actually need publishing (version doesn't exist on registry).
     // We check version_exists() BEFORE dry-run validation to avoid unnecessary compilation
     // and failures when all packages are already published.
@@ -200,6 +202,22 @@ pub fn run_publish(
                     "  - {} (already exists on {})",
                     package.display_name(true),
                     package.kind.display_name()
+                );
+            }
+            // npm hides a staged version until it is approved, but tagged it when staging.
+            Ok(false)
+                if stages(package.kind)
+                    && package_tag_exists(
+                        &ws.root,
+                        &config,
+                        package.kind,
+                        &package.name,
+                        &package.version,
+                    )? =>
+            {
+                println!(
+                    "  - {} (staged on npm, awaiting approval)",
+                    package.display_name(true)
                 );
             }
             Ok(false) => {
@@ -247,7 +265,11 @@ pub fn run_publish(
         for (kind, packages) in &packages_by_kind {
             let adapter = PackageAdapter::from_kind(*kind);
             let args = extra_args.args_for_kind(*kind);
-            not_validated.extend(adapter.publish_dry_run(&ws.root, packages, &args)?);
+            not_validated.extend(if stages(*kind) {
+                adapter.stage_dry_run(packages, &args)?
+            } else {
+                adapter.publish_dry_run(&ws.root, packages, &args)?
+            });
         }
 
         if not_validated.is_empty() {
@@ -263,11 +285,19 @@ pub fn run_publish(
     let mut tags_to_create: Vec<String> = Vec::new();
     let mut any_published = false;
     let mut not_simulated: Vec<String> = Vec::new();
+    let mut staged: Vec<String> = Vec::new();
 
     for (package, adapter, manifest) in &publish_targets {
         let args = extra_args.args_for_kind(package.kind);
-        if adapter.publish(manifest.as_path(), dry_run, &args)? == PublishOutcome::DryRunSkipped {
-            not_simulated.push(package.display_name(true));
+        let outcome = if stages(package.kind) {
+            adapter.stage(manifest.as_path(), dry_run, &args)?
+        } else {
+            adapter.publish(manifest.as_path(), dry_run, &args)?
+        };
+        match outcome {
+            PublishOutcome::DryRunSkipped => not_simulated.push(package.display_name(true)),
+            PublishOutcome::Staged => staged.push(package.display_name(true)),
+            PublishOutcome::Ran => {}
         }
         any_published = true;
 
@@ -365,6 +395,12 @@ pub fn run_publish(
             eprintln!(
                 "Warning: {} did not reach the registry: the publish was skipped as a dry run, but the release was still tagged.",
                 not_simulated.join(", ")
+            );
+        }
+        if !staged.is_empty() {
+            println!(
+                "Staged on npm, and installable once approved on npmjs.com or with `npm stage approve`: {}",
+                staged.join(", ")
             );
         }
     }

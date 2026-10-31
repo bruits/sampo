@@ -74,6 +74,7 @@ pub struct Config {
     pub git_tag_format: TagTemplate,
     pub git_short_tags_format: TagTemplate,
     pub git_tag_unpublished: TagUnpublished,
+    pub npm_stage: bool,
 }
 
 impl Default for Config {
@@ -100,6 +101,7 @@ impl Default for Config {
             git_tag_format: TagTemplate::from_static(DEFAULT_TAG_FORMAT),
             git_short_tags_format: TagTemplate::from_static(DEFAULT_SHORT_TAGS_FORMAT),
             git_tag_unpublished: TagUnpublished::default(),
+            npm_stage: false,
         }
     }
 }
@@ -439,6 +441,17 @@ impl Config {
             Some(_) => return Err(tag_unpublished_error()),
         };
 
+        // A non-boolean must fail, or a publish meant to wait for approval goes out directly.
+        let npm_stage = match value
+            .get("npm")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("stage"))
+        {
+            None => false,
+            Some(toml::Value::Boolean(stage)) => *stage,
+            Some(_) => return Err(SampoError::Config("npm.stage must be true or false".into())),
+        };
+
         Ok(Self {
             version,
             github_repository,
@@ -461,6 +474,7 @@ impl Config {
             git_tag_format,
             git_short_tags_format,
             git_tag_unpublished,
+            npm_stage,
         })
     }
 
@@ -799,6 +813,37 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("packages.bump_dependents must be \"always\" or \"out-of-range\""),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn reads_npm_stage() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!Config::load(temp.path()).unwrap().npm_stage);
+
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[npm]\nstage = true\n",
+        )
+        .unwrap();
+        assert!(Config::load(temp.path()).unwrap().npm_stage);
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_npm_stage() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".sampo")).unwrap();
+        fs::write(
+            temp.path().join(".sampo/config.toml"),
+            "[npm]\nstage = \"true\"\n",
+        )
+        .unwrap();
+
+        let err = Config::load(temp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("npm.stage must be true or false"),
             "unexpected error: {err}"
         );
     }

@@ -18,6 +18,8 @@ use std::process::Command;
 pub enum PublishOutcome {
     Ran,
     DryRunSkipped,
+    /// The registry holds the package until a maintainer approves it.
+    Staged,
 }
 
 /// Package ecosystem adapter (Cargo, npm, etc.).
@@ -146,7 +148,7 @@ impl PackageAdapter {
             Self::Cargo => cargo::CargoAdapter
                 .publish(manifest_path, dry_run, extra_args)
                 .map(|()| PublishOutcome::Ran),
-            Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, extra_args),
+            Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, false, extra_args),
             Self::Hex => hex::HexAdapter
                 .publish(manifest_path, dry_run, extra_args)
                 .map(|()| PublishOutcome::Ran),
@@ -174,12 +176,42 @@ impl PackageAdapter {
     ) -> Result<Vec<String>> {
         match self {
             Self::Cargo => cargo::publish_dry_run(workspace_root, packages, extra_args),
-            Self::Npm => npm::publish_dry_run(packages, extra_args),
+            Self::Npm => npm::publish_dry_run(packages, false, extra_args),
             Self::Hex => hex::publish_dry_run(packages, extra_args),
             Self::PyPI => pypi::publish_dry_run(packages, extra_args),
             Self::Packagist => packagist::publish_dry_run(packages, extra_args),
             Self::Maven => maven::publish_dry_run(packages, extra_args),
         }
+    }
+
+    /// Like [`Self::publish`], but the registry holds the package until a maintainer approves
+    /// it. Only npm stages.
+    pub fn stage(
+        &self,
+        manifest_path: &Path,
+        dry_run: bool,
+        extra_args: &[String],
+    ) -> Result<PublishOutcome> {
+        match self {
+            Self::Npm => npm::NpmAdapter.publish(manifest_path, dry_run, true, extra_args),
+            _ => Err(self.cannot_stage()),
+        }
+    }
+
+    /// Like [`Self::publish_dry_run`], for [`Self::stage`].
+    pub fn stage_dry_run(
+        &self,
+        packages: &[(&PackageInfo, &Path)],
+        extra_args: &[String],
+    ) -> Result<Vec<String>> {
+        match self {
+            Self::Npm => npm::publish_dry_run(packages, true, extra_args),
+            _ => Err(self.cannot_stage()),
+        }
+    }
+
+    fn cannot_stage(&self) -> crate::errors::SampoError {
+        crate::errors::SampoError::Publish(format!("{self:?} packages cannot be staged"))
     }
 
     /// Check that lockfile regeneration can run, before the release writes anything.

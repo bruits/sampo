@@ -56,6 +56,15 @@ pub fn write_fake_bun(dir: &Path, argv_log: &Path, version: &str) {
     write_bun_with_version_body(dir, argv_log, &format!("echo {version}; exit 0"));
 }
 
+static ORIGINAL_PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+
+/// The `PATH` this test binary started with, which [`use_only`] replaces and never restores.
+pub fn original_path() -> &'static std::ffi::OsStr {
+    ORIGINAL_PATH
+        .get()
+        .expect("use_only records the original PATH")
+}
+
 /// Point the release at `main` and make `dir` the only place tools are found.
 ///
 /// The environment is process-wide; hold the guard for the whole test body.
@@ -64,6 +73,7 @@ pub fn use_only(dir: &Path) -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
+    ORIGINAL_PATH.get_or_init(|| std::env::var_os("PATH").unwrap_or_default());
     unsafe {
         std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
         std::env::set_var("PATH", dir);

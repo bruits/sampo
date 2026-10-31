@@ -93,6 +93,7 @@ impl NpmAdapter {
         &self,
         manifest_path: &Path,
         dry_run: bool,
+        stage: bool,
         extra_args: &[String],
     ) -> Result<PublishOutcome> {
         let manifest_dir = manifest_path.parent().ok_or_else(|| {
@@ -115,7 +116,7 @@ impl NpmAdapter {
 
         let manager = detect_package_manager(manifest_dir, &info);
         if manager == PackageManager::Bun
-            && trusted_publishing_available(|key| std::env::var(key).ok())
+            && (stage || trusted_publishing_available(|key| std::env::var(key).ok()))
         {
             return publish_bun_through_npm(
                 manifest_path,
@@ -123,6 +124,7 @@ impl NpmAdapter {
                 &manifest,
                 &info,
                 dry_run,
+                stage,
                 extra_args,
             );
         }
@@ -139,6 +141,16 @@ impl NpmAdapter {
             _ => None,
         };
 
+        if stage {
+            match &yarn {
+                Some(yarn) => yarn.require_staging()?,
+                None if manager == PackageManager::Pnpm => {
+                    require_version("pnpm", manifest_dir, PNPM_STAGE_FLOOR, PNPM_STAGE_HINT)?
+                }
+                None => require_version("npm", manifest_dir, NPM_STAGE_FLOOR, NPM_STAGE_HINT)?,
+            }
+        }
+
         // Skipping loses validation; running the command anyway would publish for real.
         if dry_run && let Some(gap) = yarn.as_ref().and_then(YarnPublish::dry_run_gap) {
             eprintln!(
@@ -153,18 +165,21 @@ impl NpmAdapter {
             manager,
             yarn.as_ref(),
             dry_run,
+            stage,
             &info,
             extra_args,
         ));
         cmd.current_dir(manifest_dir);
 
-        let attempted = match yarn {
-            Some(YarnPublish::Berry { .. }) => "yarn npm publish".to_string(),
-            _ => format!("{manager_name} publish"),
+        let attempted = match (yarn, stage) {
+            (Some(YarnPublish::Berry { .. }), false) => "yarn npm publish".to_string(),
+            (Some(YarnPublish::Berry { .. }), true) => "yarn npm publish --staged".to_string(),
+            (_, false) => format!("{manager_name} publish"),
+            (_, true) => format!("{manager_name} stage publish"),
         };
         run_publish_step(cmd, manager_name, &attempted, manifest_path, &info.name)?;
 
-        Ok(PublishOutcome::Ran)
+        Ok(published_outcome(dry_run, stage))
     }
 
     pub(super) fn regenerate_lockfile(&self, workspace_root: &Path) -> Result<()> {
@@ -611,13 +626,14 @@ fn is_wildcard(s: &str) -> bool {
 
 pub(super) fn publish_dry_run(
     packages: &[(&PackageInfo, &Path)],
+    stage: bool,
     extra_args: &[String],
 ) -> Result<Vec<String>> {
     let mut skipped = Vec::new();
 
     for (package, manifest) in packages {
         let outcome = NpmAdapter
-            .publish(manifest, true, extra_args)
+            .publish(manifest, true, stage, extra_args)
             .map_err(|err| match err {
                 SampoError::Publish(message) => SampoError::Publish(format!(
                     "Dry-run publish failed for {}: {}",
@@ -704,17 +720,36 @@ fn trusted_publishing_available(lookup: impl Fn(&str) -> Option<String>) -> bool
     identity && !PUBLISH_TOKEN_VARS.into_iter().any(token)
 }
 
-/// `bun publish` has no npm trusted publishing (oven-sh/bun#22423), and `npm publish` would
-/// ship `workspace:` and `catalog:` ranges unresolved, so bun packs and npm uploads the tarball.
+fn published_outcome(dry_run: bool, stage: bool) -> PublishOutcome {
+    if stage && !dry_run {
+        PublishOutcome::Staged
+    } else {
+        PublishOutcome::Ran
+    }
+}
+
+/// `bun publish` has neither npm trusted publishing (oven-sh/bun#22423) nor staging, and
+/// `npm publish` would ship `workspace:` and `catalog:` ranges unresolved, so bun packs and npm
+/// uploads the tarball.
 fn publish_bun_through_npm(
     manifest_path: &Path,
     manifest_dir: &Path,
     manifest: &JsonValue,
     info: &NpmManifestInfo,
     dry_run: bool,
+    stage: bool,
     extra_args: &[String],
 ) -> Result<PublishOutcome> {
-    require_npm_trusted_publishing(manifest_dir)?;
+    if stage {
+        require_version("npm", manifest_dir, NPM_STAGE_FLOOR, BUN_STAGE_HINT)?;
+    } else {
+        require_version(
+            "npm",
+            manifest_dir,
+            NPM_TRUSTED_PUBLISHING_FLOOR,
+            BUN_TRUSTED_PUBLISHING_HINT,
+        )?;
+    }
 
     // `bun publish` runs these around the upload, while `bun pm pack` and `npm publish <tarball>`
     // skip them; `prepublishOnly` often builds what gets packed.
@@ -746,31 +781,47 @@ fn publish_bun_through_npm(
             ))
         })?;
 
-    let mut args = publish_command_args(PackageManager::Npm, None, dry_run, info, extra_args);
-    args.insert(1, tarball.to_string_lossy().into_owned());
+    let mut args =
+        publish_command_args(PackageManager::Npm, None, dry_run, stage, info, extra_args);
+    let tarball_at = if stage { 2 } else { 1 };
+    args.insert(tarball_at, tarball.to_string_lossy().into_owned());
     let mut publish = command("npm");
     publish.args(args).current_dir(manifest_dir);
-    run_publish_step(publish, "npm", "npm publish", manifest_path, &info.name)?;
+    let attempted = if stage {
+        "npm stage publish"
+    } else {
+        "npm publish"
+    };
+    run_publish_step(publish, "npm", attempted, manifest_path, &info.name)?;
 
     run_script("publish")?;
     run_script("postpublish")?;
-    Ok(PublishOutcome::Ran)
+    Ok(published_outcome(dry_run, stage))
 }
 
 const NPM_TRUSTED_PUBLISHING_FLOOR: (u32, u32, u32) = (11, 5, 1);
+const BUN_TRUSTED_PUBLISHING_HINT: &str = "Sampo publishes bun packages through npm for npm \
+                                           trusted publishing, which needs npm 11.5.1 or later \
+                                           (Node 24 ships one); set NPM_CONFIG_TOKEN instead to \
+                                           keep `bun publish`";
 
-fn require_npm_trusted_publishing(dir: &Path) -> Result<()> {
-    const HINT: &str = "Sampo publishes bun packages through npm for npm trusted publishing, \
-                        which needs npm 11.5.1 or later (Node 24 ships one); set \
-                        NPM_CONFIG_TOKEN instead to keep `bun publish`";
+const NPM_STAGE_FLOOR: (u32, u32, u32) = (11, 15, 0);
+const NPM_STAGE_HINT: &str = "npm.stage needs npm 11.15.0 or later for `npm stage publish`";
+const BUN_STAGE_HINT: &str = "npm.stage stages bun packages through npm, which needs npm 11.15.0 \
+                              or later, as `bun publish` cannot stage";
 
-    let output = command("npm")
+/// Older pnpm reads `pnpm stage` as `pnpm run stage`.
+const PNPM_STAGE_FLOOR: (u32, u32, u32) = (11, 3, 0);
+const PNPM_STAGE_HINT: &str = "npm.stage needs pnpm 11.3.0 or later for `pnpm stage publish`";
+
+fn require_version(program: &str, dir: &Path, floor: (u32, u32, u32), hint: &str) -> Result<()> {
+    let output = command(program)
         .arg("--version")
         .current_dir(dir)
         .output()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                SampoError::Publish(format!("npm not found in PATH. {HINT}"))
+                SampoError::Publish(format!("{program} not found in PATH. {hint}"))
             } else {
                 SampoError::Io(err)
             }
@@ -780,16 +831,16 @@ fn require_npm_trusted_publishing(dir: &Path) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let snippet: String = stderr.trim().chars().take(400).collect();
         return Err(SampoError::Publish(format!(
-            "`npm --version` failed with status {}: {snippet}. {HINT}",
+            "`{program} --version` failed with status {}: {snippet}. {hint}",
             output.status
         )));
     }
 
     let reported = String::from_utf8_lossy(&output.stdout);
     match parse_bare_version(&reported) {
-        Some((_, parsed)) if parsed >= NPM_TRUSTED_PUBLISHING_FLOOR => Ok(()),
+        Some((_, parsed)) if parsed >= floor => Ok(()),
         _ => Err(SampoError::Publish(format!(
-            "`npm --version` reported {:?}. {HINT}",
+            "`{program} --version` reported {:?}. {hint}",
             reported.trim()
         ))),
     }
@@ -799,6 +850,7 @@ fn publish_command_args(
     manager: PackageManager,
     yarn: Option<&YarnPublish>,
     dry_run: bool,
+    stage: bool,
     info: &NpmManifestInfo,
     extra_args: &[String],
 ) -> Vec<String> {
@@ -807,8 +859,16 @@ fn publish_command_args(
     // A bare `yarn publish` on Berry falls through to `yarn run publish`, running a user script.
     if matches!(yarn, Some(YarnPublish::Berry { .. })) {
         args.push("npm".to_string());
+        args.push("publish".to_string());
+        if stage {
+            args.push("--staged".to_string());
+        }
+    } else {
+        if stage {
+            args.push("stage".to_string());
+        }
+        args.push("publish".to_string());
     }
-    args.push("publish".to_string());
 
     if dry_run && !has_flag(extra_args, "--dry-run") {
         args.push("--dry-run".to_string());
@@ -888,6 +948,8 @@ fn reads_as_version_range(tag: &str) -> bool {
 /// `yarn npm publish` gained `--dry-run` in 4.9.3 (yarnpkg/berry#6850).
 const YARN_DRY_RUN_FLOOR: (u32, u32, u32) = (4, 9, 3);
 
+const YARN_STAGE_FLOOR: (u32, u32, u32) = (4, 16, 0);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum YarnPublish {
     /// Yarn 1.x: no dry run, and drops unknown flags instead of rejecting them, so
@@ -908,6 +970,25 @@ impl YarnPublish {
                 "`yarn npm publish` gained --dry-run in 4.9.3, and this is {version}"
             )),
             Self::Berry { .. } => None,
+        }
+    }
+
+    fn require_staging(&self) -> Result<()> {
+        let version = match self {
+            Self::Classic => {
+                return Err(SampoError::Publish(
+                    "npm.stage needs Yarn 4.16.0 or later: Yarn Classic cannot stage a publish"
+                        .to_string(),
+                ));
+            }
+            Self::Berry { version, .. } => version,
+        };
+        match parse_bare_version(version) {
+            Some((_, parsed)) if parsed >= YARN_STAGE_FLOOR => Ok(()),
+            _ => Err(SampoError::Publish(format!(
+                "npm.stage needs Yarn {}.{}.{} or later for `yarn npm publish --staged`, and this is {version}",
+                YARN_STAGE_FLOOR.0, YARN_STAGE_FLOOR.1, YARN_STAGE_FLOOR.2
+            ))),
         }
     }
 }
