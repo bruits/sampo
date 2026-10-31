@@ -54,7 +54,7 @@ inputs:
     description: "Title for the Stabilize PR when auto prepares it"
     required: false
   create-github-release:
-    description: "If true, create GitHub releases for new tags when publishing"
+    description: "Create GitHub releases for new tags when publishing. Either 'true' (one per new tag), 'false' (none), or a comma-separated list of package names that get a release, the first listed one also carrying the other published packages' notes (e.g. 'my-app')"
     required: false
     default: "false"
   open-discussion:

@@ -9,7 +9,8 @@ use glob::glob;
 use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
 use sampo_core::{
-    Config as SampoConfig, PublishExtraArgs, current_branch, header_matches_release_version,
+    Config as SampoConfig, PublishExtraArgs, Workspace, current_branch,
+    header_matches_release_version, is_automatic_changelog_section,
 };
 use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,12 +21,18 @@ use std::process::ExitCode;
 
 // Error type and Result are provided by sampo-core::errors
 
+/// Most characters GitHub accepts in a release body.
+const GITHUB_RELEASE_BODY_LIMIT: usize = 125_000;
+
+/// Room kept in a release body for the note about left-out packages.
+const TRUNCATION_NOTE_RESERVE: usize = 200;
+
 #[derive(Debug, Clone)]
 struct GitHubReleaseOptions {
-    /// Create GitHub releases for newly created tags during publish
-    create_github_release: bool,
+    /// Packages whose new tags get a GitHub release during publish
+    create_github_release: PackageFilter,
     /// Filter for which packages should have GitHub Discussions opened
-    open_discussion: DiscussionFilter,
+    open_discussion: PackageFilter,
     /// Preferred Discussions category slug (e.g., "announcements")
     discussion_category: Option<String>,
     /// Release asset patterns provided by the workflow (already-built artifacts)
@@ -35,11 +42,17 @@ struct GitHubReleaseOptions {
 impl GitHubReleaseOptions {
     fn from_config(config: &Config) -> Self {
         Self {
-            create_github_release: config.create_github_release,
+            create_github_release: config.create_github_release.clone(),
             open_discussion: config.open_discussion.clone(),
             discussion_category: config.discussion_category.clone(),
             asset_specs: parse_asset_specs(config.release_assets.as_deref()),
         }
+    }
+
+    /// Whether the GitHub release created for `tag` also gets a Discussion.
+    fn opens_discussion_for(&self, tag: &str, config: Option<&SampoConfig>) -> bool {
+        parse_tag_with_config(tag, config)
+            .is_some_and(|(package_name, _)| self.open_discussion.matches(&package_name))
     }
 }
 
@@ -73,24 +86,25 @@ impl Mode {
     }
 }
 
-/// Filter for which packages should have GitHub Discussions opened.
+/// Packages selected by an input that takes `true`, `false`, or a package list, such as
+/// `create-github-release` and `open-discussion`.
 ///
 /// Supports:
-/// - `All`: Open discussions for all packages (when input is "true")
-/// - `None`: Never open discussions (when input is "false" or empty)
-/// - `Packages`: Only open discussions for specific packages (comma-separated list)
-#[derive(Debug, Clone)]
-enum DiscussionFilter {
-    /// Open discussions for all released packages
+/// - `All`: every package (when input is "true")
+/// - `None`: no package (when input is "false" or empty)
+/// - `Packages`: only the listed packages (comma-separated list)
+#[derive(Debug, Clone, PartialEq)]
+enum PackageFilter {
+    /// Every released package
     All,
-    /// Never open discussions
+    /// No package
     None,
-    /// Open discussions only for these specific package names
+    /// Only these package names, in input order
     Packages(Vec<String>),
 }
 
-impl DiscussionFilter {
-    /// Parse the INPUT_OPEN_DISCUSSION environment variable value.
+impl PackageFilter {
+    /// Parse the value of an input such as INPUT_OPEN_DISCUSSION.
     ///
     /// Accepts:
     /// - "true" -> All
@@ -99,9 +113,9 @@ impl DiscussionFilter {
     fn parse(input: &str) -> Self {
         let trimmed = input.trim();
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("false") {
-            DiscussionFilter::None
+            PackageFilter::None
         } else if trimmed.eq_ignore_ascii_case("true") {
-            DiscussionFilter::All
+            PackageFilter::All
         } else {
             let packages: Vec<String> = trimmed
                 .split(',')
@@ -109,20 +123,34 @@ impl DiscussionFilter {
                 .filter(|s| !s.is_empty())
                 .collect();
             if packages.is_empty() {
-                DiscussionFilter::None
+                PackageFilter::None
             } else {
-                DiscussionFilter::Packages(packages)
+                PackageFilter::Packages(packages)
             }
         }
     }
 
-    /// Check if a discussion should be opened for a given package name.
-    fn should_open_for(&self, package_name: &str) -> bool {
+    /// Check if the filter selects a given package name.
+    fn matches(&self, package_name: &str) -> bool {
         match self {
-            DiscussionFilter::All => true,
-            DiscussionFilter::None => false,
-            DiscussionFilter::Packages(packages) => packages.iter().any(|p| p == package_name),
+            PackageFilter::All => true,
+            PackageFilter::None => false,
+            PackageFilter::Packages(packages) => packages.iter().any(|p| p == package_name),
         }
+    }
+
+    fn is_enabled(&self) -> bool {
+        *self != PackageFilter::None
+    }
+}
+
+/// Parse INPUT_CREATE_GITHUB_RELEASE, which also takes `1` and `0` for `true` and `false`
+/// as it did before it accepted package lists.
+fn parse_create_github_release(input: &str) -> PackageFilter {
+    match input.trim() {
+        "1" => PackageFilter::All,
+        "0" => PackageFilter::None,
+        _ => PackageFilter::parse(input),
     }
 }
 
@@ -181,11 +209,11 @@ struct Config {
     /// Title to use for the Stabilize PR (default: 'Release stable (<branch>)')
     stabilize_pr_title: Option<String>,
 
-    /// Create GitHub releases for newly created tags during publish
-    create_github_release: bool,
+    /// Packages whose new tags get a GitHub release during publish
+    create_github_release: PackageFilter,
 
     /// Filter for which packages should have GitHub Discussions opened
-    open_discussion: DiscussionFilter,
+    open_discussion: PackageFilter,
 
     /// Preferred Discussions category slug (e.g., "announcements")
     discussion_category: Option<String>,
@@ -263,12 +291,12 @@ impl Config {
             .filter(|v| !v.is_empty());
 
         let create_github_release = std::env::var("INPUT_CREATE_GITHUB_RELEASE")
-            .map(|v| v.eq_ignore_ascii_case("true") || v.trim() == "1")
-            .unwrap_or(false);
+            .map(|v| parse_create_github_release(&v))
+            .unwrap_or(PackageFilter::None);
 
         let open_discussion = std::env::var("INPUT_OPEN_DISCUSSION")
-            .map(|v| DiscussionFilter::parse(&v))
-            .unwrap_or(DiscussionFilter::None);
+            .map(|v| PackageFilter::parse(&v))
+            .unwrap_or(PackageFilter::None);
 
         let discussion_category = std::env::var("INPUT_DISCUSSION_CATEGORY")
             .ok()
@@ -426,7 +454,7 @@ fn execute_operations(
                     branch
                 );
                 let github_options = GitHubReleaseOptions::from_config(config);
-                let github_client = if github_options.create_github_release {
+                let github_client = if github_options.create_github_release.is_enabled() {
                     Some(create_github_client()?)
                 } else {
                     None
@@ -448,7 +476,7 @@ fn execute_operations(
         }
         Mode::Publish => {
             let github_options = GitHubReleaseOptions::from_config(config);
-            let github_client = if github_options.create_github_release {
+            let github_client = if github_options.create_github_release.is_enabled() {
                 Some(create_github_client()?)
             } else {
                 None
@@ -802,22 +830,40 @@ fn post_merge_publish(
         }
     }
 
-    if !dry_run
-        && github_options.create_github_release
+    let config = SampoConfig::load(workspace).ok();
+    let releases = plan_github_releases(
+        &new_tags,
+        &github_options.create_github_release,
+        config.as_ref(),
+    );
+    if let PackageFilter::Packages(packages) = &github_options.create_github_release
         && !new_tags.is_empty()
-        && let Some(client) = github_client
+        && releases.is_empty()
     {
-        for tag in &new_tags {
-            println!("Creating GitHub release for {}", tag);
-            create_github_release_for_tag(client, tag, workspace, github_options)?;
+        println!(
+            "No package listed in create-github-release ({}) has a new tag, so no GitHub release is created.",
+            packages.join(", ")
+        );
+    }
+
+    if !dry_run && let Some(client) = github_client {
+        for release in &releases {
+            println!("Creating GitHub release for {}", release.tag);
+            create_github_release_for_tag(client, release, workspace, github_options)?;
         }
-    } else if dry_run && github_options.create_github_release && !new_tags.is_empty() {
+    } else if dry_run && !releases.is_empty() {
         println!(
             "Would create {} GitHub releases (skipped in dry-run mode)",
-            new_tags.len()
+            releases.len()
         );
-        for tag in &new_tags {
-            println!("  - {}", tag);
+        for release in &releases {
+            println!("  - {}", release.tag);
+            if !release.folded_tags.is_empty() {
+                println!(
+                    "    with the notes of {} other new tags",
+                    release.folded_tags.len()
+                );
+            }
         }
     }
 
@@ -829,18 +875,73 @@ fn post_merge_publish(
     Ok(published)
 }
 
+/// A GitHub release to create for a new tag, with the other new tags whose notes it gathers.
+#[derive(Debug, PartialEq)]
+struct PlannedRelease<'a> {
+    tag: &'a str,
+    folded_tags: Vec<&'a str>,
+}
+
+/// Choose which new tags get a GitHub release.
+///
+/// With a package list, only the listed packages' tags get one, and the release of the
+/// package listed first gathers the notes of every other new tag, so they appear once.
+fn plan_github_releases<'a>(
+    tags: &'a [String],
+    filter: &PackageFilter,
+    config: Option<&SampoConfig>,
+) -> Vec<PlannedRelease<'a>> {
+    let packages = match filter {
+        PackageFilter::None => return Vec::new(),
+        PackageFilter::All => {
+            return tags
+                .iter()
+                .map(|tag| PlannedRelease {
+                    tag,
+                    folded_tags: Vec::new(),
+                })
+                .collect();
+        }
+        PackageFilter::Packages(packages) => packages,
+    };
+
+    let mut listed: Vec<(usize, &str)> = Vec::new();
+    let mut folded_tags: Vec<&str> = Vec::new();
+    for tag in tags {
+        let position = parse_tag_with_config(tag, config)
+            .and_then(|(name, _)| packages.iter().position(|p| *p == name));
+        match position {
+            Some(position) => listed.push((position, tag)),
+            None => folded_tags.push(tag),
+        }
+    }
+
+    let first_listed = listed
+        .iter()
+        .min_by_key(|(position, _)| *position)
+        .map(|(_, tag)| *tag);
+    listed
+        .into_iter()
+        .map(|(_, tag)| PlannedRelease {
+            tag,
+            folded_tags: if Some(tag) == first_listed {
+                std::mem::take(&mut folded_tags)
+            } else {
+                Vec::new()
+            },
+        })
+        .collect()
+}
+
 fn create_github_release_for_tag(
     github_client: &github::GitHubClient,
-    tag: &str,
+    release: &PlannedRelease,
     workspace: &Path,
     github_options: &GitHubReleaseOptions,
 ) -> Result<()> {
     let config = SampoConfig::load(workspace).ok();
-
-    let body = match build_release_body_from_changelog(workspace, tag) {
-        Some(body) => body,
-        None => format!("Automated release for tag {}", tag),
-    };
+    let tag = release.tag;
+    let body = build_release_body(workspace, tag, &release.folded_tags);
 
     let upload_url = match github_client.create_release(
         tag,
@@ -894,11 +995,7 @@ fn create_github_release_for_tag(
         }
     }
 
-    // Optionally open a Discussion for this release (based on filter)
-    if let Some((package_name, _version)) = parse_tag_with_config(tag, config.as_ref())
-        && github_options
-            .open_discussion
-            .should_open_for(&package_name)
+    if github_options.opens_discussion_for(tag, config.as_ref())
         && let Err(e) = github_client.create_discussion(
             tag,
             &body,
@@ -911,23 +1008,138 @@ fn create_github_release_for_tag(
     Ok(())
 }
 
-/// Build a release body by extracting the matching section from the crate's CHANGELOG.md
-fn build_release_body_from_changelog(workspace: &Path, tag: &str) -> Option<String> {
+/// Build a release body from the tag's section in its package's CHANGELOG.md, followed by
+/// the notes of `folded_tags`, the new tags without a release of their own.
+fn build_release_body(workspace: &Path, tag: &str, folded_tags: &[&str]) -> String {
     let config = SampoConfig::load(workspace).ok();
-    let (crate_name, version) = parse_tag_with_config(tag, config.as_ref())?;
+    let ws = discover_workspace(workspace).ok();
 
-    // Find crate directory by name using the workspace API
-    let ws = discover_workspace(workspace).ok()?;
-    let crate_dir = ws
+    let mut body = parse_tag_with_config(tag, config.as_ref())
+        .and_then(|(name, version)| changelog_section(workspace, ws.as_ref()?, &name, &version))
+        .unwrap_or_else(|| format!("Automated release for tag {}", tag));
+
+    let mut folded: Vec<FoldedPackage> = folded_tags
+        .iter()
+        .filter_map(|tag| {
+            let (name, version) = parse_tag_with_config(tag, config.as_ref())?;
+            let section = ws
+                .as_ref()
+                .and_then(|ws| changelog_section(workspace, ws, &name, &version));
+            Some(FoldedPackage {
+                name,
+                version,
+                section,
+            })
+        })
+        .collect();
+    folded.sort_by(|a, b| a.name.cmp(&b.name));
+    append_folded_packages(&mut body, &folded, GITHUB_RELEASE_BODY_LIMIT);
+    body
+}
+
+/// Extract the section for `version` from the CHANGELOG.md of the package called `name`.
+fn changelog_section(
+    workspace: &Path,
+    ws: &Workspace,
+    name: &str,
+    version: &str,
+) -> Option<String> {
+    let package_dir = ws
         .members
         .iter()
-        .find(|c| c.name == crate_name)
+        .find(|c| c.name == name)
         .map(|c| c.path.clone())
         // Fallback to a conventional path if discovery failed to find it
-        .unwrap_or_else(|| workspace.join("crates").join(&crate_name));
+        .unwrap_or_else(|| workspace.join("crates").join(name));
 
-    let changelog = crate_dir.join("CHANGELOG.md");
-    extract_changelog_section(&changelog, &version)
+    extract_changelog_section(&package_dir.join("CHANGELOG.md"), version)
+}
+
+/// A package released without a GitHub release of its own, whose notes another release gathers.
+struct FoldedPackage {
+    name: String,
+    version: String,
+    section: Option<String>,
+}
+
+/// Append an "Other packages" section to a release body: one subsection per folded package
+/// with real changelog entries, then a collapsed list of those bumped only to follow others.
+///
+/// Subsections that would push the body past `limit` characters are left out, from the
+/// first one that does not fit, and replaced by a note pointing to the changelogs.
+fn append_folded_packages(body: &mut String, packages: &[FoldedPackage], limit: usize) {
+    if packages.is_empty() {
+        return;
+    }
+
+    // Each block with the number of packages it covers, for the truncation note.
+    let mut blocks: Vec<(String, usize)> = Vec::new();
+    let mut bump_only: Vec<String> = Vec::new();
+    for package in packages {
+        match &package.section {
+            Some(section) if !is_automatic_changelog_section(section) => blocks.push((
+                format!(
+                    "### {} {}\n\n{}\n\n",
+                    package.name,
+                    package.version,
+                    demote_headings(section)
+                ),
+                1,
+            )),
+            _ => bump_only.push(format!("{} {}", package.name, package.version)),
+        }
+    }
+    if !bump_only.is_empty() {
+        let mut block = String::new();
+        sampo::append_bump_only_packages(&mut block, &bump_only);
+        blocks.push((block, bump_only.len()));
+    }
+
+    let mut section = String::from("\n\n## Other packages\n\n");
+    let mut length = body.chars().count() + section.chars().count() + TRUNCATION_NOTE_RESERVE;
+    let mut omitted = 0;
+    for (block, count) in blocks {
+        let block_length = block.chars().count();
+        if omitted == 0 && length + block_length <= limit {
+            section.push_str(&block);
+            length += block_length;
+        } else {
+            omitted += count;
+        }
+    }
+    if omitted > 0 {
+        let noun = if omitted == 1 {
+            "package is"
+        } else {
+            "packages are"
+        };
+        section.push_str(&format!(
+            "{} more {} left out because GitHub limits release notes to {} characters. Their CHANGELOG.md files have the full notes.\n",
+            omitted, noun, limit
+        ));
+    }
+
+    body.push_str(section.trim_end());
+}
+
+/// Push a changelog section's headings one level down, to nest it under a package heading.
+fn demote_headings(section: &str) -> String {
+    let mut in_code_block = false;
+    section
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("```") {
+                in_code_block = !in_code_block;
+            }
+            let level = line.chars().take_while(|c| *c == '#').count();
+            if !in_code_block && (1..6).contains(&level) && line[level..].starts_with(' ') {
+                format!("#{line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Parse a tag through the configured templates (or the default templates
@@ -1292,8 +1504,8 @@ mod tests {
             pr_title: None,
             stabilize_pr_branch: None,
             stabilize_pr_title: None,
-            create_github_release: false,
-            open_discussion: DiscussionFilter::None,
+            create_github_release: PackageFilter::None,
+            open_discussion: PackageFilter::None,
             discussion_category: None,
             release_assets: None,
         };
@@ -1705,58 +1917,37 @@ mod tests {
     }
 
     #[test]
-    fn test_discussion_filter_parsing() {
+    fn test_package_filter_parsing() {
         // "false" or empty -> None
-        assert!(matches!(
-            DiscussionFilter::parse("false"),
-            DiscussionFilter::None
-        ));
-        assert!(matches!(
-            DiscussionFilter::parse("FALSE"),
-            DiscussionFilter::None
-        ));
-        assert!(matches!(
-            DiscussionFilter::parse(""),
-            DiscussionFilter::None
-        ));
-        assert!(matches!(
-            DiscussionFilter::parse("  "),
-            DiscussionFilter::None
-        ));
+        assert!(matches!(PackageFilter::parse("false"), PackageFilter::None));
+        assert!(matches!(PackageFilter::parse("FALSE"), PackageFilter::None));
+        assert!(matches!(PackageFilter::parse(""), PackageFilter::None));
+        assert!(matches!(PackageFilter::parse("  "), PackageFilter::None));
 
         // "true" -> All
-        assert!(matches!(
-            DiscussionFilter::parse("true"),
-            DiscussionFilter::All
-        ));
-        assert!(matches!(
-            DiscussionFilter::parse("TRUE"),
-            DiscussionFilter::All
-        ));
-        assert!(matches!(
-            DiscussionFilter::parse("True"),
-            DiscussionFilter::All
-        ));
+        assert!(matches!(PackageFilter::parse("true"), PackageFilter::All));
+        assert!(matches!(PackageFilter::parse("TRUE"), PackageFilter::All));
+        assert!(matches!(PackageFilter::parse("True"), PackageFilter::All));
 
         // Package list
-        match DiscussionFilter::parse("sampo,sampo-github-action") {
-            DiscussionFilter::Packages(pkgs) => {
+        match PackageFilter::parse("sampo,sampo-github-action") {
+            PackageFilter::Packages(pkgs) => {
                 assert_eq!(pkgs, vec!["sampo", "sampo-github-action"]);
             }
             _ => panic!("Expected Packages variant"),
         }
 
         // Package list with whitespace
-        match DiscussionFilter::parse("  pkg-a , pkg-b  , pkg-c  ") {
-            DiscussionFilter::Packages(pkgs) => {
+        match PackageFilter::parse("  pkg-a , pkg-b  , pkg-c  ") {
+            PackageFilter::Packages(pkgs) => {
                 assert_eq!(pkgs, vec!["pkg-a", "pkg-b", "pkg-c"]);
             }
             _ => panic!("Expected Packages variant"),
         }
 
         // Single package
-        match DiscussionFilter::parse("my-crate") {
-            DiscussionFilter::Packages(pkgs) => {
+        match PackageFilter::parse("my-crate") {
+            PackageFilter::Packages(pkgs) => {
                 assert_eq!(pkgs, vec!["my-crate"]);
             }
             _ => panic!("Expected Packages variant"),
@@ -1764,25 +1955,266 @@ mod tests {
     }
 
     #[test]
-    fn test_discussion_filter_should_open_for() {
+    fn test_package_filter_matches() {
         // All opens for any package
-        let all = DiscussionFilter::All;
-        assert!(all.should_open_for("sampo"));
-        assert!(all.should_open_for("any-package"));
+        let all = PackageFilter::All;
+        assert!(all.matches("sampo"));
+        assert!(all.matches("any-package"));
 
         // None never opens
-        let none = DiscussionFilter::None;
-        assert!(!none.should_open_for("sampo"));
-        assert!(!none.should_open_for("any-package"));
+        let none = PackageFilter::None;
+        assert!(!none.matches("sampo"));
+        assert!(!none.matches("any-package"));
 
         // Packages only opens for listed packages
-        let packages = DiscussionFilter::Packages(vec![
-            "sampo".to_string(),
-            "sampo-github-action".to_string(),
-        ]);
-        assert!(packages.should_open_for("sampo"));
-        assert!(packages.should_open_for("sampo-github-action"));
-        assert!(!packages.should_open_for("sampo-core"));
-        assert!(!packages.should_open_for("sampo-github-bot"));
+        let packages =
+            PackageFilter::Packages(vec!["sampo".to_string(), "sampo-github-action".to_string()]);
+        assert!(packages.matches("sampo"));
+        assert!(packages.matches("sampo-github-action"));
+        assert!(!packages.matches("sampo-core"));
+        assert!(!packages.matches("sampo-github-bot"));
+    }
+
+    #[test]
+    fn create_github_release_input_parsing() {
+        for input in ["true", "TRUE", " true ", "1"] {
+            assert_eq!(
+                parse_create_github_release(input),
+                PackageFilter::All,
+                "{input:?}"
+            );
+        }
+        for input in ["false", "0", "", "  ", ",", " , ,"] {
+            assert_eq!(
+                parse_create_github_release(input),
+                PackageFilter::None,
+                "{input:?}"
+            );
+        }
+        assert_eq!(
+            parse_create_github_release(" app , app-cli,, "),
+            PackageFilter::Packages(vec!["app".to_string(), "app-cli".to_string()])
+        );
+    }
+
+    fn tags(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn plan_github_releases_keeps_one_release_per_tag_for_true_and_none_for_false() {
+        let new_tags = tags(&["app-v0.4.0", "core-v0.4.0", "not a tag"]);
+
+        let all = plan_github_releases(&new_tags, &PackageFilter::All, None);
+        let planned: Vec<_> = all.iter().map(|release| release.tag).collect();
+        assert_eq!(planned, vec!["app-v0.4.0", "core-v0.4.0", "not a tag"]);
+        assert!(all.iter().all(|release| release.folded_tags.is_empty()));
+
+        assert!(plan_github_releases(&new_tags, &PackageFilter::None, None).is_empty());
+    }
+
+    #[test]
+    fn plan_github_releases_only_releases_listed_packages() {
+        let new_tags = tags(&["core-v0.4.0", "app-v0.4.0", "proto-v0.4.0"]);
+        let filter = PackageFilter::Packages(vec!["app".to_string()]);
+
+        assert_eq!(
+            plan_github_releases(&new_tags, &filter, None),
+            vec![PlannedRelease {
+                tag: "app-v0.4.0",
+                folded_tags: vec!["core-v0.4.0", "proto-v0.4.0"],
+            }]
+        );
+    }
+
+    #[test]
+    fn plan_github_releases_folds_other_notes_into_the_first_listed_package() {
+        let new_tags = tags(&["app-sdk-v1.2.0", "core-v0.4.0", "app-v0.4.0"]);
+        let filter = PackageFilter::Packages(vec!["app".to_string(), "app-sdk".to_string()]);
+
+        assert_eq!(
+            plan_github_releases(&new_tags, &filter, None),
+            vec![
+                PlannedRelease {
+                    tag: "app-sdk-v1.2.0",
+                    folded_tags: vec![],
+                },
+                PlannedRelease {
+                    tag: "app-v0.4.0",
+                    folded_tags: vec!["core-v0.4.0"],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_github_releases_creates_none_without_a_listed_tag() {
+        let new_tags = tags(&["core-v0.4.0", "proto-v0.4.0"]);
+        let filter = PackageFilter::Packages(vec!["app".to_string()]);
+
+        assert!(plan_github_releases(&new_tags, &filter, None).is_empty());
+    }
+
+    #[test]
+    fn discussions_follow_open_discussion_among_created_releases() {
+        let new_tags = tags(&["app-v0.4.0", "core-v0.4.0", "app-sdk-v1.2.0"]);
+        let mut options = GitHubReleaseOptions {
+            create_github_release: PackageFilter::Packages(vec![
+                "app".to_string(),
+                "app-sdk".to_string(),
+            ]),
+            open_discussion: PackageFilter::All,
+            discussion_category: None,
+            asset_specs: Vec::new(),
+        };
+        let discussed = |options: &GitHubReleaseOptions| -> Vec<&str> {
+            plan_github_releases(&new_tags, &options.create_github_release, None)
+                .into_iter()
+                .map(|release| release.tag)
+                .filter(|tag| options.opens_discussion_for(tag, None))
+                .collect()
+        };
+
+        assert_eq!(discussed(&options), vec!["app-v0.4.0", "app-sdk-v1.2.0"]);
+
+        options.open_discussion = PackageFilter::Packages(vec!["app".to_string()]);
+        assert_eq!(discussed(&options), vec!["app-v0.4.0"]);
+
+        options.open_discussion = PackageFilter::Packages(vec!["core".to_string()]);
+        assert!(discussed(&options).is_empty());
+    }
+
+    #[test]
+    fn release_body_gathers_the_notes_of_folded_packages() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join(".sampo")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers=[\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let changelogs = [
+            (
+                "app",
+                Some(
+                    "# app\n\n## 0.4.0 — 2026-10-26\n\n### Minor changes\n\n- Added the `up` command.\n\n## 0.3.0\n\n- Initial release",
+                ),
+            ),
+            (
+                "core",
+                Some(
+                    "# core\n\n## 0.4.0 — 2026-10-26\n\n### Minor changes\n\n- Added lane snapshots.\n\n### Patch changes\n\n- Updated dependencies: proto@0.4.0\n",
+                ),
+            ),
+            // `automatic_entries = "list"`
+            (
+                "proto",
+                Some(
+                    "# proto\n\n## 0.4.0 — 2026-10-26\n\n### Patch changes\n\n- Updated dependencies: sys@0.4.0\n",
+                ),
+            ),
+            // `automatic_entries = "collapse"`
+            (
+                "sys",
+                Some(
+                    "# sys\n\n## 0.3.1 ... 0.4.0 — 2026-10-26\n\nVersion bump only, to follow other packages.\n",
+                ),
+            ),
+            ("util", None),
+        ];
+        for (name, changelog) in changelogs {
+            let dir = root.join("crates").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname=\"{name}\"\nversion=\"0.4.0\"\n"),
+            )
+            .unwrap();
+            if let Some(changelog) = changelog {
+                fs::write(dir.join("CHANGELOG.md"), changelog).unwrap();
+            }
+        }
+
+        let body = build_release_body(
+            root,
+            "app-v0.4.0",
+            &["util-v0.4.0", "sys-v0.4.0", "core-v0.4.0", "proto-v0.4.0"],
+        );
+
+        assert_eq!(
+            body,
+            "### Minor changes\n\n- Added the `up` command.\n\n\
+             ## Other packages\n\n\
+             ### core 0.4.0\n\n\
+             #### Minor changes\n\n- Added lane snapshots.\n\n\
+             #### Patch changes\n\n- Updated dependencies: proto@0.4.0\n\n\
+             <details>\n<summary>3 packages bumped only to follow other packages</summary>\n\n\
+             - proto 0.4.0\n- sys 0.4.0\n- util 0.4.0\n\n</details>"
+        );
+
+        assert_eq!(
+            build_release_body(root, "app-v0.4.0", &[]),
+            "### Minor changes\n\n- Added the `up` command."
+        );
+    }
+
+    fn folded(name: &str, section: Option<&str>) -> FoldedPackage {
+        FoldedPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            section: section.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn folded_packages_are_truncated_to_the_body_limit() {
+        let entry = format!("- {}", "x".repeat(100));
+        let packages = [
+            folded("a", Some(&entry)),
+            folded("b", Some(&entry)),
+            folded("c", None),
+        ];
+        // The body, the heading and the note reserve take 230 characters, block `a` 117.
+        let limit = 230 + 117 + 50;
+
+        let mut body = "Main notes".to_string();
+        append_folded_packages(&mut body, &packages, limit);
+
+        assert_eq!(
+            body,
+            format!(
+                "Main notes\n\n## Other packages\n\n### a 1.0.0\n\n{entry}\n\n\
+                 2 more packages are left out because GitHub limits release notes to {limit} characters. \
+                 Their CHANGELOG.md files have the full notes."
+            )
+        );
+        assert!(body.chars().count() <= limit);
+    }
+
+    #[test]
+    fn folded_packages_fit_github_limit_for_large_releases() {
+        let entry = format!("- {}", "x".repeat(2_000));
+        let packages: Vec<_> = (0..100)
+            .map(|i| folded(&format!("package-{i:03}"), Some(&entry)))
+            .collect();
+
+        let mut body = "Main notes".to_string();
+        append_folded_packages(&mut body, &packages, GITHUB_RELEASE_BODY_LIMIT);
+
+        assert!(body.chars().count() <= GITHUB_RELEASE_BODY_LIMIT);
+        assert!(body.contains("### package-000 1.0.0"));
+        assert!(!body.contains("### package-099 1.0.0"));
+        assert!(body.ends_with("Their CHANGELOG.md files have the full notes."));
+    }
+
+    #[test]
+    fn demote_headings_skips_code_blocks() {
+        assert_eq!(
+            demote_headings("### Minor changes\n\n```sh\n# comment\n```\n###### Deepest\n#hashtag"),
+            "#### Minor changes\n\n```sh\n# comment\n```\n###### Deepest\n#hashtag"
+        );
     }
 }

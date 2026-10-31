@@ -44,7 +44,7 @@ pub use release::{
     create_fixed_dependency_policy_entry, create_structural_version_coupling_entry,
     detect_all_dependency_explanations, detect_fixed_dependency_policy_packages,
     filter_prerelease_entries, format_dependency_updates_message, header_matches_release_version,
-    infer_bump_from_versions, run_release, run_stabilize_release,
+    infer_bump_from_versions, is_automatic_changelog_section, run_release, run_stabilize_release,
 };
 pub use types::{
     Bump, ChangelogCategory, ConstraintCheckResult, ConstraintViolation, DependencyUpdate,
