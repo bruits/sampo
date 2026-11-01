@@ -1,5 +1,39 @@
 # sampo-github-action
 
+## 0.22.0 — 2026-11-01
+
+### Minor changes
+
+- [1796eda](https://github.com/bruits/sampo/commit/1796eda29eb5727a847ee9c1ac3c2fee4df26cd1) Added the `bump_dependents` option to the `[packages]` section. With `"out-of-range"`, a release only bumps the dependents whose requirement no longer covers the new version, instead of every dependent.
+  
+  ```toml
+  [packages]
+  bump_dependents = "out-of-range"
+  ```
+   — Thanks @barucAlmaguer for your first contribution 🎉!
+- [eac7f64](https://github.com/bruits/sampo/commit/eac7f6421d2bbc3eb78a1bbfc8a12ff22c1c1e44) In JavaScript/TypeScript (npm) projects, added the `npm_stage` option to the `[packages]` section. `sampo publish` then stages the selected npm packages through npm staged publishing, and each version becomes installable once a maintainer approves it.
+  
+  ```toml
+  [packages]
+  npm_stage = true # or a list, such as ["npm/web"]
+  ```
+   — Thanks @goulvenclech!
+- [a815897](https://github.com/bruits/sampo/commit/a815897bbe57a6c49e5fdf7612fd724920d9aa3e) In JavaScript/TypeScript (npm) projects, added npm trusted publishing for Bun workspaces, which publish through npm 11.5.1 or later in CI when no token is set. — Thanks @goulvenclech!
+- [c9ab3fc](https://github.com/bruits/sampo/commit/c9ab3fc11df33a7f50d740f69ebf60ccc9279c35) Added the `tag_unpublished` option to the `[git]` section, which sets the unpublishable packages `sampo publish` tags: all by default, none with `false`, or those matching a list of patterns.
+  
+  ```toml
+  [git]
+  tag_unpublished = ["cargo/my-cli"]
+  ```
+   — Thanks @arthurfiorette!
+- [9c54487](https://github.com/bruits/sampo/commit/9c544870bb1aaf95aa106f9e125db4b6fb5b11d1) **Ruby packages are now supported!** Sampo now automatically detects Ruby gems (via their gemspec, including a version kept in `lib/<gem>/version.rb`, for publishing to RubyGems) and handles versioning, changelogs, and publishing—even in mixed workspaces. Gems whose version is computed (e.g. read from a `VERSION` file) are skipped with a warning. — Thanks @goulvenclech!
+
+### Patch changes
+
+- [8ccb8ac](https://github.com/bruits/sampo/commit/8ccb8ace7c9c594469d28ee3920485dc83c7916e) In Python (PyPI) projects, version bounds with a single segment, such as `<4` in `core>=2.8,<4`, are now checked like `<4.0`. A release outside such a bound warns, or blocks in a fixed or linked group, and a covered bound like `>=2` is left as written. — Thanks @goulvenclech!
+- [5f6513b](https://github.com/bruits/sampo/commit/5f6513b503ea3dfe8ab28f93d4f067fd9d7e7077) Fixed the GitHub Action never tagging nor releasing the packages published before a failed publish, even on a rerun. It now pushes their tags and creates their GitHub Releases, then fails. — Thanks @goulvenclech!
+- [5f6513b](https://github.com/bruits/sampo/commit/5f6513b503ea3dfe8ab28f93d4f067fd9d7e7077) Fixed `sampo publish` publishing a version again, and failing, when it goes to a private registry Sampo cannot query (a private PyPI index, Maven repository, Composer repository, or gem server). A tagged version there now counts as published, and a package that gets `--dry-run` through the forwarded arguments is no longer tagged. — Thanks @goulvenclech!
+
 ## 0.21.0 — 2026-10-24
 
 ### Minor changes
