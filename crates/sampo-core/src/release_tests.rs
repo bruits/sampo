@@ -5,7 +5,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         fs,
         path::PathBuf,
-        sync::{Mutex, MutexGuard, OnceLock, PoisonError},
+        sync::Once,
     };
 
     use crate::*;
@@ -17,45 +17,11 @@ mod tests {
         crates: FxHashMap<String, PathBuf>,
     }
 
-    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn env_lock() -> &'static Mutex<()> {
-        ENV_MUTEX.get_or_init(|| Mutex::new(()))
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        original: Option<String>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            // Recover from a poisoned mutex: the env state it protects is restored by
-            // Drop regardless, so one panicking test must not cascade into the rest.
-            let lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
-            let original = std::env::var(key).ok();
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self {
-                key,
-                original,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            unsafe {
-                if let Some(ref value) = self.original {
-                    std::env::set_var(self.key, value);
-                } else {
-                    std::env::remove_var(self.key);
-                }
-            }
-        }
+    /// Tests read `SAMPO_RELEASE_BRANCH` without a lock, so it is set to `main` once and never
+    /// changed. A test on another branch uses `override_current_branch_for_tests`.
+    fn pin_main_branch() {
+        static PINNED: Once = Once::new();
+        PINNED.call_once(|| unsafe { std::env::set_var("SAMPO_RELEASE_BRANCH", "main") });
     }
 
     impl TestWorkspace {
@@ -63,12 +29,7 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path().to_path_buf();
 
-            {
-                let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
-                unsafe {
-                    std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
-                }
-            }
+            pin_main_branch();
 
             // Create .sampo/ directory (required for discover_workspace)
             fs::create_dir_all(root.join(".sampo")).unwrap();
@@ -321,7 +282,7 @@ mod tests {
         workspace.add_crate("foo", "0.1.0");
         workspace.set_config("[git]\nrelease_branches = [\"main\"]\n");
 
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "feature");
+        let _branch = crate::git::override_current_branch_for_tests("feature");
         let err = workspace.run_release(true).unwrap_err();
         match err {
             crate::errors::SampoError::Release(message) => {
@@ -340,7 +301,7 @@ mod tests {
         workspace.add_crate("foo", "0.1.0");
         workspace.set_config("[git]\nrelease_branches = [\"3.x\"]\n");
 
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "3.x");
+        let _branch = crate::git::override_current_branch_for_tests("3.x");
         let output = workspace
             .run_release(true)
             .expect("release should succeed on configured branch");
@@ -764,7 +725,6 @@ mod tests {
     #[test]
     fn switching_prerelease_label_restores_changesets() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "1.0.0-alpha");
         workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
 
@@ -809,7 +769,6 @@ mod tests {
     #[test]
     fn stable_release_after_exit_keeps_prerelease_sections() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "1.0.0-alpha");
         workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
         workspace.run_release(false).unwrap();
@@ -844,7 +803,6 @@ mod tests {
     #[test]
     fn stable_release_after_exit_finds_the_prerelease_section_below_an_intro() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace
             .add_crate("foo", "1.1.0-alpha.1")
             .set_config("[changelog]\nshow_release_date = false\n")
@@ -895,7 +853,6 @@ Hand-written notes.
     #[test]
     fn stable_release_after_exit_keeps_dependents_on_their_base() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.1.0-alpha");
         workspace.add_crate("bar", "0.1.0-alpha");
         workspace.add_dependency("bar", "foo", "0.1.0-alpha");
@@ -916,7 +873,6 @@ Hand-written notes.
     #[test]
     fn stable_release_after_exit_bumps_a_version_already_tagged() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "1.0.0-alpha");
         workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
         workspace.run_release(false).unwrap();
@@ -953,7 +909,6 @@ Hand-written notes.
     #[test]
     fn stable_release_after_exit_applies_a_larger_bump() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "1.0.0-alpha");
         workspace.add_changeset(&["foo"], Bump::Minor, "feat: alpha foundation");
         workspace.run_release(false).unwrap();
@@ -968,7 +923,6 @@ Hand-written notes.
     #[test]
     fn stable_release_after_partial_exit_leaves_prerelease_packages() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.1.0-alpha");
         workspace.add_crate("bar", "0.1.0-alpha");
         workspace.add_changeset(&["foo", "bar"], Bump::Minor, "feat: shared alpha");
@@ -984,7 +938,6 @@ Hand-written notes.
     #[test]
     fn prerelease_run_after_partial_exit_releases_exited_dependents_once() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.1.0-alpha");
         workspace.add_crate("bar", "0.1.0-alpha");
         workspace.add_dependency("foo", "bar", "0.1.0-alpha");
@@ -1020,7 +973,6 @@ Hand-written notes.
     #[test]
     fn prerelease_run_after_partial_exit_releases_exited_group_members_once() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.1.0-alpha");
         workspace.add_crate("bar", "0.1.0-alpha");
         workspace.set_config("[packages]\nfixed = [[\"foo\", \"bar\"]]\n");
@@ -1043,7 +995,6 @@ Hand-written notes.
     #[test]
     fn stabilize_after_partial_exit_keeps_exited_packages_on_their_base() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.1.0-alpha");
         workspace.add_crate("bar", "0.1.0-alpha");
         workspace.add_changeset(&["foo", "bar"], Bump::Minor, "feat: shared alpha");
@@ -1229,7 +1180,6 @@ tempfile = "3.0"
 
     fn changelog_after_patch_release(changelog: &str) -> String {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace
             .add_crate("x", "1.0.1")
             .set_config("[changelog]\nshow_release_date = false\n")
@@ -1280,7 +1230,6 @@ tempfile = "3.0"
     #[test]
     fn prerelease_keeps_the_stable_release_it_was_entered_from() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace
             .add_crate("x", "1.2.3")
             .set_config("[changelog]\nshow_release_date = false\n")
@@ -1323,7 +1272,6 @@ tempfile = "3.0"
     #[test]
     fn switching_back_to_an_earlier_label_keeps_its_section() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace
             .add_crate("x", "1.0.0-beta")
             .set_config("[changelog]\nshow_release_date = false\n")
@@ -1972,7 +1920,6 @@ tempfile = "3.0"
         )
         .unwrap();
 
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         let result = workspace.run_release(false).unwrap();
 
         assert_eq!(result.released_packages.len(), 1);
@@ -2250,12 +2197,7 @@ tempfile = "3.0"
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path().to_path_buf();
 
-        {
-            let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
-            unsafe {
-                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
-            }
-        }
+        pin_main_branch();
 
         fs::create_dir_all(root.join(".sampo")).unwrap();
         fs::create_dir_all(root.join("crates/foo/src")).unwrap();
@@ -2320,7 +2262,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_patch_on_prerelease_patch_base() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.2.7-alpha.6");
         workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
 
@@ -2333,7 +2274,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_minor_on_prerelease_patch_base() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.2.7-alpha.6");
         workspace.add_changeset(&["foo"], Bump::Minor, "feat: new feature");
 
@@ -2346,7 +2286,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_patch_on_prerelease_minor_base() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.3.0-alpha");
         workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
 
@@ -2359,7 +2298,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_minor_on_prerelease_minor_base() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.3.0-alpha");
         workspace.add_changeset(&["foo"], Bump::Minor, "feat: feature");
 
@@ -2372,7 +2310,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_from_preserved_changeset() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.2.7-alpha.7");
         workspace.add_preserved_changeset(&["foo"], Bump::Patch, "fix: preserved patch fix");
 
@@ -2385,7 +2322,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_from_preserved_minor_changeset() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.3.0-alpha.1");
         workspace.add_preserved_changeset(&["foo"], Bump::Minor, "feat: preserved feature");
 
@@ -2398,7 +2334,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn stabilize_release_dry_run_patch_on_prerelease() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace.add_crate("foo", "0.2.7-alpha.6");
         workspace.add_changeset(&["foo"], Bump::Patch, "fix: patch fix");
 
@@ -2692,7 +2627,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
     #[test]
     fn out_of_range_bump_dependents_releases_dependents_leaving_a_prerelease() {
         let mut workspace = TestWorkspace::new();
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         workspace
             .add_crate("a", "1.0.0")
             .add_crate("b", "1.0.0")
@@ -2764,8 +2698,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
         workspace.assert_changelog_contains("c", "Bumped due to fixed dependency group policy");
     }
 
-    /// Pins `SAMPO_RELEASE_BRANCH=main` under a briefly-held lock; a long-lived
-    /// `EnvVarGuard` would serialise every parallel test against this one.
     fn setup_sampo_root(
         dir: &std::path::Path,
         config: &str,
@@ -2773,12 +2705,7 @@ bar = { version = "1.0.0", path = "crates/bar" }
         bump: Bump,
         message: &str,
     ) {
-        {
-            let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
-            unsafe {
-                std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
-            }
-        }
+        pin_main_branch();
         fs::create_dir_all(dir.join(".sampo")).unwrap();
         fs::write(dir.join(".sampo/config.toml"), config).unwrap();
         TestWorkspace::write_changeset_to_dir(
@@ -2857,7 +2784,7 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
     #[test]
     fn fixed_group_releases_scoped_npm_carriers_and_rewrites_the_shim_pins() {
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
+        pin_main_branch();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let carriers = ["@bruits/sampo-linux-x64", "@bruits/sampo-win32-x64"];
@@ -2947,6 +2874,7 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
     /// An npm workspace of `@acme/<name>` packages, all at 1.0.0, with the given Sampo config.
     fn write_scoped_npm_workspace(root: &std::path::Path, names: &[&str], config: &str) {
+        pin_main_branch();
         fs::write(
             root.join("package.json"),
             r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
@@ -2977,7 +2905,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
     #[test]
     fn release_reads_scoped_npm_names_in_changesets_without_the_ecosystem_prefix() {
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         write_scoped_npm_workspace(root, &["a", "b"], "");
@@ -2996,7 +2923,6 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
     #[test]
     fn fixed_group_reads_scoped_npm_names_without_the_ecosystem_prefix() {
-        let _guard = EnvVarGuard::set("SAMPO_RELEASE_BRANCH", "main");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         write_scoped_npm_workspace(
@@ -3343,13 +3269,6 @@ end
         );
     }
 
-    fn set_release_branch_main() {
-        let _lock = env_lock().lock().unwrap_or_else(PoisonError::into_inner);
-        unsafe {
-            std::env::set_var("SAMPO_RELEASE_BRANCH", "main");
-        }
-    }
-
     #[test]
     fn merge_overlapping_groups_unions_shared_members() {
         let merged = crate::release::merge_overlapping_groups(vec![
@@ -3386,7 +3305,7 @@ end
 
     #[test]
     fn maven_inherited_child_follows_parent_version() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3423,7 +3342,7 @@ end
 
     #[test]
     fn maven_inheritance_chain_converges() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3463,7 +3382,7 @@ end
 
     #[test]
     fn maven_inherited_child_of_external_parent_fails_before_writing() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3495,7 +3414,7 @@ end
 
     #[test]
     fn maven_stale_parent_version_fails_atomically() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3538,7 +3457,7 @@ end
 
     #[test]
     fn linked_group_raise_carries_the_structural_partner_along() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3590,7 +3509,7 @@ end
         // sibling, so the sibling's major reaches the parent through it. Whether it
         // does must not depend on how the artifactIds sort — hence both orderings.
         for (dependency, inheritor) in [("aaa", "zzz"), ("zdep", "achild")] {
-            set_release_branch_main();
+            pin_main_branch();
             let temp_dir = tempfile::tempdir().unwrap();
             let root = temp_dir.path();
             fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3644,7 +3563,7 @@ end
 
     #[test]
     fn maven_snapshot_target_is_refused_on_the_release_path() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3678,7 +3597,7 @@ end
 
     #[test]
     fn unparseable_version_fails_without_consuming_the_changeset() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3752,7 +3671,7 @@ end
 
     #[test]
     fn cascade_pulled_package_explains_why_it_blocks_the_release() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3797,7 +3716,7 @@ end
 
     #[test]
     fn unparseable_version_fails_for_any_ecosystem() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3840,7 +3759,7 @@ end
 
     #[test]
     fn versionless_package_fails_the_release_before_any_write() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -3916,7 +3835,7 @@ end
 
     #[test]
     fn private_versionless_npm_dependent_is_left_out_of_the_release() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         write_npm_lib_and_private_app(root, "---\nnpm/lib: patch\n---\n\nfix: a change\n");
@@ -3942,7 +3861,7 @@ end
 
     #[test]
     fn changeset_naming_a_private_versionless_npm_package_fails_before_any_write() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         write_npm_lib_and_private_app(
@@ -3968,7 +3887,7 @@ end
 
     #[test]
     fn coupled_pair_advances_together_across_successive_prereleases() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4008,7 +3927,6 @@ end
         // `m` is only reached through its fixed group, and `z`'s major arrives after the
         // group was already settled at patch. Without re-propagation the two split, and
         // a fixed group silently released at inconsistent versions.
-        set_release_branch_main();
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("dep", "1.0.0");
         workspace.add_crate("m", "1.0.0");
@@ -4031,7 +3949,6 @@ end
     fn fixed_group_follows_a_linked_raise() {
         // The linked raise on `x` lands after the cascade settled `d`/`e` at patch, so the
         // fixed group has to be re-settled or it releases below its dependency.
-        set_release_branch_main();
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("x", "1.0.0");
         workspace.add_crate("y", "1.0.0");
@@ -4055,7 +3972,6 @@ end
 
     #[test]
     fn declared_fixed_group_does_not_inherit_a_prerelease_counter() {
-        set_release_branch_main();
         let mut workspace = TestWorkspace::new();
         workspace.add_crate("a", "1.0.0");
         workspace.add_crate("b", "1.0.0");
@@ -4079,7 +3995,7 @@ end
 
     #[test]
     fn structurally_coupled_bump_does_not_cite_fixed_group_policy() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4120,7 +4036,7 @@ end
 
     #[test]
     fn structurally_coupled_inheritor_gets_the_same_wording_as_its_parent() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4164,7 +4080,7 @@ end
 
     #[test]
     fn a_dependency_declared_twice_is_listed_once() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4207,7 +4123,7 @@ end
 
     #[test]
     fn declared_and_structural_groups_keep_their_own_wording() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4259,7 +4175,7 @@ end
 
     #[test]
     fn ignored_inheriting_module_keeps_its_parent_reference_current() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4322,7 +4238,7 @@ end
     fn excluded_members_pins_on_each_other_settle_before_writing() {
         // `alpha` sorts before `beta`, so a single-phase walk would write alpha's pin
         // on beta before beta's effective version is known — and never come back.
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4371,7 +4287,7 @@ end
         // The canonical enterprise layout: the parent pins `core` through a property in
         // its <dependencyManagement>, the modules declare versionless dependencies.
         // Sampo cannot move the property; the release must still go through.
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4433,7 +4349,7 @@ end
 
     #[test]
     fn ignored_inheritance_chain_is_maintained_to_the_leaf() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4478,7 +4394,7 @@ end
 
     #[test]
     fn unpublished_inheriting_module_keeps_its_parent_reference_current() {
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
@@ -4523,7 +4439,7 @@ end
         // `app` pins `core` through a custom property inside a parent-inherited group.
         // Sampo cannot move the property, and hard-erroring here would block the
         // standard enterprise reactor layout; the release must go through.
-        set_release_branch_main();
+        pin_main_branch();
         let temp_dir = tempfile::tempdir().unwrap();
         let root = temp_dir.path();
         fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
