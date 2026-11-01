@@ -112,9 +112,7 @@ As long as the release is not finalized, you can continue to add changesets and 
 
 #### 3. Publish packages
 
-Finally, run `sampo publish` to publish updated packages to their respective registries and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
-
-Versions already on their registry are skipped. For a private registry Sampo cannot query (a private PyPI index, Maven repository, Composer repository, or gem server), the release tag marks the version as published, so a clone without tags, such as a shallow CI checkout, tries to publish it again.
+Finally, run `sampo publish` to publish updated packages to their respective registries and tag the current versions. Versions already published are skipped, and on a private registry Sampo cannot query, the release tag counts as published, so CI checkouts need the tags. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
 
 > [!IMPORTANT]
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
