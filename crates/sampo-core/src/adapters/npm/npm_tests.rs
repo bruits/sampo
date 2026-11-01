@@ -1301,21 +1301,6 @@ fn publish_command_args_omit_registry_on_berry_which_rejects_the_flag() {
 }
 
 #[test]
-fn wants_dry_run_covers_the_ecosystem_passthrough() {
-    let negated = ["--dry-run=false".to_string()];
-    assert!(super::wants_dry_run(true, &[]));
-    assert!(super::wants_dry_run(false, &["--dry-run".to_string()]));
-    assert!(super::wants_dry_run(false, &["--dry-run=true".to_string()]));
-    assert!(!super::wants_dry_run(false, &[]));
-    assert!(!super::wants_dry_run(false, &["--access".to_string()]));
-    assert!(!super::wants_dry_run(false, &["--dry-runner".to_string()]));
-
-    assert!(!super::wants_dry_run(false, &negated));
-    assert!(!super::wants_dry_run(false, &["--dry-run=0".to_string()]));
-    assert!(super::wants_dry_run(true, &negated));
-}
-
-#[test]
 fn publish_command_args_do_not_repeat_a_passthrough_dry_run() {
     let info = manifest_info("pkg");
     let passthrough = ["--dry-run".to_string()];

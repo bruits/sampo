@@ -112,16 +112,16 @@ As long as the release is not finalized, you can continue to add changesets and 
 
 #### 3. Publish packages
 
-Finally, run `sampo publish` to publish updated packages to their respective registries and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
+Finally, run `sampo publish` to publish updated packages to their respective registries, skipping versions already published, and tag the current versions. This step can also be automated in CI/CD pipelines using [Sampo GitHub Action](../sampo-github-action).
 
 > [!IMPORTANT]
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 > [!WARNING]
-> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, `gem`/`bundle`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`. `sampo release` needs them too whenever a lockfile is committed, since it refreshes the lockfile after bumping versions, and stops if it cannot.
+> Sampo calls the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, `gem`/`bundle`, …) to publish, and to refresh committed lockfiles on release, so it must be on your `PATH`. In CI, also fetch the git tags, which tell Sampo what already reached a private registry.
 
 > [!TIP]
-> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, `--maven-args`, or `--rubygems-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, `--maven-args`, or `--rubygems-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems. A package that gets `--dry-run` this way is neither published nor tagged.
 
 #### Pre-release versions
 

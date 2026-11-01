@@ -100,6 +100,10 @@ impl PackagistAdapter {
         Ok(true)
     }
 
+    pub(super) fn queries_registry(&self, manifest_path: &Path) -> bool {
+        !has_private_composer_repository(manifest_path)
+    }
+
     pub(super) fn version_exists(
         &self,
         package_name: &str,
@@ -115,9 +119,9 @@ impl PackagistAdapter {
 
         // A package on a private/alternative registry isn't on public Packagist,
         // so the public version check would be meaningless (or a false positive
-        // against a same-named public package). Defer to the git-tag push.
+        // against a same-named public package).
         if let Some(path) = manifest_path
-            && has_private_composer_repository(path)
+            && !self.queries_registry(path)
         {
             return Ok(false);
         }

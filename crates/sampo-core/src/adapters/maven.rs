@@ -45,6 +45,10 @@ impl MavenAdapter {
         pom::is_publishable(manifest_path)
     }
 
+    pub(super) fn queries_registry(&self, manifest_path: &Path) -> bool {
+        !pom::has_private_deploy_repository(manifest_path)
+    }
+
     pub(super) fn version_exists(
         &self,
         package_name: &str,
@@ -60,10 +64,9 @@ impl MavenAdapter {
 
         // A package deployed to a private repository isn't on Central; querying there
         // risks a false positive from a same-named public artifact, which would silently
-        // skip the deploy. Let `mvn deploy` answer instead — it fails loudly when the
-        // repository refuses a redeploy.
+        // skip the deploy.
         if let Some(path) = manifest_path
-            && pom::has_private_deploy_repository(path)
+            && !self.queries_registry(path)
         {
             return Ok(false);
         }

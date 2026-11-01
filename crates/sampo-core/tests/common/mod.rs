@@ -1,11 +1,12 @@
-//! Fixtures shared by the bun lockfile integration tests.
+//! Fixtures shared by the integration tests that stub package-manager tools.
 //!
 //! Compiled into each of those test binaries, hence the blanket allow.
 #![allow(dead_code)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Compared verbatim, so a prerelease bump cannot pass for untouched.
 pub const PKG_A_MANIFEST: &str = r#"{"name":"pkg-a","version":"1.0.0"}"#;
@@ -97,4 +98,46 @@ pub fn assert_workspace_untouched(root: &Path) {
         !root.join("packages/pkg-a/CHANGELOG.md").exists(),
         "no changelog must be written"
     );
+}
+
+pub fn git(root: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+/// Commit `root` on `main` with `config` as `.sampo/config.toml`, making the real `git`
+/// available in `root/fake-bin`, the tool directory given to [`use_only`].
+pub fn commit_repo(root: &Path, config: &str) {
+    std::os::unix::fs::symlink(which_git(), root.join("fake-bin/git")).unwrap();
+    unsafe {
+        for (key, value) in [
+            ("GIT_AUTHOR_NAME", "t"),
+            ("GIT_AUTHOR_EMAIL", "t@t"),
+            ("GIT_COMMITTER_NAME", "t"),
+            ("GIT_COMMITTER_EMAIL", "t@t"),
+            // Keep the developer's git config (e.g. signing) out of the commit and the tag.
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ] {
+            std::env::set_var(key, value);
+        }
+    }
+
+    fs::create_dir_all(root.join(".sampo")).unwrap();
+    fs::write(root.join(".sampo/config.toml"), config).unwrap();
+    fs::write(root.join(".gitignore"), "fake-bin/\nargv.log\n").unwrap();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+}
+
+fn which_git() -> PathBuf {
+    std::env::split_paths(original_path())
+        .map(|dir| dir.join("git"))
+        .find(|candidate| candidate.is_file())
+        .expect("git on PATH")
 }

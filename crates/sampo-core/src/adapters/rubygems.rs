@@ -43,6 +43,10 @@ impl RubyGemsAdapter {
         gemspec::is_publishable(manifest_path)
     }
 
+    pub(super) fn queries_registry(&self, manifest_path: &Path) -> bool {
+        gemspec::private_push_host(manifest_path).is_none()
+    }
+
     pub(super) fn version_exists(
         &self,
         package_name: &str,
@@ -58,9 +62,9 @@ impl RubyGemsAdapter {
 
         // `allowed_push_host` sends `gem push` to a private gem server, where rubygems.org
         // knows nothing of the gem; querying there risks a false positive from a same-named
-        // public gem. Let the server refuse a repush instead.
+        // public gem.
         let published = match manifest_path {
-            Some(path) if gemspec::private_push_host(path).is_some() => return Ok(false),
+            Some(path) if !self.queries_registry(path) => return Ok(false),
             Some(path) => gemspec::published_version(path, version),
             None => gemspec::semver_to_gem(version),
         };

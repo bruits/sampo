@@ -1,4 +1,4 @@
-use crate::adapters::{PackageAdapter, PublishOutcome};
+use crate::adapters::{PackageAdapter, PublishOutcome, wants_dry_run};
 use crate::tag_template::Placeholder;
 use crate::types::{PackageInfo, PackageKind, PublishOutput};
 use crate::{
@@ -208,9 +208,9 @@ pub fn run_publish(
                     package.kind.display_name()
                 );
             }
-            // npm hides a staged version until it is approved, but tagged it when staging.
+            // The registry cannot show these versions, so the tag stands in.
             Ok(false)
-                if stages(package)
+                if (stages(package) || !adapter.queries_registry(&manifest))
                     && package_tag_exists(
                         &ws.root,
                         &config,
@@ -219,10 +219,12 @@ pub fn run_publish(
                         &package.version,
                     )? =>
             {
-                println!(
-                    "  - {} (staged on npm, awaiting approval)",
-                    package.display_name(true)
-                );
+                let note = if stages(package) {
+                    "staged on npm, awaiting approval"
+                } else {
+                    "tagged, private registry not checked"
+                };
+                println!("  - {} ({note})", package.display_name(true));
             }
             Ok(false) => {
                 publish_targets.push((package, adapter, manifest));
@@ -289,19 +291,36 @@ pub fn run_publish(
     let mut tags_to_create: Vec<String> = Vec::new();
     let mut any_published = false;
     let mut not_simulated: Vec<String> = Vec::new();
+    let mut forwarded_dry_runs: Vec<String> = Vec::new();
     let mut staged: Vec<String> = Vec::new();
 
     for (package, adapter, manifest) in &publish_targets {
         let args = extra_args.args_for_kind(package.kind);
-        let outcome = if stages(package) {
-            adapter.stage(manifest.as_path(), dry_run, &args)?
+        let result = if stages(package) {
+            adapter.stage(manifest.as_path(), dry_run, &args)
         } else {
-            adapter.publish(manifest.as_path(), dry_run, &args)?
+            adapter.publish(manifest.as_path(), dry_run, &args)
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            // A rerun sees the earlier packages as published and never tags them again.
+            Err(source) if !dry_run && !tags_to_create.is_empty() => {
+                return Err(SampoError::PartialPublish {
+                    tags: tags_to_create,
+                    source: Box::new(source),
+                });
+            }
+            Err(e) => return Err(e),
         };
         match outcome {
             PublishOutcome::DryRunSkipped => not_simulated.push(package.display_name(true)),
             PublishOutcome::Staged => staged.push(package.display_name(true)),
             PublishOutcome::Ran => {}
+        }
+        // A `--dry-run` among the forwarded arguments published nothing, so it gets no tag.
+        if !dry_run && wants_dry_run(false, &args) {
+            forwarded_dry_runs.push(package.display_name(true));
+            continue;
         }
         any_published = true;
 
@@ -395,10 +414,10 @@ pub fn run_publish(
         }
     } else {
         println!("Publish complete.");
-        if !not_simulated.is_empty() {
+        if !forwarded_dry_runs.is_empty() {
             eprintln!(
-                "Warning: {} did not reach the registry: the publish was skipped as a dry run, but the release was still tagged.",
-                not_simulated.join(", ")
+                "Warning: {} got `--dry-run` from the forwarded arguments, so it was neither published nor tagged.",
+                forwarded_dry_runs.join(", ")
             );
         }
         if !staged.is_empty() {
@@ -948,14 +967,18 @@ fn main() {
         return;
     }
 
-    let is_dry_run = args.iter().any(|arg| arg == "--dry-run");
+    // Like cargo, refuse a repeated `--dry-run`.
+    let dry_runs = args.iter().filter(|arg| *arg == "--dry-run").count();
+    let is_dry_run = dry_runs > 0;
+    let fail_for = env::var("SAMPO_FAKE_CARGO_FAIL_ACTUAL_FOR").unwrap_or_default();
     let should_fail = if is_dry_run {
         matches!(env::var("SAMPO_FAKE_CARGO_FAIL_DRY_RUN"), Ok(val) if val == "1")
     } else {
         matches!(env::var("SAMPO_FAKE_CARGO_FAIL_ACTUAL"), Ok(val) if val == "1")
+            || (!fail_for.is_empty() && args.iter().any(|arg| arg.contains(&fail_for)))
     };
 
-    if should_fail {
+    if dry_runs > 1 || should_fail {
         process::exit(1);
     }
 }
@@ -1042,6 +1065,20 @@ fn main() {
             version: &str,
             already_published: bool,
         ) -> Self {
+            Self::install_inner(fail_dry_run, fail_actual, "", version, already_published)
+        }
+
+        fn install_failing_publish_of(crate_name: &str) -> Self {
+            Self::install_inner(false, false, crate_name, "1.91.0", false)
+        }
+
+        fn install_inner(
+            fail_dry_run: bool,
+            fail_actual: bool,
+            fail_actual_for: &str,
+            version: &str,
+            already_published: bool,
+        ) -> Self {
             let temp_dir = tempfile::tempdir().unwrap();
             let bin_dir = temp_dir.path().join("bin");
             fs::create_dir_all(&bin_dir).unwrap();
@@ -1098,6 +1135,10 @@ fn main() {
                 (
                     "SAMPO_FAKE_CARGO_FAIL_ACTUAL",
                     OsString::from(if fail_actual { "1" } else { "0" }),
+                ),
+                (
+                    "SAMPO_FAKE_CARGO_FAIL_ACTUAL_FOR",
+                    OsString::from(fail_actual_for),
                 ),
                 ("SAMPO_FAKE_CARGO_VERSION", OsString::from(version)),
             ];
@@ -2259,6 +2300,79 @@ edition = "2021"
 
         assert_eq!(output.tags, vec!["lib-core-v1.0.0".to_string()]);
         assert_eq!(list_tags(&workspace.root), vec!["lib-core-v1.0.0"]);
+    }
+
+    #[test]
+    fn a_tagged_version_its_registry_lacks_is_published() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg", "1.0.0");
+        init_git_repo_for_test(&workspace.root);
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&workspace.root)
+            .args(["tag", "pkg-v1.0.0"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        workspace.run_publish(false).unwrap();
+
+        let log = fs::read_to_string(fake_cargo.log_path()).unwrap();
+        assert!(
+            log.lines()
+                .any(|line| line.starts_with("publish ") && !line.contains("--dry-run")),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn a_forwarded_dry_run_is_not_repeated_in_a_dry_run() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg", "1.0.0");
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let extra = super::PublishExtraArgs {
+            cargo: vec!["--dry-run".into()],
+            ..Default::default()
+        };
+        workspace.run_publish_with_args(true, &extra).unwrap();
+    }
+
+    #[test]
+    fn a_forwarded_dry_run_creates_no_tag() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg", "1.0.0");
+        init_git_repo_for_test(&workspace.root);
+        let _fake_cargo = FakeCargo::install(false, false, "1.91.0");
+
+        let extra = super::PublishExtraArgs {
+            cargo: vec!["--dry-run".into()],
+            ..Default::default()
+        };
+        let output = workspace.run_publish_with_args(false, &extra).unwrap();
+
+        assert!(output.tags.is_empty(), "{:?}", output.tags);
+        assert!(list_tags(&workspace.root).is_empty());
+    }
+
+    #[test]
+    fn a_failed_publish_returns_the_tags_of_earlier_packages() {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("pkg-first", "1.0.0")
+            .add_crate("pkg-second", "1.0.0")
+            .add_dependency("pkg-second", "pkg-first", "1.0.0");
+        init_git_repo_for_test(&workspace.root);
+        let _fake_cargo = FakeCargo::install_failing_publish_of("pkg-second");
+
+        let err = workspace.run_publish(false).unwrap_err();
+        let SampoError::PartialPublish { tags, source } = err else {
+            panic!("expected a partial publish, got {err:?}");
+        };
+        assert_eq!(tags, vec!["pkg-first-v1.0.0"]);
+        assert!(matches!(*source, SampoError::Publish(_)), "{source:?}");
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-first-v1.0.0"]);
     }
 
     #[test]

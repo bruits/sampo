@@ -1,4 +1,6 @@
-use crate::adapters::{PublishOutcome, format_command_display, has_flag, require_on_path};
+use crate::adapters::{
+    PublishOutcome, format_command_display, has_flag, require_on_path, wants_dry_run,
+};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::process::command;
 use crate::types::{PackageInfo, PackageKind};
@@ -649,20 +651,6 @@ pub(super) fn publish_dry_run(
     }
 
     Ok(skipped)
-}
-
-/// A passthrough `--dry-run=false` must never talk a requested dry run into a real publish.
-fn wants_dry_run(dry_run: bool, extra_args: &[String]) -> bool {
-    dry_run
-        || extra_args
-            .iter()
-            .any(|arg| match arg.strip_prefix("--dry-run") {
-                Some("") => true,
-                Some(rest) => {
-                    matches!(rest.strip_prefix('='), Some(value) if !matches!(value, "false" | "0"))
-                }
-                None => false,
-            })
 }
 
 fn run_publish_step(
