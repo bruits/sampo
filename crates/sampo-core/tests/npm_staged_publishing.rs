@@ -11,7 +11,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn write_stub(dir: &Path, program: &str, version: &str, argv_log: &Path) {
     let stub = dir.join(program);
@@ -211,40 +210,6 @@ fn serve_missing_versions() -> String {
     format!("http://{address}/")
 }
 
-fn git(root: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?}");
-}
-
-fn commit_repo(fixture: &Fixture, config: &str) {
-    let root = fixture.temp.path();
-    std::os::unix::fs::symlink(which_git(), fixture.bin.join("git")).unwrap();
-    unsafe {
-        for (key, value) in [
-            ("GIT_AUTHOR_NAME", "t"),
-            ("GIT_AUTHOR_EMAIL", "t@t"),
-            ("GIT_COMMITTER_NAME", "t"),
-            ("GIT_COMMITTER_EMAIL", "t@t"),
-            // Keep the developer's git config (e.g. signing) out of the commit and the tag.
-            ("GIT_CONFIG_GLOBAL", "/dev/null"),
-            ("GIT_CONFIG_NOSYSTEM", "1"),
-        ] {
-            std::env::set_var(key, value);
-        }
-    }
-
-    fs::create_dir_all(root.join(".sampo")).unwrap();
-    fs::write(root.join(".sampo/config.toml"), config).unwrap();
-    fs::write(root.join(".gitignore"), "fake-bin/\nargv.log\n").unwrap();
-    git(root, &["init", "-q", "-b", "main"]);
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-qm", "init"]);
-}
-
 #[test]
 fn a_staged_and_tagged_version_is_not_staged_again() {
     let fixture = Fixture::new("npm@11.15.0").stub("npm", "11.15.0");
@@ -257,7 +222,7 @@ fn a_staged_and_tagged_version_is_not_staged_again() {
         ),
     )
     .unwrap();
-    commit_repo(&fixture, "[packages]\nnpm_stage = true\n");
+    common::commit_repo(fixture.temp.path(), "[packages]\nnpm_stage = true\n");
 
     let first = sampo_core::run_publish(root, false, &PublishExtraArgs::default()).unwrap();
     assert_eq!(first.tags, ["pkg-v1.0.0"]);
@@ -296,7 +261,7 @@ fn a_list_stages_only_the_packages_it_names() {
         )
         .unwrap();
     }
-    commit_repo(&fixture, "[packages]\nnpm_stage = [\"npm/a\"]\n");
+    common::commit_repo(fixture.temp.path(), "[packages]\nnpm_stage = [\"npm/a\"]\n");
 
     let output = sampo_core::run_publish(root, false, &PublishExtraArgs::default()).unwrap();
 
@@ -314,11 +279,4 @@ fn a_list_stages_only_the_packages_it_names() {
         0,
         "{argv:?}"
     );
-}
-
-fn which_git() -> PathBuf {
-    std::env::split_paths(common::original_path())
-        .map(|dir| dir.join("git"))
-        .find(|candidate| candidate.is_file())
-        .expect("git on PATH")
 }

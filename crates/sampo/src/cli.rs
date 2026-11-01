@@ -53,7 +53,7 @@ pub struct AddArgs {
 
 #[derive(Debug, Args, Default)]
 #[command(after_long_help = "\
-Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n  - Also tags packages that are not publishable, unless git.tag_unpublished leaves them out.\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, --packagist-args, --maven-args, or --rubygems-args to forward\narguments to a specific ecosystem only.")]
+Examples:\n  sampo publish --dry-run -- --access restricted\n  sampo publish --cargo-args --allow-dirty -- --tag beta\n\nBehavior:\n  - Skips packages whose current version already exists on their registry, or is tagged when Sampo cannot query that registry.\n  - Creates git tags after publishing (<name>-v<version>, or v<version> with git.short_tags).\n  - Also tags packages that are not publishable, unless git.tag_unpublished leaves them out.\n\nAll arguments after `--` are forwarded to ALL underlying publish commands (separator required).\nUse --cargo-args, --npm-args, --hex-args, --pypi-args, --packagist-args, --maven-args, or --rubygems-args to forward\narguments to a specific ecosystem only.")]
 pub struct PublishArgs {
     /// Dry-run: simulate publish without pushing artifacts
     #[arg(long)]

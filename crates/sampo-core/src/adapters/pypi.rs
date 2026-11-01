@@ -61,6 +61,10 @@ impl PyPIAdapter {
         pip::is_publishable(manifest_path)
     }
 
+    pub(super) fn queries_registry(&self, manifest_path: &Path) -> bool {
+        !pip::has_private_publish_index(manifest_path)
+    }
+
     pub(super) fn version_exists(
         &self,
         package_name: &str,
@@ -75,10 +79,9 @@ impl PyPIAdapter {
         }
 
         // A package routed to a private uv index isn't on public PyPI; querying
-        // there risks a false positive from a same-named public package. Let
-        // `uv publish --index` own the idempotent re-run.
+        // there risks a false positive from a same-named public package.
         if let Some(path) = manifest_path
-            && pip::has_private_publish_index(path)
+            && !self.queries_registry(path)
         {
             return Ok(false);
         }

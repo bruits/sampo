@@ -1,5 +1,5 @@
 /// Cargo ecosystem adapter for all Cargo operations.
-use crate::adapters::format_command_display;
+use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
 use crate::types::{PackageInfo, PackageKind, Workspace};
 use cargo_metadata::MetadataCommand;
@@ -95,7 +95,8 @@ impl CargoAdapter {
         let mut cmd = Command::new("cargo");
         cmd.arg("publish").arg("--manifest-path").arg(manifest_path);
 
-        if dry_run {
+        // Cargo rejects a repeated `--dry-run`.
+        if dry_run && !has_flag(extra_args, "--dry-run") {
             cmd.arg("--dry-run");
         }
 
@@ -199,11 +200,11 @@ pub fn workspace_publish_dry_run(
 
     let manifest_path = workspace_root.join("Cargo.toml");
     let mut cmd = Command::new("cargo");
-    cmd.arg("publish")
-        .arg("--workspace")
-        .arg("--dry-run")
-        .arg("--manifest-path")
-        .arg(&manifest_path);
+    cmd.arg("publish").arg("--workspace");
+    if !has_flag(extra_args, "--dry-run") {
+        cmd.arg("--dry-run");
+    }
+    cmd.arg("--manifest-path").arg(&manifest_path);
 
     for pkg in packages {
         cmd.arg("--package").arg(pkg);

@@ -292,6 +292,26 @@ fn setup_publish_workspace(ws: &TestWorkspace) {
         .build(ws);
 }
 
+fn add_bare_origin(ws: &TestWorkspace) -> TempDir {
+    let remote_dir = TempDir::new().expect("Failed to create remote dir");
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote_dir.path())
+        .status()
+        .expect("failed to init bare remote repo");
+    Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            remote_dir.path().to_str().unwrap(),
+        ])
+        .current_dir(ws.path())
+        .status()
+        .expect("failed to add remote origin");
+    remote_dir
+}
+
 fn write_git_config(ws: &TestWorkspace, contents: &str) {
     let path = ws.file_path(".sampo/config.toml");
     if let Some(parent) = path.parent() {
@@ -438,25 +458,7 @@ fn test_publish_private_packages_creates_tags_and_reports_published() {
     let ws = TestWorkspace::new();
     setup_publish_workspace(&ws);
 
-    // Create a bare git repository to act as the "origin" remote
-    let remote_dir = TempDir::new().expect("Failed to create remote dir");
-    Command::new("git")
-        .args(["init", "--bare"])
-        .current_dir(remote_dir.path())
-        .status()
-        .expect("failed to init bare remote repo");
-
-    // Add the bare repo as a remote origin
-    Command::new("git")
-        .args([
-            "remote",
-            "add",
-            "origin",
-            remote_dir.path().to_str().unwrap(),
-        ])
-        .current_dir(ws.path())
-        .status()
-        .expect("failed to add remote origin");
+    let _remote_dir = add_bare_origin(&ws);
 
     let output_file = ws.file_path("github_output");
     let mut env_vars = FxHashMap::default();
@@ -558,22 +560,7 @@ fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
         assert!(status.success(), "git {args:?} failed");
     }
 
-    let remote_dir = TempDir::new().expect("Failed to create remote dir");
-    Command::new("git")
-        .args(["init", "--bare"])
-        .current_dir(remote_dir.path())
-        .status()
-        .expect("failed to init bare remote repo");
-    Command::new("git")
-        .args([
-            "remote",
-            "add",
-            "origin",
-            remote_dir.path().to_str().unwrap(),
-        ])
-        .current_dir(ws.path())
-        .status()
-        .expect("failed to add remote origin");
+    let remote_dir = add_bare_origin(&ws);
 
     // An npm whose real publish of `pkg-b` fails.
     let bin = TempDir::new().expect("Failed to create bin dir");
@@ -621,6 +608,7 @@ fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
         stderr.contains("Failed to execute sampo publish"),
         "{stderr}"
     );
+    assert!(!parse_outputs(&ws.file_path("github_output")).contains_key("published"));
 
     let remote_tags = Command::new("git")
         .args(["tag", "--list"])
@@ -640,23 +628,7 @@ fn test_publish_dry_run_does_not_push_tags() {
     let ws = TestWorkspace::new();
     setup_publish_workspace(&ws);
 
-    let remote_dir = TempDir::new().expect("Failed to create remote dir");
-    Command::new("git")
-        .args(["init", "--bare"])
-        .current_dir(remote_dir.path())
-        .status()
-        .expect("failed to init bare remote repo");
-
-    Command::new("git")
-        .args([
-            "remote",
-            "add",
-            "origin",
-            remote_dir.path().to_str().unwrap(),
-        ])
-        .current_dir(ws.path())
-        .status()
-        .expect("failed to add remote origin");
+    let remote_dir = add_bare_origin(&ws);
 
     let output_file = ws.file_path("github_output");
     let mut env_vars = FxHashMap::default();
@@ -735,23 +707,7 @@ fn test_publish_dry_run_shows_would_push_message() {
         "No tags should exist before dry-run"
     );
 
-    let remote_dir = TempDir::new().expect("Failed to create remote dir");
-    Command::new("git")
-        .args(["init", "--bare"])
-        .current_dir(remote_dir.path())
-        .status()
-        .expect("failed to init bare remote repo");
-
-    Command::new("git")
-        .args([
-            "remote",
-            "add",
-            "origin",
-            remote_dir.path().to_str().unwrap(),
-        ])
-        .current_dir(ws.path())
-        .status()
-        .expect("failed to add remote origin");
+    let remote_dir = add_bare_origin(&ws);
 
     let output_file = ws.file_path("github_output");
     let mut env_vars = FxHashMap::default();

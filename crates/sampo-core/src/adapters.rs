@@ -127,6 +127,18 @@ impl PackageAdapter {
         }
     }
 
+    /// Whether `version_exists` can query the registry this manifest publishes to. When it
+    /// cannot, it answers `false`, and `sampo publish` relies on the release tag instead.
+    pub fn queries_registry(&self, manifest_path: &Path) -> bool {
+        match self {
+            Self::Cargo | Self::Npm | Self::Hex => true,
+            Self::PyPI => pypi::PyPIAdapter.queries_registry(manifest_path),
+            Self::Packagist => packagist::PackagistAdapter.queries_registry(manifest_path),
+            Self::Maven => maven::MavenAdapter.queries_registry(manifest_path),
+            Self::RubyGems => rubygems::RubyGemsAdapter.queries_registry(manifest_path),
+        }
+    }
+
     /// Check if a specific version already exists on the registry.
     pub fn version_exists(
         &self,
@@ -491,6 +503,21 @@ pub(crate) fn has_flag(args: &[String], flag: &str) -> bool {
         .any(|arg| arg == flag || value_prefix.as_deref().is_some_and(|p| arg.starts_with(p)))
 }
 
+/// Whether a publish is a dry run, by Sampo's flag or a forwarded `--dry-run`. A forwarded
+/// `--dry-run=false` never talks a requested dry run into a real publish.
+pub(crate) fn wants_dry_run(dry_run: bool, extra_args: &[String]) -> bool {
+    dry_run
+        || extra_args
+            .iter()
+            .any(|arg| match arg.strip_prefix("--dry-run") {
+                Some("") => true,
+                Some(rest) => {
+                    matches!(rest.strip_prefix('='), Some(value) if !matches!(value, "false" | "0"))
+                }
+                None => false,
+            })
+}
+
 /// Formats a command as a `program arg1 arg2` string for logging.
 pub(crate) fn format_command_display(cmd: &Command) -> String {
     let mut text = cmd.get_program().to_string_lossy().into_owned();
@@ -503,7 +530,7 @@ pub(crate) fn format_command_display(cmd: &Command) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_command_display, has_flag};
+    use super::{format_command_display, has_flag, wants_dry_run};
     use std::process::Command;
 
     #[test]
@@ -524,5 +551,20 @@ mod tests {
         let mut cmd = Command::new("cargo");
         cmd.arg("publish").arg("--dry-run");
         assert_eq!(format_command_display(&cmd), "cargo publish --dry-run");
+    }
+
+    #[test]
+    fn wants_dry_run_covers_the_ecosystem_passthrough() {
+        let negated = ["--dry-run=false".to_string()];
+        assert!(wants_dry_run(true, &[]));
+        assert!(wants_dry_run(false, &["--dry-run".to_string()]));
+        assert!(wants_dry_run(false, &["--dry-run=true".to_string()]));
+        assert!(!wants_dry_run(false, &[]));
+        assert!(!wants_dry_run(false, &["--access".to_string()]));
+        assert!(!wants_dry_run(false, &["--dry-runner".to_string()]));
+
+        assert!(!wants_dry_run(false, &negated));
+        assert!(!wants_dry_run(false, &["--dry-run=0".to_string()]));
+        assert!(wants_dry_run(true, &negated));
     }
 }

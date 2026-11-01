@@ -11,7 +11,7 @@ pub enum ActionError {
     #[error("Failed to execute sampo {operation}: {message}")]
     SampoCommandFailed { operation: String, message: String },
     /// `sampo publish` failed after creating the tags of the packages it published first.
-    #[error("Failed to execute sampo publish: {source}")]
+    #[error("Failed to execute sampo publish: sampo publish failed: {source}")]
     PartialPublish {
         tags: Vec<String>,
         source: sampo_core::errors::SampoError,
