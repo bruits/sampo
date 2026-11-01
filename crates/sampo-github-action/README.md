@@ -56,7 +56,7 @@ jobs:
 > npm packages can publish without `NPM_TOKEN` through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). Grant `id-token: write`, add a trusted publisher on npmjs.com for each package, with this workflow's filename and `npm publish` allowed, and use npm 11.5.1 or later (Node 24 ships one). In Bun workspaces, Sampo packs with Bun and publishes with npm. With [`packages.npm_stage`](https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#packages-section), allow `npm stage publish` instead, and approve each version on npmjs.com.
 
 > [!NOTE]
-> RubyGems packages can publish without `GEM_HOST_API_KEY` through [RubyGems trusted publishing](https://guides.rubygems.org/trusted-publishing/). Grant `id-token: write`, add a trusted publisher on rubygems.org for each gem (this workflow's filename), and run the `rubygems/configure-rubygems-credentials` action before this step, without setting `GEM_HOST_API_KEY` (even empty, it takes precedence). Avoid `rubygems/release-gem`, whose `rake release` pushes its own git tags.
+> Gems can publish without `GEM_HOST_API_KEY` through [RubyGems trusted publishing](https://guides.rubygems.org/trusted-publishing/). Grant `id-token: write`, add a trusted publisher on rubygems.org for each gem, run `rubygems/configure-rubygems-credentials` before this step, and remove `GEM_HOST_API_KEY` from it, as even an empty value takes precedence. Skip the guide's `rubygems/release-gem` action, which pushes its own git tags.
 
 ### Creating GitHub Releases and Discussions
 

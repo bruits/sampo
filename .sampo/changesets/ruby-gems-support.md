@@ -4,4 +4,4 @@ cargo/sampo: minor
 cargo/sampo-github-action: minor
 ---
 
-Added Ruby gem support. `sampo release` versions gems found by their gemspec (from a literal `spec.version` or the version constant it references) and updates sibling requirements and `Gemfile.lock`, and `sampo publish` pushes them to RubyGems (`--rubygems-args` in the CLI, `rubygems-args` in the GitHub Action).
+**Ruby packages are now supported!** Sampo now automatically detects Ruby gems (via their gemspec, including a version kept in `lib/<gem>/version.rb`, for publishing to RubyGems) and handles versioning, changelogs, and publishing—even in mixed workspaces. Gems whose version is computed (e.g. read from a `VERSION` file) are skipped with a warning.
