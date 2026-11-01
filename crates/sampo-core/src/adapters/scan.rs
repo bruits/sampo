@@ -154,6 +154,8 @@ pub(crate) struct DirFacts {
     pub(crate) app_src: Option<PathBuf>,
     /// `pyproject.toml` is a real file and not gitignored.
     pub(crate) pyproject: bool,
+    /// Non-gitignored `*.gemspec` files (sorted).
+    pub(crate) gemspecs: Vec<PathBuf>,
 }
 
 impl DirFacts {
@@ -168,6 +170,7 @@ impl DirFacts {
             gleam_manifest: gleam_is_file && !chain.is_ignored(dir, &gleam_toml),
             app_src: find_app_src_matching(dir, |path| !chain.is_ignored(dir, path)),
             pyproject: pyproject.is_file() && !chain.is_ignored(dir, &pyproject),
+            gemspecs: find_gemspecs_matching(dir, |path| !chain.is_ignored(dir, path)),
             dir: dir.to_path_buf(),
         }
     }
@@ -246,6 +249,23 @@ pub(crate) fn find_app_src_matching(
         .collect();
     candidates.sort();
     candidates.into_iter().next()
+}
+
+/// The `*.gemspec` files directly in `package_dir` satisfying `keep`, sorted.
+pub(crate) fn find_gemspecs_matching(
+    package_dir: &Path,
+    keep: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(package_dir) else {
+        return Vec::new();
+    };
+    let mut gemspecs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "gemspec") && p.is_file() && keep(p))
+        .collect();
+    gemspecs.sort();
+    gemspecs
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ pub fn run(args: &PublishArgs) -> Result<bool> {
         pypi: args.pypi_args.clone().unwrap_or_default(),
         packagist: args.packagist_args.clone().unwrap_or_default(),
         maven: args.maven_args.clone().unwrap_or_default(),
+        rubygems: args.rubygems_args.clone().unwrap_or_default(),
     };
 
     let output = run_publish(&cwd, args.dry_run, &extra_args)?;

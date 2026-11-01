@@ -5,6 +5,7 @@ pub mod maven;
 pub mod npm;
 pub mod packagist;
 pub mod pypi;
+pub mod rubygems;
 pub(crate) mod scan;
 
 use crate::errors::{Result, WorkspaceError};
@@ -31,6 +32,7 @@ pub enum PackageAdapter {
     PyPI,
     Packagist,
     Maven,
+    RubyGems,
 }
 
 impl PackageAdapter {
@@ -44,6 +46,7 @@ impl PackageAdapter {
             PackageAdapter::PyPI,
             PackageAdapter::Packagist,
             PackageAdapter::Maven,
+            PackageAdapter::RubyGems,
         ]
     }
 
@@ -56,6 +59,7 @@ impl PackageAdapter {
             Self::PyPI => pypi::PyPIAdapter.can_discover(root),
             Self::Packagist => packagist::PackagistAdapter.can_discover(root),
             Self::Maven => maven::MavenAdapter.can_discover(root),
+            Self::RubyGems => self.can_discover_scanned(&scan::LazyScan::new(root)),
         }
     }
 
@@ -64,6 +68,7 @@ impl PackageAdapter {
         match self {
             Self::Hex => hex::HexAdapter.can_discover_scanned(scan),
             Self::PyPI => pypi::PyPIAdapter.can_discover_scanned(scan),
+            Self::RubyGems => rubygems::RubyGemsAdapter.can_discover_scanned(scan),
             Self::Cargo | Self::Npm | Self::Packagist | Self::Maven => {
                 self.can_discover(scan.root())
             }
@@ -79,6 +84,7 @@ impl PackageAdapter {
             Self::PyPI => pypi::PyPIAdapter.discover(root),
             Self::Packagist => packagist::PackagistAdapter.discover(root),
             Self::Maven => maven::MavenAdapter.discover(root),
+            Self::RubyGems => self.discover_scanned(&scan::LazyScan::new(root)),
         }
     }
 
@@ -90,6 +96,7 @@ impl PackageAdapter {
         match self {
             Self::Hex => hex::HexAdapter.discover_scanned(scan),
             Self::PyPI => pypi::PyPIAdapter.discover_scanned(scan),
+            Self::RubyGems => rubygems::RubyGemsAdapter.discover_scanned(scan),
             Self::Cargo | Self::Npm | Self::Packagist | Self::Maven => self.discover(scan.root()),
         }
     }
@@ -103,6 +110,7 @@ impl PackageAdapter {
             Self::PyPI => pypi::PyPIAdapter.manifest_path(package_dir),
             Self::Packagist => packagist::PackagistAdapter.manifest_path(package_dir),
             Self::Maven => maven::MavenAdapter.manifest_path(package_dir),
+            Self::RubyGems => rubygems::RubyGemsAdapter.manifest_path(package_dir),
         }
     }
 
@@ -115,6 +123,7 @@ impl PackageAdapter {
             Self::PyPI => pypi::PyPIAdapter.is_publishable(manifest_path),
             Self::Packagist => packagist::PackagistAdapter.is_publishable(manifest_path),
             Self::Maven => maven::MavenAdapter.is_publishable(manifest_path),
+            Self::RubyGems => rubygems::RubyGemsAdapter.is_publishable(manifest_path),
         }
     }
 
@@ -134,6 +143,9 @@ impl PackageAdapter {
                 packagist::PackagistAdapter.version_exists(package_name, version, manifest_path)
             }
             Self::Maven => maven::MavenAdapter.version_exists(package_name, version, manifest_path),
+            Self::RubyGems => {
+                rubygems::RubyGemsAdapter.version_exists(package_name, version, manifest_path)
+            }
         }
     }
 
@@ -161,6 +173,9 @@ impl PackageAdapter {
             Self::Maven => maven::MavenAdapter
                 .publish(manifest_path, dry_run, extra_args)
                 .map(|()| PublishOutcome::Ran),
+            Self::RubyGems => rubygems::RubyGemsAdapter
+                .publish(manifest_path, dry_run, extra_args)
+                .map(|()| PublishOutcome::Ran),
         }
     }
 
@@ -181,6 +196,7 @@ impl PackageAdapter {
             Self::PyPI => pypi::publish_dry_run(packages, extra_args),
             Self::Packagist => packagist::publish_dry_run(packages, extra_args),
             Self::Maven => maven::publish_dry_run(packages, extra_args),
+            Self::RubyGems => rubygems::publish_dry_run(packages, extra_args),
         }
     }
 
@@ -228,6 +244,7 @@ impl PackageAdapter {
             Self::Packagist => require_on_path("composer"),
             // Maven has no lockfile.
             Self::Maven => Ok(()),
+            Self::RubyGems => require_on_path("bundle"),
         }
     }
 
@@ -240,6 +257,7 @@ impl PackageAdapter {
             Self::PyPI => pypi::PyPIAdapter.regenerate_lockfile(workspace_root),
             Self::Packagist => packagist::PackagistAdapter.regenerate_lockfile(workspace_root),
             Self::Maven => maven::MavenAdapter.regenerate_lockfile(workspace_root),
+            Self::RubyGems => rubygems::RubyGemsAdapter.regenerate_lockfile(workspace_root),
         }
     }
 
@@ -288,6 +306,12 @@ impl PackageAdapter {
                 new_pkg_version,
                 new_version_by_name,
             ),
+            Self::RubyGems => rubygems::update_manifest_versions(
+                manifest_path,
+                input,
+                new_pkg_version,
+                new_version_by_name,
+            ),
         }
     }
 
@@ -297,10 +321,12 @@ impl PackageAdapter {
     /// Cargo detects which members inherit their version, validates they resolve to the
     /// same version, and updates the workspace root manifest accordingly. Maven keeps the
     /// `<parent><version>` of members left out of the plan current, so a release never
-    /// leaves a reactor Maven cannot resolve.
+    /// leaves a reactor Maven cannot resolve. RubyGems writes the version constants gemspecs
+    /// reference, by identifier, so a same-named package of another ecosystem is left alone.
     pub fn finalize_workspace_roots(
         workspace: &Workspace,
         new_version_by_name: &BTreeMap<String, String>,
+        new_version_by_id: &BTreeMap<String, String>,
     ) -> Result<()> {
         let has_cargo = workspace
             .members
@@ -322,6 +348,15 @@ impl PackageAdapter {
 
         if has_maven {
             maven::finalize_inherited_references(&workspace.members, new_version_by_name)?;
+        }
+
+        let has_rubygems = workspace
+            .members
+            .iter()
+            .any(|pkg| pkg.kind == PackageKind::RubyGems);
+
+        if has_rubygems {
+            rubygems::finalize_version_files(&workspace.members, new_version_by_id)?;
         }
 
         Ok(())
@@ -379,6 +414,7 @@ impl PackageAdapter {
             PackageKind::PyPI => Self::PyPI,
             PackageKind::Packagist => Self::Packagist,
             PackageKind::Maven => Self::Maven,
+            PackageKind::RubyGems => Self::RubyGems,
         }
     }
 
@@ -419,6 +455,12 @@ impl PackageAdapter {
                 new_version,
             ),
             Self::Maven => maven::check_dependency_constraint(
+                manifest_path,
+                dep_name,
+                current_constraint,
+                new_version,
+            ),
+            Self::RubyGems => rubygems::check_dependency_constraint(
                 manifest_path,
                 dep_name,
                 current_constraint,

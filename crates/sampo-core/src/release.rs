@@ -1696,6 +1696,14 @@ fn ecosystems_with_lockfiles(
             PackageKind::Packagist => workspace.root.join("composer.lock").exists(),
             // Maven has no lockfile; dependency versions live in the POMs themselves.
             PackageKind::Maven => false,
+            // Like PyPI: a monorepo may share a root Gemfile.lock, or each gem keep its own.
+            PackageKind::RubyGems => {
+                workspace.root.join("Gemfile.lock").exists()
+                    || workspace.members.iter().any(|member| {
+                        member.kind == PackageKind::RubyGems
+                            && member.path.join("Gemfile.lock").exists()
+                    })
+            }
         })
         .collect()
 }
@@ -2385,7 +2393,11 @@ fn apply_releases(
         )?;
     }
 
-    PackageAdapter::finalize_workspace_roots(ws, &new_version_by_name)?;
+    let new_version_by_id: BTreeMap<String, String> = releases_map
+        .iter()
+        .map(|(identifier, (_, new))| (identifier.clone(), new.clone()))
+        .collect();
+    PackageAdapter::finalize_workspace_roots(ws, &new_version_by_name, &new_version_by_id)?;
 
     Ok(())
 }

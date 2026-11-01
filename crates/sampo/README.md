@@ -1,6 +1,6 @@
 # Sampo
 
-Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
+Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com)), Ruby ([RubyGems](https://rubygems.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
 **In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
 
@@ -118,10 +118,10 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Always run `sampo release` before `sampo publish` to ensure versions are properly updated.
 
 > [!WARNING]
-> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`. `sampo release` needs them too whenever a lockfile is committed, since it refreshes the lockfile after bumping versions, and stops if it cannot.
+> Publishing adapters call the native tooling (`cargo`, `npm`, `mix`, `gleam`, `rebar3`, `pip`/`twine`, `composer`, `mvn`, `gem`/`bundle`, …) directly. In local or CI environments, make sure those tools are installed and accessible via your `PATH`. `sampo release` needs them too whenever a lockfile is committed, since it refreshes the lockfile after bumping versions, and stops if it cannot.
 
 > [!TIP]
-> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, or `--maven-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
+> Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, `--maven-args`, or `--rubygems-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems.
 
 #### Pre-release versions
 
@@ -134,6 +134,9 @@ While in pre-release mode, you can continue to add changesets and run `sampo rel
 
 > [!NOTE]
 > In JavaScript/TypeScript (npm) projects, `sampo publish` publishes a pre-release under a dist-tag named after its first pre-release identifier (`alpha` for `1.2.0-alpha.1`). A `publishConfig.tag` in `package.json` or a `--tag` passed through `--npm-args` takes precedence.
+
+> [!NOTE]
+> In Ruby (RubyGems) projects, Sampo writes pre-releases in RubyGems' dotted form (`1.2.0.rc.1` for `1.2.0-rc.1`), unless the version is already written with a hyphen.
 
 ## Configuration
 
@@ -180,7 +183,7 @@ npm_stage = false
 
 `tag_format`: Template used for git tags created by `sampo publish` (default: `"{package_name}-v{version}"`). Supported placeholders:
 
-- `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, `packagist`, or `maven`.
+- `{ecosystem}` — `cargo`, `npm`, `hex`, `pypi`, `packagist`, `maven`, or `rubygems`.
 - `{package_name}` — the package's local name.
 - `{version}` — the released version (required).
 

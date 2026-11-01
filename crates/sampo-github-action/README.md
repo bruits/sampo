@@ -25,7 +25,7 @@ permissions:
   contents: write      # Create tags and releases
   pull-requests: write # Create and update release PRs
   discussions: write   # Open GitHub Discussions (optional)
-  id-token: write      # Publish to npm through trusted publishing (optional)
+  id-token: write      # Publish to npm or RubyGems through trusted publishing (optional)
 
 jobs:
   release:
@@ -45,6 +45,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}         # For npm packages (optional, not needed with trusted publishing)
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}     # For Hex packages (optional)
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }} # For PyPI packages via uv (optional)
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }} # For RubyGems packages (optional, remove with trusted publishing)
           # Maven packages read credentials from ~/.m2/settings.xml (see actions/setup-java)
 ```
 
@@ -53,6 +54,9 @@ jobs:
 
 > [!NOTE]
 > npm packages can publish without `NPM_TOKEN` through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). Grant `id-token: write`, add a trusted publisher on npmjs.com for each package, with this workflow's filename and `npm publish` allowed, and use npm 11.5.1 or later (Node 24 ships one). In Bun workspaces, Sampo packs with Bun and publishes with npm. With [`packages.npm_stage`](https://github.com/bruits/sampo/blob/main/crates/sampo/README.md#packages-section), allow `npm stage publish` instead, and approve each version on npmjs.com.
+
+> [!NOTE]
+> Gems can publish without `GEM_HOST_API_KEY` through [RubyGems trusted publishing](https://guides.rubygems.org/trusted-publishing/). Grant `id-token: write`, add a trusted publisher on rubygems.org for each gem, run `rubygems/configure-rubygems-credentials` before this step, and remove `GEM_HOST_API_KEY` from it, as even an empty value takes precedence. Skip the guide's `rubygems/release-gem` action, which pushes its own git tags.
 
 ### Creating GitHub Releases and Discussions
 
@@ -123,6 +127,7 @@ The action supports the following inputs:
 - `pypi-args`: extra arguments forwarded only to PyPI/twine upload.
 - `packagist-args`: extra arguments forwarded only to Packagist/Composer.
 - `maven-args`: extra arguments forwarded only to `mvn deploy`.
+- `rubygems-args`: extra arguments forwarded only to `gem push`.
 - `base-branch`: base branch used by the release PR that `auto` prepares (defaults to the detected git branch).
 - `pr-branch`: working branch used for the release PR that `auto` prepares (defaults to `release/<current-branch>` with `/` replaced by `-`).
 - `pr-title`: title of the release PR that `auto` prepares (defaults to `Release (<current-branch>)`).

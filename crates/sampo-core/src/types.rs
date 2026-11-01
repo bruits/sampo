@@ -11,6 +11,7 @@ pub enum PackageKind {
     PyPI,
     Packagist,
     Maven,
+    RubyGems,
 }
 
 impl PackageKind {
@@ -23,6 +24,7 @@ impl PackageKind {
             Self::PyPI => "pypi",
             Self::Packagist => "packagist",
             Self::Maven => "maven",
+            Self::RubyGems => "rubygems",
         }
     }
 
@@ -35,6 +37,7 @@ impl PackageKind {
             Self::PyPI => "PyPI",
             Self::Packagist => "Packagist",
             Self::Maven => "Maven",
+            Self::RubyGems => "RubyGems",
         }
     }
 
@@ -56,6 +59,7 @@ impl PackageKind {
             "pypi" => Some(Self::PyPI),
             "packagist" => Some(Self::Packagist),
             "maven" => Some(Self::Maven),
+            "rubygems" => Some(Self::RubyGems),
             _ => None,
         }
     }
