@@ -1,5 +1,9 @@
 # sampo-github-bot
 
+## 0.4.15 — 2026-11-01
+
+Version bump only, to follow other packages.
+
 ## 0.4.14 — 2026-10-26
 
 ### Patch changes
