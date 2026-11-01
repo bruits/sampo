@@ -1,4 +1,5 @@
 use crate::error::{ActionError, Result};
+use sampo_core::errors::SampoError;
 use sampo_core::format_markdown_list_item;
 use sampo_core::types::{
     ChangelogCategory, PackageSpecifier, SpecResolution, format_ambiguity_options,
@@ -75,9 +76,15 @@ pub fn run_publish(
         set_cargo_env_var(token);
     }
 
-    core_publish(workspace, dry_run, extra_args).map_err(|e| ActionError::SampoCommandFailed {
-        operation: "publish".to_string(),
-        message: format!("sampo publish failed: {}", e),
+    core_publish(workspace, dry_run, extra_args).map_err(|e| match e {
+        SampoError::PartialPublish { tags, source } => ActionError::PartialPublish {
+            tags,
+            source: *source,
+        },
+        e => ActionError::SampoCommandFailed {
+            operation: "publish".to_string(),
+            message: format!("sampo publish failed: {}", e),
+        },
     })
 }
 

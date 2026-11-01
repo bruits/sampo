@@ -793,12 +793,47 @@ fn post_merge_publish(
     git::setup_bot_user(workspace)?;
 
     // Publish and get information about tags created/would-be-created
-    let publish_output = sampo::run_publish(workspace, dry_run, extra_args, cargo_token)?;
-    let new_tags = publish_output.tags;
+    let new_tags = match sampo::run_publish(workspace, dry_run, extra_args, cargo_token) {
+        Ok(output) => output.tags,
+        // A rerun sees the packages published before the failure as already published and
+        // never tags them again, so push their tags now.
+        Err(ActionError::PartialPublish { tags, source }) => {
+            if let Err(e) = push_tags_and_create_releases(
+                workspace,
+                dry_run,
+                &tags,
+                github_options,
+                github_client,
+            ) {
+                eprintln!(
+                    "Warning: failed to push the tags of the packages published before the failure: {}",
+                    e
+                );
+            }
+            return Err(ActionError::PartialPublish { tags, source });
+        }
+        Err(e) => return Err(e),
+    };
+    push_tags_and_create_releases(workspace, dry_run, &new_tags, github_options, github_client)?;
 
+    let published = !dry_run && !new_tags.is_empty();
+    if !published && !dry_run {
+        println!("No new tags were created during publish.");
+    }
+
+    Ok(published)
+}
+
+fn push_tags_and_create_releases(
+    workspace: &Path,
+    dry_run: bool,
+    new_tags: &[String],
+    github_options: &GitHubReleaseOptions,
+    github_client: Option<&github::GitHubClient>,
+) -> Result<()> {
     if !dry_run && !new_tags.is_empty() {
         println!("Pushing {} new tags", new_tags.len());
-        for tag in &new_tags {
+        for tag in new_tags {
             git::git(&["push", "origin", tag], Some(workspace))?;
         }
     } else if dry_run && !new_tags.is_empty() {
@@ -806,7 +841,7 @@ fn post_merge_publish(
             "Would push {} new tags (skipped in dry-run mode)",
             new_tags.len()
         );
-        for tag in &new_tags {
+        for tag in new_tags {
             println!("  - {}", tag);
         }
     }
@@ -816,7 +851,7 @@ fn post_merge_publish(
         && !new_tags.is_empty()
         && let Some(client) = github_client
     {
-        for tag in &new_tags {
+        for tag in new_tags {
             println!("Creating GitHub release for {}", tag);
             create_github_release_for_tag(client, tag, workspace, github_options)?;
         }
@@ -825,17 +860,12 @@ fn post_merge_publish(
             "Would create {} GitHub releases (skipped in dry-run mode)",
             new_tags.len()
         );
-        for tag in &new_tags {
+        for tag in new_tags {
             println!("  - {}", tag);
         }
     }
 
-    let published = !dry_run && !new_tags.is_empty();
-    if !published && !dry_run {
-        println!("No new tags were created during publish.");
-    }
-
-    Ok(published)
+    Ok(())
 }
 
 fn create_github_release_for_tag(

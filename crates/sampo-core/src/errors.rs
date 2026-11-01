@@ -28,6 +28,14 @@ pub enum SampoError {
     #[error("Publish error: {0}")]
     Publish(String),
 
+    /// A publish failed after earlier packages were published and tagged locally.
+    #[error("{source}")]
+    PartialPublish {
+        /// The tags created before the failure, which still need pushing.
+        tags: Vec<String>,
+        source: Box<SampoError>,
+    },
+
     #[error("Release error: {0}")]
     Release(String),
 

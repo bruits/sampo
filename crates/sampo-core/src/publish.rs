@@ -293,10 +293,21 @@ pub fn run_publish(
 
     for (package, adapter, manifest) in &publish_targets {
         let args = extra_args.args_for_kind(package.kind);
-        let outcome = if stages(package) {
-            adapter.stage(manifest.as_path(), dry_run, &args)?
+        let result = if stages(package) {
+            adapter.stage(manifest.as_path(), dry_run, &args)
         } else {
-            adapter.publish(manifest.as_path(), dry_run, &args)?
+            adapter.publish(manifest.as_path(), dry_run, &args)
+        };
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            // A rerun sees the earlier packages as published and never tags them again.
+            Err(source) if !tags_to_create.is_empty() => {
+                return Err(SampoError::PartialPublish {
+                    tags: tags_to_create,
+                    source: Box::new(source),
+                });
+            }
+            Err(e) => return Err(e),
         };
         match outcome {
             PublishOutcome::DryRunSkipped => not_simulated.push(package.display_name(true)),
@@ -2259,6 +2270,44 @@ edition = "2021"
 
         assert_eq!(output.tags, vec!["lib-core-v1.0.0".to_string()]);
         assert_eq!(list_tags(&workspace.root), vec!["lib-core-v1.0.0"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_publish_returns_the_tags_of_earlier_packages() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("pkg-first", "1.0.0")
+            .add_crate("pkg-second", "1.0.0")
+            .add_dependency("pkg-second", "pkg-first", "1.0.0");
+        init_git_repo_for_test(&workspace.root);
+
+        let fake_cargo = FakeCargo::install(false, false, "1.91.0");
+        // Replace the stub with a shim that fails only the real publish of `pkg-second`.
+        let shim = fake_cargo._temp.path().join("bin").join("cargo");
+        fs::write(
+            &shim,
+            "#!/bin/sh\n\
+             echo \"$@\" >> \"$SAMPO_FAKE_CARGO_LOG\"\n\
+             case \"$*\" in\n\
+               --version) echo 'cargo 1.91.0 (fake)'; exit 0;;\n\
+               *--dry-run*) exit 0;;\n\
+               *pkg-second*) exit 1;;\n\
+             esac\n\
+             exit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = workspace.run_publish(false).unwrap_err();
+        let SampoError::PartialPublish { tags, source } = err else {
+            panic!("expected a partial publish, got {err:?}");
+        };
+        assert_eq!(tags, vec!["pkg-first-v1.0.0"]);
+        assert!(matches!(*source, SampoError::Publish(_)), "{source:?}");
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-first-v1.0.0"]);
     }
 
     #[test]

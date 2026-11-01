@@ -511,6 +511,128 @@ fn test_publish_private_packages_creates_tags_and_reports_published() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
+
+    // A registry where no version exists yet.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind registry");
+    let registry = format!("http://{}/", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let _ = stream.read(&mut [0; 4096]);
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+
+    let ws = TestWorkspace::new();
+    fs::create_dir_all(ws.file_path(".sampo")).unwrap();
+    ws.write_file(
+        "package.json",
+        r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+    );
+    ws.write_file(
+        "packages/pkg-a/package.json",
+        &format!(
+            r#"{{"name":"pkg-a","version":"1.0.0","publishConfig":{{"registry":"{registry}"}}}}"#
+        ),
+    );
+    ws.write_file(
+        "packages/pkg-b/package.json",
+        &format!(
+            r#"{{"name":"pkg-b","version":"1.0.0","dependencies":{{"pkg-a":"1.0.0"}},"publishConfig":{{"registry":"{registry}"}}}}"#
+        ),
+    );
+    init_git_repo(ws.path());
+    for args in [&["add", "."][..], &["commit", "-m", "Initial commit"]] {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(ws.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    let remote_dir = TempDir::new().expect("Failed to create remote dir");
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote_dir.path())
+        .status()
+        .expect("failed to init bare remote repo");
+    Command::new("git")
+        .args([
+            "remote",
+            "add",
+            "origin",
+            remote_dir.path().to_str().unwrap(),
+        ])
+        .current_dir(ws.path())
+        .status()
+        .expect("failed to add remote origin");
+
+    // An npm whose real publish of `pkg-b` fails.
+    let bin = TempDir::new().expect("Failed to create bin dir");
+    let npm = bin.path().join("npm");
+    fs::write(
+        &npm,
+        "#!/bin/sh\n\
+         case \"$*\" in\n\
+           --version) echo 11.15.0; exit 0;;\n\
+           *--dry-run*) exit 0;;\n\
+         esac\n\
+         case \"$(pwd)\" in\n\
+           */pkg-b) exit 1;;\n\
+         esac\n\
+         exit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        ws.file_path("github_output").to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "false".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+    env_vars.insert(
+        "PATH".to_string(),
+        format!(
+            "{}:{}",
+            bin.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    let output = run_action(&[], &env_vars, ws.path());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "publish of pkg-b must fail");
+    assert!(
+        stderr.contains("Failed to execute sampo publish"),
+        "{stderr}"
+    );
+
+    let remote_tags = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(remote_dir.path())
+        .output()
+        .expect("failed to list remote tags");
+    assert_eq!(
+        String::from_utf8_lossy(&remote_tags.stdout).trim(),
+        "pkg-a-v1.0.0"
+    );
+}
+
 /// Regression test: dry-run mode should NOT push tags or create GitHub releases.
 /// This prevents accidental side effects when validating publish commands.
 #[test]
