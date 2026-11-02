@@ -1,5 +1,11 @@
 # sampo-github-action
 
+## 0.22.1 — 2026-11-02
+
+### Patch changes
+
+- [3c9f00b](https://github.com/bruits/sampo/commit/3c9f00b9c089e5e52c8b8afcbb9a0b1a8da472ab) Fixed a GitHub Action release that failed after publishing, leaving tags and GitHub Releases missing, which rerunning could not repair. The action now pushes and releases everything it can before failing, also when an asset upload fails, and a rerun adds whatever is still missing. — Thanks @goulvenclech!
+
 ## 0.22.0 — 2026-11-01
 
 ### Minor changes
