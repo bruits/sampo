@@ -662,8 +662,8 @@ fn test_a_rejected_tag_push_still_pushes_the_other_tags() {
     );
 }
 
-/// A GitHub API stand-in whose releases already exist, one asset uploaded and one left empty by a
-/// failed upload. Records each request as `METHOD path`.
+/// A GitHub API stand-in whose releases already exist with `a.txt` uploaded, and whose uploads
+/// answer `upload_status`. Records each request as `METHOD path`.
 fn serve_github_with_existing_release(
     upload_status: &'static str,
 ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
@@ -708,10 +708,9 @@ fn serve_github_with_existing_release(
                 r if r.starts_with("GET /repos/owner/repo/releases/tags/") => (
                     "200 OK",
                     format!(
-                        r#"{{"upload_url":"{upload_url}","html_url":"https://example.com","assets":[{{"id":1,"name":"a.txt","state":"uploaded"}},{{"id":2,"name":"b.txt","state":"starter"}}]}}"#
+                        r#"{{"upload_url":"{upload_url}","html_url":"https://example.com","assets":[{{"id":1,"name":"a.txt","state":"uploaded"}}]}}"#
                     ),
                 ),
-                "DELETE /repos/owner/repo/releases/assets/2" => ("204 No Content", String::new()),
                 r if r.starts_with("POST /upload") => (upload_status, "{}".to_string()),
                 _ => ("404 Not Found", String::new()),
             };
@@ -787,24 +786,12 @@ fn test_rerun_completes_the_release_of_a_tag_at_head() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        requests.contains(&"DELETE /repos/owner/repo/releases/assets/2".to_string())
-            && requests.contains(&"POST /upload?name=b.txt".to_string())
+        requests.contains(&"POST /upload?name=b.txt".to_string())
             && !requests.contains(&"POST /upload?name=a.txt".to_string()),
         "{requests:?}"
     );
     let outputs = parse_outputs(&ws.file_path("github_output"));
     assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
-}
-
-#[test]
-fn test_an_asset_github_already_holds_counts_as_uploaded() {
-    let (_ws, output, _) = rerun_with_a_tag_at_head("422 Unprocessable Entity");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]

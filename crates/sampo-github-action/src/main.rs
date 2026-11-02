@@ -948,36 +948,26 @@ fn create_github_release_for_tag(
             );
         }
         for asset in assets {
-            let existing = release.assets.iter().find(|a| a.name == asset.asset_name);
-            match existing {
-                Some(existing) if existing.state == "uploaded" => {
-                    println!("Release asset '{}' is already uploaded", asset.asset_name);
-                    continue;
-                }
-                // A failed upload can leave an empty asset that holds the name.
-                Some(existing) => {
-                    if let Err(e) = github_client.delete_release_asset(existing.id) {
-                        failed_assets.push(format!("'{}' ({})", asset.asset_name, e));
-                        continue;
-                    }
-                }
-                None => {}
+            if release
+                .assets
+                .iter()
+                .any(|a| a.name == asset.asset_name && a.state == "uploaded")
+            {
+                println!("Release asset '{}' is already uploaded", asset.asset_name);
+                continue;
             }
             match github_client.upload_release_asset(
                 &release.upload_url,
                 &asset.path,
                 &asset.asset_name,
             ) {
-                Ok(true) => {
+                Ok(()) => {
                     *published = true;
                     println!(
                         "Uploaded release asset '{}' from {}",
                         asset.asset_name,
                         asset.path.display()
                     );
-                }
-                Ok(false) => {
-                    println!("Release asset '{}' is already uploaded", asset.asset_name);
                 }
                 Err(e) => failed_assets.push(format!("'{}' ({})", asset.asset_name, e)),
             }

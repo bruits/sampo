@@ -52,7 +52,6 @@ pub struct Release {
 
 #[derive(Debug, Deserialize)]
 pub struct ReleaseAsset {
-    pub id: u64,
     pub name: String,
     pub state: String,
 }
@@ -610,44 +609,13 @@ impl GitHubClient {
         Ok(())
     }
 
-    pub fn delete_release_asset(&self, asset_id: u64) -> Result<()> {
-        let api_url = format!(
-            "{}/repos/{}/releases/assets/{}",
-            self.api_url, self.repo, asset_id
-        );
-
-        let response = self
-            .client
-            .delete(&api_url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .map_err(|e| ActionError::SampoCommandFailed {
-                operation: "release-asset-delete".to_string(),
-                message: format!("HTTP request failed: {}", e),
-            })?;
-
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            let status = response.status();
-            let error_text = response.text().unwrap_or_default();
-            Err(ActionError::SampoCommandFailed {
-                operation: "release-asset-delete".to_string(),
-                message: format!("Failed to delete asset ({}): {}", status, error_text),
-            })
-        }
-    }
-
-    /// Upload an existing file as a release asset, returning false when the release already has
-    /// an asset of that name.
+    /// Upload an existing file as a release asset
     pub fn upload_release_asset(
         &self,
         upload_url: &str,
         asset_path: &Path,
         asset_name: &str,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if !asset_path.is_file() {
             return Err(ActionError::SampoCommandFailed {
                 operation: "release-asset-upload".to_string(),
@@ -681,11 +649,7 @@ impl GitHubClient {
             })?;
 
         if response.status().is_success() {
-            Ok(true)
-        } else if response.status() == 422 {
-            // GitHub's only 422 here is for a name already taken, possibly by the asset under
-            // the name GitHub renamed it to.
-            Ok(false)
+            Ok(())
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
