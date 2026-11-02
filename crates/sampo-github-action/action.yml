@@ -83,7 +83,7 @@ outputs:
     description: "Whether the release step ran successfully"
     value: ${{ steps.run.outputs.released }}
   published:
-    description: "Whether the publish step ran successfully"
+    description: "Whether the run pushed version tags or completed GitHub Releases, even when it failed afterwards"
     value: ${{ steps.run.outputs.published }}
 
 runs:

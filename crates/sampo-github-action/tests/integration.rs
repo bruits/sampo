@@ -237,34 +237,9 @@ path = "src/lib.rs"
 }
 
 fn init_git_repo(path: &Path) {
-    let status = Command::new("git")
-        .arg("init")
-        .current_dir(path)
-        .status()
-        .expect("failed to run git init");
-    assert!(status.success(), "git init failed: {:?}", status);
-
-    let email_status = Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(path)
-        .status()
-        .expect("failed to configure git user email");
-    assert!(
-        email_status.success(),
-        "git config user.email failed: {:?}",
-        email_status
-    );
-
-    let name_status = Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(path)
-        .status()
-        .expect("failed to configure git user name");
-    assert!(
-        name_status.success(),
-        "git config user.name failed: {:?}",
-        name_status
-    );
+    git(path, &["init"]);
+    git(path, &["config", "user.email", "test@example.com"]);
+    git(path, &["config", "user.name", "Test User"]);
 }
 
 fn parse_outputs(path: &Path) -> FxHashMap<String, String> {
@@ -514,13 +489,19 @@ fn test_publish_private_packages_creates_tags_and_reports_published() {
 }
 
 #[cfg(unix)]
-#[test]
-fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
+struct NpmRelease {
+    ws: TestWorkspace,
+    remote: TempDir,
+    _bin: TempDir,
+    env_vars: FxHashMap<String, String>,
+}
+
+#[cfg(unix)]
+fn npm_release(failing: Option<&str>) -> NpmRelease {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
 
-    // A registry where no version exists yet.
     let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind registry");
     let registry = format!("http://{}/", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -551,31 +532,26 @@ fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
         ),
     );
     init_git_repo(ws.path());
-    for args in [&["add", "."][..], &["commit", "-m", "Initial commit"]] {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(ws.path())
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?} failed");
-    }
+    git(ws.path(), &["add", "."]);
+    git(ws.path(), &["commit", "-m", "Initial commit"]);
 
-    let remote_dir = add_bare_origin(&ws);
+    let remote = add_bare_origin(&ws);
 
-    // An npm whose real publish of `pkg-b` fails.
     let bin = TempDir::new().expect("Failed to create bin dir");
     let npm = bin.path().join("npm");
+    let fail = failing
+        .map(|name| format!("case \"$(pwd)\" in\n  */{name}) exit 1;;\nesac\n"))
+        .unwrap_or_default();
     fs::write(
         &npm,
-        "#!/bin/sh\n\
-         case \"$*\" in\n\
-           --version) echo 11.15.0; exit 0;;\n\
-           *--dry-run*) exit 0;;\n\
-         esac\n\
-         case \"$(pwd)\" in\n\
-           */pkg-b) exit 1;;\n\
-         esac\n\
-         exit 0\n",
+        format!(
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+               --version) echo 11.15.0; exit 0;;\n\
+               *--dry-run*) exit 0;;\n\
+             esac\n\
+             {fail}exit 0\n"
+        ),
     )
     .unwrap();
     fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
@@ -601,24 +577,277 @@ fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
         ),
     );
 
-    let output = run_action(&[], &env_vars, ws.path());
+    NpmRelease {
+        ws,
+        remote,
+        _bin: bin,
+        env_vars,
+    }
+}
+
+fn git(repo: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+#[cfg(unix)]
+fn list_tags(repo: &Path) -> String {
+    let output = Command::new("git")
+        .args(["tag", "--list"])
+        .current_dir(repo)
+        .output()
+        .expect("failed to list tags");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn test_failed_publish_pushes_the_tags_of_earlier_packages() {
+    let release = npm_release(Some("pkg-b"));
+
+    let output = run_action(&[], &release.env_vars, release.ws.path());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "publish of pkg-b must fail");
     assert!(
         stderr.contains("Failed to execute sampo publish"),
         "{stderr}"
     );
-    assert!(!parse_outputs(&ws.file_path("github_output")).contains_key("published"));
+    let outputs = parse_outputs(&release.ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
+    assert_eq!(list_tags(release.remote.path()), "pkg-a-v1.0.0");
+}
 
-    let remote_tags = Command::new("git")
-        .args(["tag", "--list"])
-        .current_dir(remote_dir.path())
-        .output()
-        .expect("failed to list remote tags");
-    assert_eq!(
-        String::from_utf8_lossy(&remote_tags.stdout).trim(),
-        "pkg-a-v1.0.0"
+#[cfg(unix)]
+#[test]
+fn test_a_rejected_tag_push_still_pushes_the_other_tags() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut release = npm_release(None);
+    let (api_url, requests) = serve_github_with_existing_release("201 Created");
+    add_github_release_env(&mut release.env_vars, &release.ws, api_url);
+    let hook = release.remote.path().join("hooks/pre-receive");
+    fs::write(
+        &hook,
+        "#!/bin/sh\n\
+         while read old new ref; do\n\
+           [ \"$ref\" = refs/tags/pkg-a-v1.0.0 ] && exit 1\n\
+         done\n\
+         exit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = run_action(&[], &release.env_vars, release.ws.path());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "the push of pkg-a's tag must fail"
     );
+    assert!(
+        stderr.contains("Failed to finish the release") && stderr.contains("pkg-a-v1.0.0"),
+        "{stderr}"
+    );
+    let outputs = parse_outputs(&release.ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
+    assert_eq!(list_tags(release.remote.path()), "pkg-b-v1.0.0");
+    let requests = requests.lock().unwrap();
+    assert!(
+        requests.contains(&"GET /repos/owner/repo/releases/tags/pkg-b-v1.0.0".to_string())
+            && !requests.iter().any(|request| request.contains("pkg-a")),
+        "{requests:?}"
+    );
+}
+
+/// A GitHub API stand-in whose releases already exist, one asset uploaded and one left empty by a
+/// failed upload. Records each request as `METHOD path`.
+fn serve_github_with_existing_release(
+    upload_status: &'static str,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind GitHub API");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&requests);
+    let upload_url = format!("{base}/upload{{?name,label}}");
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut request_line = String::new();
+            let _ = reader.read_line(&mut request_line);
+            let mut content_length = 0;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = header.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let _ = reader.read_exact(&mut vec![0; content_length]);
+
+            let request: String = request_line
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let (status, body) = match request.as_str() {
+                "POST /repos/owner/repo/releases" => (
+                    "422 Unprocessable Entity",
+                    r#"{"errors":[{"code":"already_exists"}]}"#.to_string(),
+                ),
+                r if r.starts_with("GET /repos/owner/repo/releases/tags/") => (
+                    "200 OK",
+                    format!(
+                        r#"{{"upload_url":"{upload_url}","html_url":"https://example.com","assets":[{{"id":1,"name":"a.txt","state":"uploaded"}},{{"id":2,"name":"b.txt","state":"starter"}}]}}"#
+                    ),
+                ),
+                "DELETE /repos/owner/repo/releases/assets/2" => ("204 No Content", String::new()),
+                r if r.starts_with("POST /upload") => (upload_status, "{}".to_string()),
+                _ => ("404 Not Found", String::new()),
+            };
+            recorded.lock().unwrap().push(request);
+            let _ = (&stream).write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (base, requests)
+}
+
+fn add_github_release_env(
+    env_vars: &mut FxHashMap<String, String>,
+    ws: &TestWorkspace,
+    api_url: String,
+) {
+    ws.write_file("dist/a.txt", "a");
+    ws.write_file("dist/b.txt", "b");
+    env_vars.insert(
+        "INPUT_CREATE_GITHUB_RELEASE".to_string(),
+        "true".to_string(),
+    );
+    env_vars.insert(
+        "INPUT_RELEASE_ASSETS".to_string(),
+        "dist/a.txt, dist/b.txt".to_string(),
+    );
+    env_vars.insert("GITHUB_REPOSITORY".to_string(), "owner/repo".to_string());
+    env_vars.insert("GITHUB_TOKEN".to_string(), "token".to_string());
+    env_vars.insert("GITHUB_API_URL".to_string(), api_url);
+}
+
+fn rerun_with_a_tag_at_head(upload_status: &'static str) -> (TestWorkspace, Output, Vec<String>) {
+    let ws = TestWorkspace::new();
+    setup_publish_workspace(&ws);
+    git(
+        ws.path(),
+        &["tag", "-a", "foo-v0.1.0", "-m", "Release foo 0.1.0"],
+    );
+
+    let (api_url, requests) = serve_github_with_existing_release(upload_status);
+    let mut env_vars = FxHashMap::default();
+    env_vars.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ws.path().to_string_lossy().to_string(),
+    );
+    env_vars.insert(
+        "GITHUB_OUTPUT".to_string(),
+        ws.file_path("github_output").to_string_lossy().to_string(),
+    );
+    env_vars.insert("INPUT_COMMAND".to_string(), "publish".to_string());
+    env_vars.insert("INPUT_DRY_RUN".to_string(), "false".to_string());
+    env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
+    add_github_release_env(&mut env_vars, &ws, api_url);
+
+    let output = run_action(&[], &env_vars, ws.path());
+    let requests = requests.lock().unwrap().clone();
+    (ws, output, requests)
+}
+
+#[test]
+fn test_rerun_completes_the_release_of_a_tag_at_head() {
+    let (ws, output, requests) = rerun_with_a_tag_at_head("201 Created");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        requests.contains(&"DELETE /repos/owner/repo/releases/assets/2".to_string())
+            && requests.contains(&"POST /upload?name=b.txt".to_string())
+            && !requests.contains(&"POST /upload?name=a.txt".to_string()),
+        "{requests:?}"
+    );
+    let outputs = parse_outputs(&ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn test_an_asset_github_already_holds_counts_as_uploaded() {
+    let (_ws, output, _) = rerun_with_a_tag_at_head("422 Unprocessable Entity");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_a_failed_asset_upload_fails_the_run() {
+    let (ws, output, _) = rerun_with_a_tag_at_head("500 Internal Server Error");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "the upload of b.txt must fail");
+    assert!(
+        stderr.contains("Failed to finish the release") && stderr.contains("'b.txt'"),
+        "{stderr}"
+    );
+    assert!(!parse_outputs(&ws.file_path("github_output")).contains_key("published"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a_failed_publish_still_completes_the_releases_at_head() {
+    let mut release = npm_release(Some("pkg-a"));
+    git(
+        release.ws.path(),
+        &["tag", "-a", "pkg-z-v1.0.0", "-m", "Release pkg-z 1.0.0"],
+    );
+    let (api_url, requests) = serve_github_with_existing_release("201 Created");
+    add_github_release_env(&mut release.env_vars, &release.ws, api_url);
+
+    let output = run_action(&[], &release.env_vars, release.ws.path());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "publish of pkg-a must fail");
+    assert!(
+        stderr.contains("Failed to execute sampo publish"),
+        "{stderr}"
+    );
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .contains(&"POST /upload?name=b.txt".to_string()),
+        "{:?}",
+        requests.lock().unwrap()
+    );
+    let outputs = parse_outputs(&release.ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
 }
 
 /// Regression test: dry-run mode should NOT push tags or create GitHub releases.

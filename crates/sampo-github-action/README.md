@@ -60,7 +60,7 @@ jobs:
 
 ### Creating GitHub Releases and Discussions
 
-Set the `create-github-release` input to `true` to create a GitHub Release for each new tag created when publishing packages. The release notes are generated from the changesets included in the release.
+Set the `create-github-release` input to `true` to create a GitHub Release for each new tag created when publishing packages. The release notes are generated from the changesets included in the release. A failed release or asset upload fails the run, and rerunning a failed run completes the tags and releases of the versions it published, except a package's first one, with only the missing assets.
 
 To also open a GitHub Discussion for each release, set `open-discussion` to `true` (all packages) or a comma-separated list of package names (e.g., `sampo,sampo-github-action`). Use `discussion-category` to specify the target category.
 
@@ -92,7 +92,7 @@ Example:
 The action exposes two outputs:
 
 - `released`: `"true"` when release automation ran (release PR prepared, stabilize PR prepared, or `sampo release` executed).
-- `published`: `"true"` when `sampo publish` succeeded and created version tags, so `"false"` when every released package is left untagged by `git.tag_unpublished`. A publish that fails midway leaves it unset, but still pushes the tags and GitHub Releases of the packages published before the failure.
+- `published`: `"true"` when the run pushed version tags or completed GitHub Releases, so `"false"` when every released package is left untagged by `git.tag_unpublished`. A run that fails after either still sets it.
 
 These outputs can be used to gate subsequent steps, example:
 

@@ -5,6 +5,7 @@ use crate::{
     Config, current_branch, discover_workspace,
     errors::{Result, SampoError},
     filters::{npm_packages_to_stage, should_ignore_package, should_tag_unpublished},
+    header_matches_release_version,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
@@ -189,6 +190,8 @@ pub fn run_publish(
     // and failures when all packages are already published.
     println!("Checking registry for existing versions…");
     let mut publish_targets: Vec<(&PackageInfo, PackageAdapter, std::path::PathBuf)> = Vec::new();
+    let mut untagged_releases: Vec<&PackageInfo> = Vec::new();
+    let mut repository_tags: Option<Vec<String>> = None;
 
     for identifier in &order {
         let package = id_to_package.get(identifier).copied().ok_or_else(|| {
@@ -201,6 +204,22 @@ pub fn run_publish(
         let manifest = adapter.manifest_path(&package.path);
 
         match adapter.version_exists(&package.name, &package.version, Some(manifest.as_path())) {
+            Ok(true)
+                if !package_tag_exists(
+                    &ws.root,
+                    &config,
+                    package.kind,
+                    &package.name,
+                    &package.version,
+                )? && released_at_head(&ws.root, &config, package, &mut repository_tags)? =>
+            {
+                println!(
+                    "  - {} (already exists on {}, tagging its release commit)",
+                    package.display_name(true),
+                    package.kind.display_name()
+                );
+                untagged_releases.push(package);
+            }
             Ok(true) => {
                 println!(
                     "  - {} (already exists on {})",
@@ -243,14 +262,35 @@ pub fn run_publish(
         }
     }
 
-    if publish_targets.is_empty() {
+    if publish_targets.is_empty() && untagged_releases.is_empty() {
         println!("All packages are already published. Nothing to do.");
         // Still need to handle private package tagging below
-    } else {
+    } else if !publish_targets.is_empty() {
         println!("Publish plan:");
         for (package, _, _) in &publish_targets {
             println!("  - {}", package.display_name(true));
         }
+    }
+
+    let mut tags_to_create: Vec<String> = Vec::new();
+    for package in &untagged_releases {
+        let tag = config.build_tag_name(package.kind, &package.name, &package.version);
+        if !dry_run
+            && let Err(e) = tag_published_crate(
+                &ws.root,
+                &config,
+                package.kind,
+                &package.name,
+                &package.version,
+            )
+        {
+            eprintln!(
+                "Warning: failed to create tag for {}@{}: {}",
+                package.name, package.version, e
+            );
+            continue;
+        }
+        tags_to_create.push(tag);
     }
 
     if !dry_run && !publish_targets.is_empty() {
@@ -271,11 +311,20 @@ pub fn run_publish(
         for ((kind, staged), packages) in &packages_by_kind {
             let adapter = PackageAdapter::from_kind(*kind);
             let args = extra_args.args_for_kind(*kind);
-            not_validated.extend(if *staged {
-                adapter.stage_dry_run(packages, &args)?
+            let validated = if *staged {
+                adapter.stage_dry_run(packages, &args)
             } else {
-                adapter.publish_dry_run(&ws.root, packages, &args)?
-            });
+                adapter.publish_dry_run(&ws.root, packages, &args)
+            };
+            match validated {
+                Ok(names) => not_validated.extend(names),
+                Err(source) => {
+                    return Err(SampoError::PartialPublish {
+                        tags: tags_to_create,
+                        source: Box::new(source),
+                    });
+                }
+            }
         }
 
         if not_validated.is_empty() {
@@ -288,7 +337,6 @@ pub fn run_publish(
         }
     }
 
-    let mut tags_to_create: Vec<String> = Vec::new();
     let mut any_published = false;
     let mut not_simulated: Vec<String> = Vec::new();
     let mut forwarded_dry_runs: Vec<String> = Vec::new();
@@ -303,8 +351,7 @@ pub fn run_publish(
         };
         let outcome = match result {
             Ok(outcome) => outcome,
-            // A rerun sees the earlier packages as published and never tags them again.
-            Err(source) if !dry_run && !tags_to_create.is_empty() => {
+            Err(source) if !dry_run => {
                 return Err(SampoError::PartialPublish {
                     tags: tags_to_create,
                     source: Box::new(source),
@@ -560,6 +607,67 @@ pub(crate) fn package_tag_exists(
     Ok(false)
 }
 
+/// Whether HEAD released this published but untagged version, as when a run published it and
+/// then failed to push its tag. HEAD adding the version's heading to the package's changelog
+/// leaves adoption and later changelog fixes untagged, and an earlier tag of the package leaves
+/// alone the packages published outside Sampo. `tags` caches the repository's tags.
+fn released_at_head(
+    repo_root: &Path,
+    config: &Config,
+    package: &PackageInfo,
+    tags: &mut Option<Vec<String>>,
+) -> Result<bool> {
+    if !repo_root.join(".git").exists() {
+        return Ok(false);
+    }
+    let tags = match tags {
+        Some(tags) => tags,
+        None => {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(repo_root)
+                .args(["tag", "--list"])
+                .output()?;
+            tags.insert(
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::to_string)
+                    .collect(),
+            )
+        }
+    };
+    let tagged_before = tags.iter().any(|tag| {
+        config.parse_tag(tag).is_some_and(|(name, version)| {
+            name == package.name && config.build_tag_name(package.kind, &name, &version) == *tag
+        })
+    });
+    if !tagged_before {
+        return Ok(false);
+    }
+
+    let changelog = package
+        .path
+        .strip_prefix(repo_root)
+        .unwrap_or(&package.path)
+        .join("CHANGELOG.md");
+    // Fails without a parent commit, as in a shallow clone, which then repairs nothing.
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["diff", "--unified=0", "HEAD^", "HEAD", "--"])
+        .arg(&changelog)
+        .output()?;
+    // A heading both removed and added was edited, not released.
+    let has_heading = |prefix: &str| {
+        String::from_utf8_lossy(&diff.stdout).lines().any(|line| {
+            line.strip_prefix(prefix).is_some_and(|heading| {
+                header_matches_release_version(heading.trim(), &package.version)
+            })
+        })
+    };
+    Ok(diff.status.success() && has_heading("+## ") && !has_heading("-## "))
+}
+
 /// Creates an annotated git tag for a published crate.
 ///
 /// Skips tagging if not in a git repository or if the tag already exists.
@@ -703,18 +811,13 @@ mod tests {
     /// Initialise a git repo with a first commit so HEAD exists.
     fn init_git_repo_for_test(path: &Path) {
         for args in [
-            vec!["init"],
-            vec!["config", "user.email", "test@example.com"],
-            vec!["config", "user.name", "Test User"],
-            vec!["add", "-A"],
-            vec!["commit", "-m", "Initial commit"],
+            &["init"][..],
+            &["config", "user.email", "test@example.com"],
+            &["config", "user.name", "Test User"],
+            &["add", "-A"],
+            &["commit", "-m", "Initial commit"],
         ] {
-            let status = Command::new("git")
-                .args(&args)
-                .current_dir(path)
-                .status()
-                .expect("git command failed to run");
-            assert!(status.success(), "git {args:?} failed");
+            git_in(path, args);
         }
     }
 
@@ -2373,6 +2476,122 @@ edition = "2021"
         assert_eq!(tags, vec!["pkg-first-v1.0.0"]);
         assert!(matches!(*source, SampoError::Publish(_)), "{source:?}");
         assert_eq!(list_tags(&workspace.root), vec!["pkg-first-v1.0.0"]);
+    }
+
+    fn git_in(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    /// `pkg` 1.0.0 is published but untagged. The last commit adds its changelog heading when
+    /// `release`, and only fixes its date otherwise.
+    fn published_untagged_workspace(
+        earlier_tag: Option<&str>,
+        release: bool,
+        private_crate: Option<&str>,
+    ) -> TestWorkspace {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg", "1.0.0");
+        let changelog = workspace.root.join("crates/pkg/CHANGELOG.md");
+        if !release {
+            fs::write(&changelog, "## 1.0.0 — 2026-10-31\n\n- Fixed\n").unwrap();
+        }
+        if let Some(name) = private_crate {
+            workspace.add_crate(name, "1.0.0");
+            let manifest = workspace.root.join("crates").join(name).join("Cargo.toml");
+            let content = fs::read_to_string(&manifest).unwrap();
+            fs::write(&manifest, content + "publish = [\"private\"]\n").unwrap();
+        }
+        init_git_repo_for_test(&workspace.root);
+        if let Some(tag) = earlier_tag {
+            git_in(&workspace.root, &["tag", "-a", tag, "-m", tag]);
+        }
+        fs::write(&changelog, "## 1.0.0 — 2026-11-01\n\n- Fixed\n").unwrap();
+        git_in(&workspace.root, &["add", "-A"]);
+        git_in(&workspace.root, &["commit", "-m", "Release"]);
+        workspace
+    }
+
+    #[test]
+    fn a_rerun_tags_a_version_its_release_commit_published() {
+        let workspace = published_untagged_workspace(Some("pkg-v0.9.0"), true, None);
+        let fake_cargo = FakeCargo::install_with_registry(false, false, "1.91.0", true);
+
+        let dry_run = workspace.run_publish(true).unwrap();
+        assert_eq!(dry_run.tags, vec!["pkg-v1.0.0"]);
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-v0.9.0"]);
+
+        let output = workspace.run_publish(false).unwrap();
+        assert_eq!(output.tags, vec!["pkg-v1.0.0"]);
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-v0.9.0", "pkg-v1.0.0"]);
+        let log = fs::read_to_string(fake_cargo.log_path()).unwrap_or_default();
+        assert!(!log.contains("publish"), "{log}");
+    }
+
+    fn assert_a_failure_returns_the_tag_of_a_repaired_version(fail_dry_run: bool) {
+        let workspace = published_untagged_workspace(Some("pkg-v0.9.0"), true, Some("pkg-private"));
+        // The fake cargo fails `cargo info` and `cargo publish` for `pkg-private`.
+        let _fake_cargo =
+            FakeCargo::install_inner(fail_dry_run, false, "pkg-private", "1.91.0", true);
+
+        let err = workspace.run_publish(false).unwrap_err();
+        let SampoError::PartialPublish { tags, .. } = err else {
+            panic!("expected a partial publish, got {err:?}");
+        };
+        assert_eq!(tags, vec!["pkg-v1.0.0"]);
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-v0.9.0", "pkg-v1.0.0"]);
+    }
+
+    #[test]
+    fn a_failed_publish_returns_the_tag_of_a_repaired_version() {
+        assert_a_failure_returns_the_tag_of_a_repaired_version(false);
+    }
+
+    #[test]
+    fn a_failed_validation_returns_the_tag_of_a_repaired_version() {
+        assert_a_failure_returns_the_tag_of_a_repaired_version(true);
+    }
+
+    #[test]
+    fn a_published_version_is_not_tagged_by_a_changelog_heading_fix() {
+        let workspace = published_untagged_workspace(Some("pkg-v0.9.0"), false, None);
+        let _fake_cargo = FakeCargo::install_with_registry(false, false, "1.91.0", true);
+
+        let output = workspace.run_publish(false).unwrap();
+        assert!(output.tags.is_empty(), "{:?}", output.tags);
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-v0.9.0"]);
+    }
+
+    #[test]
+    fn a_published_version_is_not_tagged_without_a_parent_commit() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("pkg", "1.0.0");
+        fs::write(workspace.root.join("crates/pkg/CHANGELOG.md"), "## 1.0.0\n").unwrap();
+        init_git_repo_for_test(&workspace.root);
+        git_in(
+            &workspace.root,
+            &["tag", "-a", "pkg-v0.9.0", "-m", "pkg-v0.9.0"],
+        );
+        let _fake_cargo = FakeCargo::install_with_registry(false, false, "1.91.0", true);
+
+        let output = workspace.run_publish(false).unwrap();
+        assert!(output.tags.is_empty(), "{:?}", output.tags);
+        assert_eq!(list_tags(&workspace.root), vec!["pkg-v0.9.0"]);
+    }
+
+    #[test]
+    fn a_published_version_of_a_never_tagged_package_is_not_tagged() {
+        let workspace = published_untagged_workspace(None, true, None);
+        let _fake_cargo = FakeCargo::install_with_registry(false, false, "1.91.0", true);
+
+        let output = workspace.run_publish(false).unwrap();
+        assert!(output.tags.is_empty(), "{:?}", output.tags);
+        assert!(list_tags(&workspace.root).is_empty());
     }
 
     #[test]
