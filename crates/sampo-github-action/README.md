@@ -60,7 +60,7 @@ jobs:
 
 ### Creating GitHub Releases and Discussions
 
-Set the `create-github-release` input to `true` to create a GitHub Release for each new tag created when publishing packages. The release notes are generated from the changesets included in the release. A failed release or asset upload fails the run, and rerunning a failed run completes the tags and releases of the versions it published, except a package's first one, with only the missing assets.
+Set the `create-github-release` input to `true` to create a GitHub Release for each new tag, with notes generated from the changesets it includes. If a release fails, rerunning the job completes the missing tags, releases, and assets.
 
 To also open a GitHub Discussion for each release, set `open-discussion` to `true` (all packages) or a comma-separated list of package names (e.g., `sampo,sampo-github-action`). Use `discussion-category` to specify the target category.
 
