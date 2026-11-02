@@ -22,6 +22,26 @@ pub fn git(args: &[&str], cwd: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+pub fn tags_at_head(cwd: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["tag", "--points-at", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .map_err(ActionError::Io)?;
+
+    if !output.status.success() {
+        return Err(ActionError::SampoCommandFailed {
+            operation: "git-tag".to_string(),
+            message: format!("git tag --points-at HEAD failed: {}", output.status),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
 /// Check if the git repository has uncommitted changes
 pub fn has_changes(cwd: &Path) -> Result<bool> {
     let output = Command::new("git")

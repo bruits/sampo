@@ -41,10 +41,26 @@ struct PullRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct Release {
-    #[serde(rename = "upload_url")]
-    upload_url: String,
+pub struct Release {
+    pub upload_url: String,
     html_url: String,
+    #[serde(default)]
+    pub assets: Vec<ReleaseAsset>,
+    #[serde(skip)]
+    pub created: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub state: String,
+}
+
+impl Release {
+    fn without_upload_url_template(mut self) -> Self {
+        self.upload_url = self.upload_url.split('{').next().unwrap_or("").to_string();
+        self
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +99,7 @@ struct DiscussionCategoriesConnection {
 
 pub struct GitHubClient {
     client: Client,
+    api_url: String,
     repo: String,
     token: String,
 }
@@ -98,8 +115,16 @@ impl GitHubClient {
                 message: format!("Failed to create HTTP client: {}", e),
             })?;
 
+        // Set in every workflow run, including on GitHub Enterprise Server.
+        let api_url = std::env::var("GITHUB_API_URL")
+            .ok()
+            .filter(|url| !url.is_empty())
+            .map(|url| url.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| "https://api.github.com".to_string());
+
         Ok(Self {
             client,
+            api_url,
             repo,
             token,
         })
@@ -117,7 +142,7 @@ impl GitHubClient {
         title: &str,
         body: &str,
     ) -> Result<()> {
-        let api_url = format!("https://api.github.com/repos/{}/pulls", self.repo);
+        let api_url = format!("{}/repos/{}/pulls", self.api_url, self.repo);
 
         println!("Creating/updating PR: {} <- {}", base_branch, head_branch);
 
@@ -187,8 +212,8 @@ impl GitHubClient {
     ) -> Result<()> {
         let owner = self.repo.split('/').next().unwrap_or("");
         let list_url = format!(
-            "https://api.github.com/repos/{}/pulls?state=open&head={}:{}",
-            self.repo, owner, head_branch
+            "{}/repos/{}/pulls?state=open&head={}:{}",
+            self.api_url, self.repo, owner, head_branch
         );
 
         let response = self
@@ -231,10 +256,7 @@ impl GitHubClient {
 
     /// Update an existing Pull Request
     fn update_pull_request(&self, pr_number: u64, title: &str, body: &str) -> Result<()> {
-        let api_url = format!(
-            "https://api.github.com/repos/{}/pulls/{}",
-            self.repo, pr_number
-        );
+        let api_url = format!("{}/repos/{}/pulls/{}", self.api_url, self.repo, pr_number);
 
         let payload = UpdatePullRequestPayload {
             title: title.to_string(),
@@ -278,8 +300,8 @@ impl GitHubClient {
     }
 
     /// Create a GitHub Release for a tag.
-    pub fn create_release(&self, tag: &str, body: &str, prerelease: bool) -> Result<String> {
-        let api_url = format!("https://api.github.com/repos/{}/releases", self.repo);
+    pub fn create_release(&self, tag: &str, body: &str, prerelease: bool) -> Result<Release> {
+        let api_url = format!("{}/repos/{}/releases", self.api_url, self.repo);
 
         let payload = CreateReleasePayload {
             tag_name: tag.to_string(),
@@ -313,23 +335,16 @@ impl GitHubClient {
 
             println!("Created GitHub release for {}: {}", tag, release.html_url);
 
-            let upload_url = release
-                .upload_url
-                .split('{')
-                .next()
-                .unwrap_or("")
-                .to_string();
-            Ok(upload_url)
+            Ok(Release {
+                created: true,
+                ..release.without_upload_url_template()
+            })
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
 
-            // If the release already exists, fetch it and return its upload URL
             if status == 422 && error_text.contains("already_exists") {
-                eprintln!(
-                    "Warning: Release for {} already exists, fetching existing release.",
-                    tag
-                );
+                println!("Release for {} already exists, fetching it.", tag);
                 return self.get_release_by_tag(tag);
             }
 
@@ -341,11 +356,8 @@ impl GitHubClient {
     }
 
     /// Fetch an existing GitHub Release by tag name.
-    pub fn get_release_by_tag(&self, tag: &str) -> Result<String> {
-        let api_url = format!(
-            "https://api.github.com/repos/{}/releases/tags/{}",
-            self.repo, tag
-        );
+    pub fn get_release_by_tag(&self, tag: &str) -> Result<Release> {
+        let api_url = format!("{}/repos/{}/releases/tags/{}", self.api_url, self.repo, tag);
 
         let response = self
             .client
@@ -373,13 +385,7 @@ impl GitHubClient {
                 tag, release.html_url
             );
 
-            let upload_url = release
-                .upload_url
-                .split('{')
-                .next()
-                .unwrap_or("")
-                .to_string();
-            Ok(upload_url)
+            Ok(release.without_upload_url_template())
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();

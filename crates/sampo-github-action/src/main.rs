@@ -346,9 +346,22 @@ fn run() -> Result<()> {
     }
 
     // Execute the requested operations
-    let (released, published) = execute_operations(&config, &workspace, &repo_config, &branch)?;
+    let mut published = false;
+    let result = execute_operations(&config, &workspace, &repo_config, &branch, &mut published);
 
-    // Emit outputs for the workflow
+    // Emit outputs for the workflow, and `published` on a failure too once something landed
+    let released = match result {
+        Ok(released) => released,
+        Err(e) => {
+            if published && let Err(output_error) = emit_github_output("published", true) {
+                eprintln!(
+                    "Warning: failed to write the published output: {}",
+                    output_error
+                );
+            }
+            return Err(e);
+        }
+    };
     emit_github_output("released", released)?;
     emit_github_output("published", published)?;
 
@@ -364,23 +377,24 @@ fn determine_workspace(config: &Config) -> Result<PathBuf> {
         .ok_or(ActionError::NoWorkingDirectory)
 }
 
-/// Execute the requested operations and return (released, published) status
+/// Execute the requested operations, return the released status, and record in `published`
+/// whether anything was published, as it lands
 ///
 /// In `auto` mode we always run a dry `sampo release` first (`capture_release_plan`).
 /// If there are pending changesets we prepare/update the release PR (which runs a
 /// real `sampo release`). Otherwise we fall back to `post_merge_publish`, which
 /// reuses the same publish pipeline as the explicit `publish` mode. That pipeline
 /// only publishes crates that still need it (via `sampo_core::run_publish`) and
-/// reports `published = true` exclusively when fresh git tags were produced, so a
+/// reports `published = true` only when a tag, release, or asset landed, so a
 /// plain commit without changesets will exit cleanly without pushing anything.
 fn execute_operations(
     config: &Config,
     workspace: &Path,
     repo_config: &SampoConfig,
     branch: &str,
-) -> Result<(bool, bool)> {
+    published: &mut bool,
+) -> Result<bool> {
     let mut released = false;
-    let mut published = false;
 
     match config.mode {
         Mode::Auto => {
@@ -440,13 +454,14 @@ fn execute_operations(
                     None
                 };
                 let extra_args = build_publish_extra_args(config);
-                published = post_merge_publish(
+                post_merge_publish(
                     workspace,
                     config.dry_run,
                     &extra_args,
                     config.cargo_token.as_deref(),
                     &github_options,
                     github_client.as_ref(),
+                    published,
                 )?;
             }
         }
@@ -462,18 +477,19 @@ fn execute_operations(
                 None
             };
             let extra_args = build_publish_extra_args(config);
-            published = post_merge_publish(
+            post_merge_publish(
                 workspace,
                 config.dry_run,
                 &extra_args,
                 config.cargo_token.as_deref(),
                 &github_options,
                 github_client.as_ref(),
+                published,
             )?;
         }
     }
 
-    Ok((released, published))
+    Ok(released)
 }
 
 /// Emit a GitHub Actions output
@@ -777,10 +793,10 @@ fn build_publish_extra_args(config: &Config) -> PublishExtraArgs {
 }
 
 /// Run `sampo publish` and handle the post-merge duties (tag push, GitHub releases).
-/// Returns true only when new tags were created/pushed, so the workflow can tell if a
-/// real publish happened. Combined with `sampo_core::run_publish` (which skips crates
-/// already published or marked `publish = false`), this prevents accidental publishes
-/// on commits sans changesets: the action simply logs "No new tags" and exits.
+/// Sets `published` only when a tag, release, or asset landed, so the workflow can tell if a
+/// real publish happened, and fails at the end when one did not land. Combined with
+/// `sampo_core::run_publish` (which skips crates already published or marked
+/// `publish = false`), this prevents accidental publishes on commits sans changesets.
 fn post_merge_publish(
     workspace: &Path,
     dry_run: bool,
@@ -788,84 +804,117 @@ fn post_merge_publish(
     cargo_token: Option<&str>,
     github_options: &GitHubReleaseOptions,
     github_client: Option<&github::GitHubClient>,
-) -> Result<bool> {
+    published: &mut bool,
+) -> Result<()> {
     // Setup git identity for tag creation
     git::setup_bot_user(workspace)?;
 
     // Publish and get information about tags created/would-be-created
-    let new_tags = match sampo::run_publish(workspace, dry_run, extra_args, cargo_token) {
-        Ok(output) => output.tags,
-        // A rerun sees the packages published before the failure as already published and
-        // never tags them again, so push their tags now.
-        Err(ActionError::PartialPublish { tags, source }) => {
-            if let Err(e) = push_tags_and_create_releases(
-                workspace,
-                dry_run,
-                &tags,
-                github_options,
-                github_client,
-            ) {
-                eprintln!(
-                    "Warning: failed to push the tags of the packages published before the failure: {}",
-                    e
-                );
-            }
-            return Err(ActionError::PartialPublish { tags, source });
-        }
-        Err(e) => return Err(e),
-    };
-    push_tags_and_create_releases(workspace, dry_run, &new_tags, github_options, github_client)?;
+    let (new_tags, publish_error) =
+        match sampo::run_publish(workspace, dry_run, extra_args, cargo_token) {
+            Ok(output) => (output.tags, None),
+            Err(ActionError::PartialPublish { tags, source }) => (tags, Some(source)),
+            Err(e) => return Err(e),
+        };
+    let failures = push_tags_and_create_releases(
+        workspace,
+        dry_run,
+        &new_tags,
+        github_options,
+        github_client,
+        published,
+    );
 
-    let published = !dry_run && !new_tags.is_empty();
-    if !published && !dry_run {
+    if let Some(source) = publish_error {
+        for failure in &failures {
+            eprintln!("Warning: {}", failure);
+        }
+        return Err(ActionError::PartialPublish {
+            tags: new_tags,
+            source,
+        });
+    }
+    if !failures.is_empty() {
+        return Err(ActionError::ReleaseIncomplete { failures });
+    }
+    if !*published && !dry_run {
         println!("No new tags were created during publish.");
     }
 
-    Ok(published)
+    Ok(())
 }
 
+/// Completes the releases of the version tags already at HEAD too, which a rerun after a failure
+/// finds there. Keeps going past failures and returns them.
 fn push_tags_and_create_releases(
     workspace: &Path,
     dry_run: bool,
     new_tags: &[String],
     github_options: &GitHubReleaseOptions,
     github_client: Option<&github::GitHubClient>,
-) -> Result<()> {
-    if !dry_run && !new_tags.is_empty() {
+    published: &mut bool,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    if dry_run {
+        if !new_tags.is_empty() {
+            println!(
+                "Would push {} new tags (skipped in dry-run mode)",
+                new_tags.len()
+            );
+            for tag in new_tags {
+                println!("  - {}", tag);
+            }
+            if github_options.create_github_release {
+                println!(
+                    "Would create {} GitHub releases (skipped in dry-run mode)",
+                    new_tags.len()
+                );
+                for tag in new_tags {
+                    println!("  - {}", tag);
+                }
+            }
+        }
+        return failures;
+    }
+
+    let mut release_tags = Vec::new();
+    if !new_tags.is_empty() {
         println!("Pushing {} new tags", new_tags.len());
-        for tag in new_tags {
-            git::git(&["push", "origin", tag], Some(workspace))?;
+    }
+    for tag in new_tags {
+        match git::git(&["push", "origin", tag], Some(workspace)) {
+            Ok(()) => release_tags.push(tag.clone()),
+            Err(e) => failures.push(format!("{}: {}", tag, e)),
         }
-    } else if dry_run && !new_tags.is_empty() {
-        println!(
-            "Would push {} new tags (skipped in dry-run mode)",
-            new_tags.len()
-        );
-        for tag in new_tags {
-            println!("  - {}", tag);
+    }
+    *published |= !release_tags.is_empty();
+
+    let Some(client) = github_client.filter(|_| github_options.create_github_release) else {
+        return failures;
+    };
+
+    let config = SampoConfig::load(workspace).ok();
+    match git::tags_at_head(workspace) {
+        Ok(tags) => {
+            let earlier_tags = tags.into_iter().filter(|tag| {
+                !new_tags.contains(tag) && parse_tag_with_config(tag, config.as_ref()).is_some()
+            });
+            release_tags.splice(0..0, earlier_tags);
+        }
+        Err(e) => failures.push(format!("tags at HEAD: {}", e)),
+    }
+
+    for tag in &release_tags {
+        println!("Creating GitHub release for {}", tag);
+        if let Err(e) =
+            create_github_release_for_tag(client, tag, workspace, github_options, published)
+        {
+            failures.push(format!("GitHub release for {}: {}", tag, e));
         }
     }
 
-    if !dry_run
-        && github_options.create_github_release
-        && !new_tags.is_empty()
-        && let Some(client) = github_client
-    {
-        for tag in new_tags {
-            println!("Creating GitHub release for {}", tag);
-            create_github_release_for_tag(client, tag, workspace, github_options)?;
-        }
-    } else if dry_run && github_options.create_github_release && !new_tags.is_empty() {
-        println!(
-            "Would create {} GitHub releases (skipped in dry-run mode)",
-            new_tags.len()
-        );
-        for tag in new_tags {
-            println!("  - {}", tag);
-        }
-    }
-
-    Ok(())
+    failures
 }
 
 fn create_github_release_for_tag(
@@ -873,6 +922,7 @@ fn create_github_release_for_tag(
     tag: &str,
     workspace: &Path,
     github_options: &GitHubReleaseOptions,
+    published: &mut bool,
 ) -> Result<()> {
     let config = SampoConfig::load(workspace).ok();
 
@@ -881,60 +931,52 @@ fn create_github_release_for_tag(
         None => format!("Automated release for tag {}", tag),
     };
 
-    let upload_url = match github_client.create_release(
+    let release = github_client.create_release(
         tag,
         &body,
         tag_is_prerelease_with_config(tag, config.as_ref()),
-    ) {
-        Ok(upload_url) => upload_url,
-        Err(e) => {
-            eprintln!(
-                "Warning: Failed to create GitHub release for {}: {}",
-                tag, e
-            );
-            return Ok(());
-        }
-    };
+    )?;
+    *published |= release.created;
 
-    if !upload_url.is_empty() {
+    let mut failed_assets = Vec::new();
+    if !release.upload_url.is_empty() {
         let assets = resolve_release_assets(workspace, tag, &github_options.asset_specs)?;
-        if assets.is_empty() {
-            if !github_options.asset_specs.is_empty() {
-                eprintln!(
-                    "Warning: No release assets matched the configured patterns for {}.",
-                    tag
-                );
+        if assets.is_empty() && !github_options.asset_specs.is_empty() {
+            eprintln!(
+                "Warning: No release assets matched the configured patterns for {}.",
+                tag
+            );
+        }
+        for asset in assets {
+            if release
+                .assets
+                .iter()
+                .any(|a| a.name == asset.asset_name && a.state == "uploaded")
+            {
+                println!("Release asset '{}' is already uploaded", asset.asset_name);
+                continue;
             }
-        } else {
-            for asset in assets {
-                match github_client.upload_release_asset(
-                    &upload_url,
-                    &asset.path,
-                    &asset.asset_name,
-                ) {
-                    Ok(()) => {
-                        println!(
-                            "Uploaded release asset '{}' from {}",
-                            asset.asset_name,
-                            asset.path.display()
-                        );
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "Warning: Failed to upload release asset '{}' for {} ({}): {}",
-                            asset.asset_name,
-                            tag,
-                            asset.path.display(),
-                            error
-                        );
-                    }
+            match github_client.upload_release_asset(
+                &release.upload_url,
+                &asset.path,
+                &asset.asset_name,
+            ) {
+                Ok(()) => {
+                    *published = true;
+                    println!(
+                        "Uploaded release asset '{}' from {}",
+                        asset.asset_name,
+                        asset.path.display()
+                    );
                 }
+                Err(e) => failed_assets.push(format!("'{}' ({})", asset.asset_name, e)),
             }
         }
     }
 
     // Optionally open a Discussion for this release (based on filter)
-    if let Some((package_name, _version)) = parse_tag_with_config(tag, config.as_ref())
+    if release.created
+        && let Some((package_name, _version)) = parse_tag_with_config(tag, config.as_ref())
         && github_options
             .open_discussion
             .should_open_for(&package_name)
@@ -947,7 +989,14 @@ fn create_github_release_for_tag(
         eprintln!("Warning: Failed to create discussion for {}: {}", tag, e);
     }
 
-    Ok(())
+    if failed_assets.is_empty() {
+        Ok(())
+    } else {
+        Err(ActionError::SampoCommandFailed {
+            operation: "release-asset-upload".to_string(),
+            message: format!("failed to upload {}", failed_assets.join(", ")),
+        })
+    }
 }
 
 /// Build a release body by extracting the matching section from the crate's CHANGELOG.md

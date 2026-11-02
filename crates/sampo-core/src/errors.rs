@@ -28,7 +28,7 @@ pub enum SampoError {
     #[error("Publish error: {0}")]
     Publish(String),
 
-    /// A publish failed after earlier packages were published and tagged locally.
+    /// A publish failed, possibly after earlier packages were published and tagged locally.
     #[error("{source}")]
     PartialPublish {
         /// The tags created before the failure, which still need pushing.
