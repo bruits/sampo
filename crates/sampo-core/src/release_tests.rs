@@ -1331,6 +1331,37 @@ tempfile = "3.0"
     }
 
     #[test]
+    fn auto_bumps_dependents_through_a_renamed_workspace_dependency() {
+        let mut workspace = TestWorkspace::new();
+        workspace.add_crate("a", "0.1.0").add_crate("b", "0.1.0");
+        fs::write(
+            workspace.root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nb_alias = { path = \"crates/b\", version = \"0.1.0\", package = \"b\" }\n",
+        )
+        .unwrap();
+        let a_manifest = workspace.crates["a"].join("Cargo.toml");
+        let manifest = fs::read_to_string(&a_manifest).unwrap();
+        fs::write(
+            &a_manifest,
+            manifest + "\n[dependencies]\nb_alias = { workspace = true }\n",
+        )
+        .unwrap();
+        workspace.add_changeset(&["b"], Bump::Minor, "feat: b adds new feature");
+
+        workspace.run_release(false).unwrap();
+
+        workspace.assert_crate_version("b", "0.2.0");
+        workspace.assert_crate_version("a", "0.1.1");
+        workspace.assert_changelog_contains("a", "Updated dependencies: b@0.2.0");
+        let root_manifest = fs::read_to_string(workspace.root.join("Cargo.toml")).unwrap();
+        assert!(
+            root_manifest.contains("version = \"0.2.0\"")
+                && root_manifest.contains("package = \"b\""),
+            "workspace dependency should point at b 0.2.0, got:\n{root_manifest}"
+        );
+    }
+
+    #[test]
     fn fixed_dependencies_bump_with_same_level() {
         let mut workspace = TestWorkspace::new();
         workspace
