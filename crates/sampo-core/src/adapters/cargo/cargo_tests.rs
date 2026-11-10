@@ -228,6 +228,104 @@ fn cargo_discoverer_detects_internal_deps() {
 }
 
 #[test]
+fn cargo_discoverer_detects_renamed_workspace_dep() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\nb = { path = \"crates/pkg-b\", version = \"0.1\", package = \"pkg-b\" }\n",
+    )
+    .unwrap();
+
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+
+    fs::write(
+        crates_dir.join("pkg-a/Cargo.toml"),
+        "[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n[dependencies]\nb = { workspace = true }\n",
+    )
+    .unwrap();
+    fs::write(
+        crates_dir.join("pkg-b/Cargo.toml"),
+        "[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+
+    assert!(pkg_a.internal_deps.contains("cargo/pkg-b"));
+    assert!(!pkg_a.internal_deps.contains("cargo/b"));
+}
+
+#[test]
+fn cargo_discoverer_detects_renamed_path_dep() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n",
+    )
+    .unwrap();
+
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+
+    fs::write(
+        crates_dir.join("pkg-a/Cargo.toml"),
+        "[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n[dependencies]\nb = { path = \"../pkg-b\", package = \"pkg-b\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        crates_dir.join("pkg-b/Cargo.toml"),
+        "[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+
+    assert!(pkg_a.internal_deps.contains("cargo/pkg-b"));
+    assert!(!pkg_a.internal_deps.contains("cargo/b"));
+}
+
+#[test]
+fn cargo_discoverer_ignores_workspace_alias_of_external_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\npkg-b = { version = \"1\", package = \"serde\" }\n",
+    )
+    .unwrap();
+
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+
+    fs::write(
+        crates_dir.join("pkg-a/Cargo.toml"),
+        "[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n[dependencies]\npkg-b = { workspace = true }\n",
+    )
+    .unwrap();
+    fs::write(
+        crates_dir.join("pkg-b/Cargo.toml"),
+        "[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+
+    assert!(pkg_a.internal_deps.is_empty());
+}
+
+#[test]
 fn cargo_discoverer_separates_dev_deps() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -614,6 +712,50 @@ fn update_workspace_root_manifest_noop_without_workspace_package() {
 }
 
 #[test]
+fn update_workspace_root_manifest_ignores_aliases_of_other_packages() {
+    let input = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+foo = { version = "1.0.0", package = "serde" }
+alias = { version = "0.1.0", path = "crates/foo", package = "foo" }
+
+[workspace.dependencies.dotted]
+version = "0.1.0"
+path = "crates/foo"
+package = "foo"
+"#;
+    let mut versions = BTreeMap::new();
+    versions.insert("foo".to_string(), "0.2.0".to_string());
+
+    let (out, changed) =
+        update_workspace_root_manifest(Path::new("/Cargo.toml"), input, None, &versions).unwrap();
+
+    assert!(changed);
+    assert!(out.contains("foo = { version = \"1.0.0\", package = \"serde\" }"));
+    assert!(out.contains("alias = { version = \"0.2.0\""));
+    assert!(out.contains("[workspace.dependencies.dotted]\nversion = \"0.2.0\""));
+}
+
+#[test]
+fn update_workspace_root_manifest_updates_renamed_exact_pin() {
+    let input = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+alias = { version = "=1.0.1", path = "crates/a-lib", package = "a-lib" }
+"#;
+    let mut versions = BTreeMap::new();
+    versions.insert("a-lib".to_string(), "1.0.2".to_string());
+
+    let (out, changed) =
+        update_workspace_root_manifest(Path::new("/Cargo.toml"), input, None, &versions).unwrap();
+
+    assert!(changed);
+    assert!(out.contains("alias = { version = \"=1.0.2\""));
+}
+
+#[test]
 fn updates_renamed_dependency_via_package_field() {
     let input = r#"[package]
 name = "demo"
@@ -631,6 +773,30 @@ my-alias = { package = "actual-pkg", version = "0.1.0" }
     assert!(applied.contains(&("actual-pkg".to_string(), "0.2.0".to_string())));
     assert!(out.contains("version = \"0.2.0\""));
     assert!(out.contains("package = \"actual-pkg\""));
+}
+
+#[test]
+fn does_not_update_member_dependency_aliasing_another_package() {
+    let input = r#"[package]
+name = "pkg-a"
+version = "0.1.0"
+
+[dependencies]
+pkg-b = { version = "1.0.0", package = "serde" }
+"#;
+    let mut versions = BTreeMap::new();
+    versions.insert("pkg-b".to_string(), "2.0.0".to_string());
+
+    let (out, applied) = update_manifest_versions(
+        Path::new("/crates/pkg-a/Cargo.toml"),
+        input,
+        None,
+        &versions,
+    )
+    .unwrap();
+
+    assert!(applied.is_empty());
+    assert_eq!(out, input);
 }
 
 #[test]

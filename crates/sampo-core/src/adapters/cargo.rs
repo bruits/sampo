@@ -981,27 +981,12 @@ fn update_deps_in_table(
     new_version: &str,
     is_dev: bool,
 ) -> bool {
-    let mut changed = false;
-
-    // Direct match by key name
-    if let Some(item) = table.get_mut(dep_name) {
-        changed |= update_standard_dependency_item(item, new_version, is_dev);
-    }
-
-    // Renamed deps: entries where key != dep_name but `package = "dep_name"`
-    let renamed_keys: Vec<String> = table
-        .iter()
-        .filter(|(key, item)| *key != dep_name && has_package_field(item, dep_name))
-        .map(|(key, _)| key.to_string())
-        .collect();
-
-    for key in renamed_keys {
-        if let Some(item) = table.get_mut(&key) {
-            changed |= update_standard_dependency_item(item, new_version, is_dev);
-        }
-    }
-
-    changed
+    table
+        .iter_mut()
+        .filter(|(key, item)| package_field(item).unwrap_or(key) == dep_name)
+        .fold(false, |changed, (_, item)| {
+            update_standard_dependency_item(item, new_version, is_dev) | changed
+        })
 }
 
 /// Extract the raw version string for a dependency from a TOML table section.
@@ -1048,19 +1033,14 @@ fn updated_dependency_requirement(existing: &str, new_version: &str) -> Option<S
         .filter(|updated| updated != existing.trim())
 }
 
-fn has_package_field(item: &Item, name: &str) -> bool {
+fn package_field(item: &Item) -> Option<&str> {
     match item {
-        Item::Value(Value::InlineTable(table)) => {
-            table.get("package").and_then(Value::as_str) == Some(name)
-        }
-        Item::Table(table) => {
-            table
-                .get("package")
-                .and_then(Item::as_value)
-                .and_then(Value::as_str)
-                == Some(name)
-        }
-        _ => false,
+        Item::Value(Value::InlineTable(table)) => table.get("package").and_then(Value::as_str),
+        Item::Table(table) => table
+            .get("package")
+            .and_then(Item::as_value)
+            .and_then(Value::as_str),
+        _ => None,
     }
 }
 
@@ -1157,13 +1137,12 @@ fn update_workspace_dependency(doc: &mut DocumentMut, dep_name: &str, new_versio
     };
 
     match deps_item {
-        Item::Table(table) => {
-            if let Some(item) = table.get_mut(dep_name) {
-                update_workspace_dependency_item(item, new_version)
-            } else {
-                false
-            }
-        }
+        Item::Table(table) => table
+            .iter_mut()
+            .filter(|(key, item)| package_field(item).unwrap_or(key) == dep_name)
+            .fold(false, |changed, (_, item)| {
+                update_workspace_dependency_item(item, new_version) | changed
+            }),
         _ => false,
     }
 }
@@ -1358,6 +1337,7 @@ fn expand_cargo_member_pattern(
 fn collect_cargo_internal_deps(
     crate_dir: &Path,
     name_to_path: &BTreeMap<String, PathBuf>,
+    workspace_deps: Option<&toml::map::Map<String, toml::Value>>,
     manifest: &toml::Value,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut internal = BTreeSet::new();
@@ -1365,8 +1345,9 @@ fn collect_cargo_internal_deps(
     for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
         if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
             for (dep_name, dep_val) in tbl {
-                if is_cargo_internal_dep(crate_dir, name_to_path, dep_name, dep_val) {
-                    let id = PackageInfo::dependency_identifier(PackageKind::Cargo, dep_name);
+                let package_name = dependency_package_name(dep_name, dep_val, workspace_deps);
+                if is_cargo_internal_dep(crate_dir, name_to_path, package_name, dep_val) {
+                    let id = PackageInfo::dependency_identifier(PackageKind::Cargo, package_name);
                     if key == "dev-dependencies" {
                         // Only track dev-deps that have a version field —
                         // path-only dev-deps have no version to update.
@@ -1385,6 +1366,25 @@ fn collect_cargo_internal_deps(
         }
     }
     (internal, internal_dev)
+}
+
+fn dependency_package_name<'a>(
+    key: &'a str,
+    dep_val: &'a toml::Value,
+    workspace_deps: Option<&'a toml::map::Map<String, toml::Value>>,
+) -> &'a str {
+    let package_of = |value: &'a toml::Value| value.get("package").and_then(toml::Value::as_str);
+    if let Some(name) = package_of(dep_val) {
+        return name;
+    }
+    if is_workspace_inherited(dep_val)
+        && let Some(name) = workspace_deps
+            .and_then(|deps| deps.get(key))
+            .and_then(package_of)
+    {
+        return name;
+    }
+    key
 }
 
 /// Check if a dependency is internal to the workspace
@@ -1504,11 +1504,16 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
         crates.push((name, version, member_dir.clone(), value));
     }
 
+    let workspace_deps = root_toml
+        .get("workspace")
+        .and_then(|w| w.get("dependencies"))
+        .and_then(toml::Value::as_table);
+
     let mut out: Vec<PackageInfo> = Vec::new();
     for (name, version, path, manifest) in crates {
         let identifier = PackageInfo::dependency_identifier(PackageKind::Cargo, &name);
         let (internal_deps, internal_dev_deps) =
-            collect_cargo_internal_deps(&path, &name_to_path, &manifest);
+            collect_cargo_internal_deps(&path, &name_to_path, workspace_deps, &manifest);
         out.push(PackageInfo {
             name,
             identifier,
