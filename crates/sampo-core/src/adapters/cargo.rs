@@ -981,27 +981,12 @@ fn update_deps_in_table(
     new_version: &str,
     is_dev: bool,
 ) -> bool {
-    let mut changed = false;
-
-    // Direct match by key name
-    if let Some(item) = table.get_mut(dep_name) {
-        changed |= update_standard_dependency_item(item, new_version, is_dev);
-    }
-
-    // Renamed deps: entries where key != dep_name but `package = "dep_name"`
-    let renamed_keys: Vec<String> = table
-        .iter()
-        .filter(|(key, item)| *key != dep_name && has_package_field(item, dep_name))
-        .map(|(key, _)| key.to_string())
-        .collect();
-
-    for key in renamed_keys {
-        if let Some(item) = table.get_mut(&key) {
-            changed |= update_standard_dependency_item(item, new_version, is_dev);
-        }
-    }
-
-    changed
+    table
+        .iter_mut()
+        .filter(|(key, item)| package_field(item).unwrap_or(key) == dep_name)
+        .fold(false, |changed, (_, item)| {
+            update_standard_dependency_item(item, new_version, is_dev) | changed
+        })
 }
 
 /// Extract the raw version string for a dependency from a TOML table section.
@@ -1057,10 +1042,6 @@ fn package_field(item: &Item) -> Option<&str> {
             .and_then(Value::as_str),
         _ => None,
     }
-}
-
-fn has_package_field(item: &Item, name: &str) -> bool {
-    package_field(item) == Some(name)
 }
 
 fn update_standard_dependency_item(item: &mut Item, new_version: &str, is_dev: bool) -> bool {
@@ -1396,8 +1377,7 @@ fn dependency_package_name<'a>(
     if let Some(name) = package_of(dep_val) {
         return name;
     }
-    let inherits = dep_val.get("workspace").and_then(toml::Value::as_bool) == Some(true);
-    if inherits
+    if is_workspace_inherited(dep_val)
         && let Some(name) = workspace_deps
             .and_then(|deps| deps.get(key))
             .and_then(package_of)

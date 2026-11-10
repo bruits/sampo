@@ -294,6 +294,38 @@ fn cargo_discoverer_detects_renamed_path_dep() {
 }
 
 #[test]
+fn cargo_discoverer_ignores_workspace_alias_of_external_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\npkg-b = { version = \"1\", package = \"serde\" }\n",
+    )
+    .unwrap();
+
+    let crates_dir = root.join("crates");
+    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
+    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+
+    fs::write(
+        crates_dir.join("pkg-a/Cargo.toml"),
+        "[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n[dependencies]\npkg-b = { workspace = true }\n",
+    )
+    .unwrap();
+    fs::write(
+        crates_dir.join("pkg-b/Cargo.toml"),
+        "[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let packages = discover_cargo(root).unwrap();
+    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+
+    assert!(pkg_a.internal_deps.is_empty());
+}
+
+#[test]
 fn cargo_discoverer_separates_dev_deps() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -680,25 +712,6 @@ fn update_workspace_root_manifest_noop_without_workspace_package() {
 }
 
 #[test]
-fn update_workspace_root_manifest_updates_renamed_workspace_dependencies() {
-    let input = r#"[workspace]
-members = ["crates/*"]
-
-[workspace.dependencies]
-alias = { version = "0.1.0", path = "crates/foo", package = "foo" }
-"#;
-    let mut versions = BTreeMap::new();
-    versions.insert("foo".to_string(), "0.2.0".to_string());
-
-    let (out, changed) =
-        update_workspace_root_manifest(Path::new("/Cargo.toml"), input, None, &versions).unwrap();
-
-    assert!(changed);
-    assert!(out.contains("version = \"0.2.0\""));
-    assert!(out.contains("package = \"foo\""));
-}
-
-#[test]
 fn update_workspace_root_manifest_ignores_aliases_of_other_packages() {
     let input = r#"[workspace]
 members = ["crates/*"]
@@ -725,35 +738,21 @@ package = "foo"
 }
 
 #[test]
-fn cargo_discoverer_ignores_workspace_alias_of_external_package() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
+fn update_workspace_root_manifest_updates_renamed_exact_pin() {
+    let input = r#"[workspace]
+members = ["crates/*"]
 
-    fs::write(
-        root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.dependencies]\npkg-b = { version = \"1\", package = \"serde\" }\n",
-    )
-    .unwrap();
+[workspace.dependencies]
+alias = { version = "=1.0.1", path = "crates/a-lib", package = "a-lib" }
+"#;
+    let mut versions = BTreeMap::new();
+    versions.insert("a-lib".to_string(), "1.0.2".to_string());
 
-    let crates_dir = root.join("crates");
-    fs::create_dir_all(crates_dir.join("pkg-a")).unwrap();
-    fs::create_dir_all(crates_dir.join("pkg-b")).unwrap();
+    let (out, changed) =
+        update_workspace_root_manifest(Path::new("/Cargo.toml"), input, None, &versions).unwrap();
 
-    fs::write(
-        crates_dir.join("pkg-a/Cargo.toml"),
-        "[package]\nname=\"pkg-a\"\nversion=\"0.1.0\"\n[dependencies]\npkg-b = { workspace = true }\n",
-    )
-    .unwrap();
-    fs::write(
-        crates_dir.join("pkg-b/Cargo.toml"),
-        "[package]\nname=\"pkg-b\"\nversion=\"0.1.0\"\n",
-    )
-    .unwrap();
-
-    let packages = discover_cargo(root).unwrap();
-    let pkg_a = packages.iter().find(|p| p.name == "pkg-a").unwrap();
-
-    assert!(pkg_a.internal_deps.is_empty());
+    assert!(changed);
+    assert!(out.contains("alias = { version = \"=1.0.2\""));
 }
 
 #[test]
@@ -774,6 +773,30 @@ my-alias = { package = "actual-pkg", version = "0.1.0" }
     assert!(applied.contains(&("actual-pkg".to_string(), "0.2.0".to_string())));
     assert!(out.contains("version = \"0.2.0\""));
     assert!(out.contains("package = \"actual-pkg\""));
+}
+
+#[test]
+fn does_not_update_member_dependency_aliasing_another_package() {
+    let input = r#"[package]
+name = "pkg-a"
+version = "0.1.0"
+
+[dependencies]
+pkg-b = { version = "1.0.0", package = "serde" }
+"#;
+    let mut versions = BTreeMap::new();
+    versions.insert("pkg-b".to_string(), "2.0.0".to_string());
+
+    let (out, applied) = update_manifest_versions(
+        Path::new("/crates/pkg-a/Cargo.toml"),
+        input,
+        None,
+        &versions,
+    )
+    .unwrap();
+
+    assert!(applied.is_empty());
+    assert_eq!(out, input);
 }
 
 #[test]
