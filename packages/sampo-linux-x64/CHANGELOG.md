@@ -1,6 +1,6 @@
 # @bruits/sampo-linux-x64
 
-## 0.23.0 ... 0.24.0 — 2026-11-01
+## 0.23.0 ... 0.24.1 — 2026-11-11
 
 Version bump only, to follow other packages.
 

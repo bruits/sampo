@@ -1,5 +1,12 @@
 # sampo-core
 
+## 0.20.1 — 2026-11-11
+
+### Patch changes
+
+- [3a8a7af](https://github.com/bruits/sampo/commit/3a8a7aff5a3f17ccb19870357baf869786aff7d4) In Rust (Cargo) projects, fixed `sampo release` not bumping crates that depend on a workspace crate through a renamed dependency (`package = "…"`), directly or through `[workspace.dependencies]`, and leaving those renamed workspace entries on the old version. — Thanks @20jasper for your first contribution 🎉!
+- [3c9f00b](https://github.com/bruits/sampo/commit/3c9f00b9c089e5e52c8b8afcbb9a0b1a8da472ab) Fixed a GitHub Action release that failed after publishing, leaving tags and GitHub Releases missing, which rerunning could not repair. The action now pushes and releases everything it can before failing, also when an asset upload fails, and a rerun adds whatever is still missing. — Thanks @goulvenclech!
+
 ## 0.20.0 — 2026-11-01
 
 ### Minor changes
