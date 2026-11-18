@@ -1,8 +1,8 @@
 /// Cargo ecosystem adapter for all Cargo operations.
 use crate::adapters::{format_command_display, has_flag};
 use crate::errors::{Result, SampoError, WorkspaceError};
-use crate::types::{PackageInfo, PackageKind, Workspace};
-use cargo_metadata::MetadataCommand;
+use crate::types::{ConstraintCheckResult, PackageInfo, PackageKind, Workspace};
+use cargo_metadata::{Dependency, DependencyKind, MetadataCommand};
 use rustc_hash::FxHashSet;
 use semver::{Version, VersionReq};
 #[cfg(test)]
@@ -12,9 +12,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 const CARGO_MANIFEST: &str = "Cargo.toml";
+const DEPENDENCY_SECTIONS: [(&str, DependencyKind); 3] = [
+    ("dependencies", DependencyKind::Normal),
+    ("dev-dependencies", DependencyKind::Development),
+    ("build-dependencies", DependencyKind::Build),
+];
 
 #[cfg(test)]
 thread_local! {
@@ -129,8 +134,6 @@ pub(super) fn check_dependency_constraint(
     current_constraint: &str,
     new_version: &str,
 ) -> Result<crate::types::ConstraintCheckResult> {
-    use crate::types::ConstraintCheckResult;
-
     let constraint = current_constraint.trim();
     let version_str = new_version.trim();
 
@@ -586,18 +589,26 @@ fn regenerate_cargo_lockfile(root: &Path) -> Result<()> {
 
 /// Metadata extracted from `cargo_metadata` for the workspace.
 pub struct ManifestMetadata {
-    packages: Vec<MetadataPackage>,
-    by_manifest: HashMap<PathBuf, usize>,
-}
-
-struct MetadataPackage {
-    dependencies: Vec<MetadataDependency>,
+    by_manifest: HashMap<PathBuf, Vec<MetadataDependency>>,
 }
 
 struct MetadataDependency {
-    manifest_key: String,
     package_name: String,
-    version_req: String,
+    path: Option<PathBuf>,
+    version_req: Option<String>,
+    inherited: bool,
+}
+
+impl MetadataDependency {
+    fn planned_requirement(&self, new_version: &str) -> Option<String> {
+        let requirement = self.version_req.as_ref()?;
+        let updated = if self.inherited {
+            compute_workspace_dependency_version(requirement, new_version)
+        } else {
+            updated_dependency_requirement(requirement, new_version)
+        };
+        Some(updated.unwrap_or_else(|| requirement.clone()))
+    }
 }
 
 impl ManifestMetadata {
@@ -616,7 +627,8 @@ impl ManifestMetadata {
 
         let workspace_ids: FxHashSet<_> = metadata.workspace_members.iter().cloned().collect();
 
-        let mut packages = Vec::new();
+        let root = read_dependency_manifest(&manifest_path)?;
+        let workspace_deps = root.get("workspace").and_then(|ws| ws.get("dependencies"));
         let mut by_manifest = HashMap::new();
 
         for package in metadata.packages {
@@ -624,107 +636,140 @@ impl ManifestMetadata {
                 continue;
             }
 
-            let manifest_path: PathBuf = package.manifest_path.clone().into();
+            let manifest_path = package.manifest_path.into_std_path_buf();
+            let manifest = read_dependency_manifest(&manifest_path)?;
             let dependencies = package
                 .dependencies
-                .iter()
-                .map(|dep| MetadataDependency {
-                    manifest_key: dep.rename.clone().unwrap_or_else(|| dep.name.clone()),
-                    package_name: dep.name.clone(),
-                    version_req: dep.req.to_string(),
+                .into_iter()
+                .map(|dep| {
+                    let (version_req, inherited) =
+                        dependency_requirement(&manifest, workspace_deps, &dep)
+                            .map(|(version, inherited)| (version.map(str::to_owned), inherited))
+                            .unwrap_or_else(|| (Some(dep.req.to_string()), false));
+                    MetadataDependency {
+                        package_name: dep.name,
+                        path: dep.path.map(|path| path.into_std_path_buf()),
+                        version_req,
+                        inherited,
+                    }
                 })
                 .collect();
-
-            let idx = packages.len();
-            by_manifest.insert(manifest_path.clone(), idx);
-            packages.push(MetadataPackage { dependencies });
+            by_manifest.insert(manifest_path, dependencies);
         }
 
-        Ok(Self {
-            packages,
-            by_manifest,
-        })
+        Ok(Self { by_manifest })
     }
 
-    fn package_for_manifest(&self, manifest_path: &Path) -> Option<&MetadataPackage> {
+    fn dependencies<'a>(
+        &'a self,
+        manifest_path: &Path,
+        dep_name: &'a str,
+    ) -> impl Iterator<Item = &'a MetadataDependency> {
         self.by_manifest
             .get(manifest_path)
-            .and_then(|idx| self.packages.get(*idx))
+            .into_iter()
+            .flatten()
+            .filter(move |dep| dep.package_name == dep_name)
     }
 
-    /// Returns the version constraint for a dependency of a package, if found.
-    /// The `dep_name` is the package name (not the alias/manifest key).
+    /// Returns a Cargo-normalized constraint for the named dependency, preferring a range over a pin.
     pub fn get_dependency_constraint(
         &self,
         manifest_path: &Path,
         dep_name: &str,
     ) -> Option<String> {
-        let package = self.package_for_manifest(manifest_path)?;
-        let constraints: Vec<&str> = package
-            .dependencies
-            .iter()
-            .filter(|dep| dep.package_name == dep_name)
-            .map(|dep| dep.version_req.as_str())
-            .collect();
-        // The release rewrites an exact pin, so a range in another section is the one to check.
-        constraints
-            .iter()
-            .find(|req| !is_pin(req))
-            .or(constraints.first())
+        let requirement = self
+            .dependencies(manifest_path, dep_name)
+            .map(|dep| dep.version_req.as_deref().unwrap_or("*"))
+            .min_by_key(|requirement| is_pin(requirement))?;
+        VersionReq::parse(requirement)
+            .ok()
             .map(|req| req.to_string())
     }
 
-    /// Check if a dependency's version is pinned (bare `"1.0.0"` or exact `"=1.0.0"`) in every
-    /// section of the member manifest declaring it. Pinned versions will be updated during
-    /// manifest updates, while range constraints (e.g., `"^1.0"`) are preserved and need
-    /// constraint validation.
+    /// Whether every declaration of the named dependency specifies a bare or exact pin.
     pub fn is_dependency_pinned(&self, manifest_path: &Path, dep_name: &str) -> bool {
-        let dependencies: Vec<_> = self
-            .package_for_manifest(manifest_path)
-            .map(|pkg| {
-                pkg.dependencies
-                    .iter()
-                    .filter(|d| d.package_name == dep_name)
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Metadata cannot tell a bare `1.0.0` from `^1.0.0`, but it can tell an exact pin, and
-        // sees one inherited from `[workspace.dependencies]`, which the member manifest lacks.
-        if !dependencies.is_empty() && dependencies.iter().all(|d| is_pin(&d.version_req)) {
-            return true;
-        }
-
-        let manifest_key = dependencies
-            .first()
-            .map_or(dep_name, |d| d.manifest_key.as_str());
-
-        let content = match fs::read_to_string(manifest_path) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        let doc: DocumentMut = match content.parse() {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
-
-        let top = doc.as_table();
-        let mut tables = vec![top];
-        if let Some(targets) = top.get("target").and_then(Item::as_table) {
-            tables.extend(targets.iter().filter_map(|(_, target)| target.as_table()));
-        }
-
-        // A range in one section is not rewritten, so a pin in another must not hide it.
-        let mut requirements = tables
-            .into_iter()
-            .flat_map(|table| {
-                ["dependencies", "dev-dependencies", "build-dependencies"]
-                    .into_iter()
-                    .filter_map(move |section| raw_dep_version(table, section, manifest_key))
-            })
-            .peekable();
-        requirements.peek().is_some() && requirements.all(is_pin)
+        let mut dependencies = self.dependencies(manifest_path, dep_name).peekable();
+        dependencies.peek().is_some()
+            && dependencies.all(|dep| dep.version_req.as_deref().is_some_and(is_pin))
     }
+
+    pub(crate) fn check_internal_dependency(
+        &self,
+        manifest_path: &Path,
+        dependency: &PackageInfo,
+        new_version: &str,
+    ) -> Result<Vec<ConstraintCheckResult>> {
+        let requirements: BTreeSet<_> = self
+            .dependencies(manifest_path, &dependency.name)
+            .filter(|dep| dep.path.as_deref() == Some(&dependency.path))
+            .map(|dep| dep.planned_requirement(new_version))
+            .collect();
+        if requirements.is_empty() {
+            return Ok(vec![ConstraintCheckResult::Skipped {
+                reason: "no matching path dependency".into(),
+            }]);
+        }
+        requirements
+            .into_iter()
+            .map(|requirement| match requirement {
+                Some(req) => check_dependency_constraint(&dependency.name, &req, new_version),
+                None => Ok(ConstraintCheckResult::Satisfied),
+            })
+            .collect()
+    }
+}
+
+fn read_dependency_manifest(path: &Path) -> Result<DocumentMut> {
+    let content =
+        fs::read_to_string(path).map_err(|err| crate::errors::io_error_with_path(err, path))?;
+    content.parse().map_err(|err| {
+        SampoError::Release(format!(
+            "Failed to parse manifest {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+/// Cargo normalizes bare pins to caret ranges and normalizes whitespace in target expressions.
+fn dependency_requirement<'a>(
+    doc: &'a DocumentMut,
+    workspace_deps: Option<&'a Item>,
+    dep: &Dependency,
+) -> Option<(Option<&'a str>, bool)> {
+    let key = dep.rename.as_deref().unwrap_or(&dep.name);
+    let (section, _) = DEPENDENCY_SECTIONS
+        .iter()
+        .find(|(_, kind)| *kind == dep.kind)?;
+    let requirement = |parent: &'a dyn TableLike| {
+        let item = parent.get(section)?.as_table_like()?.get(key)?;
+        let inherited = has_workspace_flag(Some(item));
+        let declaration = if inherited {
+            workspace_deps?.get(key)?
+        } else {
+            item
+        };
+        let version = declaration
+            .as_str()
+            .or_else(|| declaration.get("version")?.as_str());
+        Some((version, inherited))
+    };
+    let Some(platform) = &dep.target else {
+        return requirement(doc.as_table());
+    };
+    doc.get("target")?
+        .as_table_like()?
+        .iter()
+        .filter(|(target, _)| target.parse().ok().as_ref() == Some(platform))
+        .filter_map(|(_, target)| requirement(target.as_table_like()?))
+        .filter(|(version, _)| {
+            VersionReq::parse(version.unwrap_or("*")).ok().as_ref() == Some(&dep.req)
+        })
+        .min_by_key(|(version, inherited)| {
+            version.is_none_or(|req| {
+                is_pin(req) || *inherited && parse_numeric_shorthand(req).is_some()
+            })
+        })
 }
 
 /// Update a Cargo manifest by setting the package version (if provided) and retargeting internal
@@ -923,85 +968,65 @@ pub fn update_workspace_root_manifest(
 }
 
 fn has_workspace_flag(item: Option<&Item>) -> bool {
-    let Some(item) = item else { return false };
-
-    if let Some(table) = item.as_table() {
-        return table
-            .get("workspace")
-            .and_then(Item::as_value)
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-    }
-
-    if let Some(value) = item.as_value()
-        && let Some(inline) = value.as_inline_table()
-    {
-        return inline
-            .get("workspace")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-    }
-
-    false
+    item.and_then(|item| item.get("workspace"))
+        .and_then(Item::as_bool)
+        == Some(true)
 }
 
 /// Update all dependency occurrences of `dep_name` in the manifest, including renamed deps
 /// where `package = "dep_name"` is specified.
 fn update_all_dependencies(doc: &mut DocumentMut, dep_name: &str, new_version: &str) -> bool {
-    let mut changed = false;
-    let top_level = doc.as_table_mut();
-
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        let is_dev = section == "dev-dependencies";
-        if let Some(table) = top_level.get_mut(section).and_then(Item::as_table_mut) {
-            changed |= update_deps_in_table(table, dep_name, new_version, is_dev);
-        }
-    }
-
-    if let Some(targets) = top_level.get_mut("target").and_then(Item::as_table_mut) {
-        for (_, target_item) in targets.iter_mut() {
-            if let Some(target_table) = target_item.as_table_mut() {
-                for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                    let is_dev = section == "dev-dependencies";
-                    if let Some(table) = target_table.get_mut(section).and_then(Item::as_table_mut)
-                    {
-                        changed |= update_deps_in_table(table, dep_name, new_version, is_dev);
-                    }
-                }
+    let top = doc.as_table_mut();
+    let mut changed = update_dependency_sections(top, dep_name, new_version);
+    if let Some(targets) = top.get_mut("target").and_then(Item::as_table_like_mut) {
+        for (_, target) in targets.iter_mut() {
+            if let Some(table) = target.as_table_like_mut() {
+                changed |= update_dependency_sections(table, dep_name, new_version);
             }
         }
     }
+    changed
+}
 
+fn update_dependency_sections(
+    parent: &mut dyn TableLike,
+    dep_name: &str,
+    new_version: &str,
+) -> bool {
+    let mut changed = false;
+    for (section, _) in DEPENDENCY_SECTIONS {
+        if let Some(table) = parent.get_mut(section).and_then(Item::as_table_like_mut) {
+            changed |=
+                update_deps_in_table(table, dep_name, new_version, updated_dependency_requirement);
+        }
+    }
     changed
 }
 
 fn update_deps_in_table(
-    table: &mut Table,
+    table: &mut dyn TableLike,
     dep_name: &str,
     new_version: &str,
-    is_dev: bool,
+    update: fn(&str, &str) -> Option<String>,
 ) -> bool {
-    table
-        .iter_mut()
-        .filter(|(key, item)| package_field(item).unwrap_or(key) == dep_name)
-        .fold(false, |changed, (_, item)| {
-            update_standard_dependency_item(item, new_version, is_dev) | changed
-        })
-}
-
-/// Extract the raw version string for a dependency from a TOML table section.
-fn raw_dep_version<'a>(parent: &'a Table, section: &str, dep_name: &str) -> Option<&'a str> {
-    let dep_table = parent.get(section)?.as_table()?;
-    let item = dep_table.get(dep_name)?;
-    match item {
-        Item::Value(Value::String(s)) => Some(s.value()),
-        Item::Value(Value::InlineTable(t)) => t.get("version").and_then(Value::as_str),
-        Item::Table(t) => t
-            .get("version")
-            .and_then(Item::as_value)
-            .and_then(Value::as_str),
-        _ => None,
+    let mut changed = false;
+    for (key, item) in table.iter_mut() {
+        let package_name = item.get("package").and_then(Item::as_str).unwrap_or(&key);
+        if package_name != dep_name || has_workspace_flag(Some(item)) {
+            continue;
+        }
+        let requirement = item.as_str().or_else(|| item.get("version")?.as_str());
+        let Some(updated) = requirement.and_then(|req| update(req, new_version)) else {
+            continue;
+        };
+        if let Some(table) = item.as_table_like_mut() {
+            table.insert("version", toml_edit::value(updated));
+        } else {
+            *item = toml_edit::value(updated);
+        }
+        changed = true;
     }
+    changed
 }
 
 /// The operator of a pin: empty for a bare `1.0.0`, `=` for an exact `=1.0.0`. `None` for a
@@ -1033,168 +1058,21 @@ fn updated_dependency_requirement(existing: &str, new_version: &str) -> Option<S
         .filter(|updated| updated != existing.trim())
 }
 
-fn package_field(item: &Item) -> Option<&str> {
-    match item {
-        Item::Value(Value::InlineTable(table)) => table.get("package").and_then(Value::as_str),
-        Item::Table(table) => table
-            .get("package")
-            .and_then(Item::as_value)
-            .and_then(Value::as_str),
-        _ => None,
-    }
-}
-
-fn update_standard_dependency_item(item: &mut Item, new_version: &str, is_dev: bool) -> bool {
-    match item {
-        Item::Value(Value::InlineTable(table)) => {
-            update_inline_dependency(table, new_version, is_dev)
-        }
-        Item::Table(table) => update_table_dependency(table, new_version, is_dev),
-        Item::Value(value) => {
-            let current = value.as_str().unwrap_or_default();
-            let Some(updated) = updated_dependency_requirement(current, new_version) else {
-                return false;
-            };
-            *item = Item::Value(Value::from(updated));
-            true
-        }
-        _ => false,
-    }
-}
-
-fn update_inline_dependency(table: &mut InlineTable, new_version: &str, is_dev: bool) -> bool {
-    if table
-        .get("workspace")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    // Path-only dev-dependencies are never resolved from the registry.
-    if is_dev && table.get("path").is_some() && table.get("version").is_none() {
-        return false;
-    }
-
-    // No version field present — don't insert one
-    let Some(existing) = table.get("version").and_then(Value::as_str) else {
-        return false;
-    };
-    let Some(updated) = updated_dependency_requirement(existing, new_version) else {
-        return false;
-    };
-
-    table.insert("version", Value::from(updated));
-    true
-}
-
-fn update_table_dependency(table: &mut Table, new_version: &str, is_dev: bool) -> bool {
-    if table
-        .get("workspace")
-        .and_then(Item::as_value)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    if is_dev
-        && table.get("path").and_then(Item::as_value).is_some()
-        && table.get("version").and_then(Item::as_value).is_none()
-    {
-        return false;
-    }
-
-    // No version field present — don't insert one
-    let Some(existing) = table
-        .get("version")
-        .and_then(Item::as_value)
-        .and_then(Value::as_str)
+fn update_workspace_dependency(doc: &mut DocumentMut, dep_name: &str, new_version: &str) -> bool {
+    let Some(deps) = doc
+        .get_mut("workspace")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|ws| ws.get_mut("dependencies"))
+        .and_then(Item::as_table_like_mut)
     else {
         return false;
     };
-    let Some(updated) = updated_dependency_requirement(existing, new_version) else {
-        return false;
-    };
-
-    table.insert("version", Item::Value(Value::from(updated)));
-    true
-}
-
-fn update_workspace_dependency(doc: &mut DocumentMut, dep_name: &str, new_version: &str) -> bool {
-    let workspace_table = match doc
-        .as_table_mut()
-        .get_mut("workspace")
-        .and_then(Item::as_table_mut)
-    {
-        Some(table) => table,
-        None => return false,
-    };
-
-    let deps_item = match workspace_table.get_mut("dependencies") {
-        Some(item) => item,
-        None => return false,
-    };
-
-    match deps_item {
-        Item::Table(table) => table
-            .iter_mut()
-            .filter(|(key, item)| package_field(item).unwrap_or(key) == dep_name)
-            .fold(false, |changed, (_, item)| {
-                update_workspace_dependency_item(item, new_version) | changed
-            }),
-        _ => false,
-    }
-}
-
-fn update_workspace_dependency_item(item: &mut Item, new_version: &str) -> bool {
-    match item {
-        Item::Value(Value::InlineTable(table)) => {
-            let current = table.get("version").and_then(Value::as_str);
-            let Some(existing) = current else {
-                return false;
-            };
-
-            match compute_workspace_dependency_version(existing, new_version) {
-                Some(resolved) if resolved != existing => {
-                    table.insert("version", Value::from(resolved));
-                    true
-                }
-                _ => false,
-            }
-        }
-        Item::Table(table) => {
-            let current = table
-                .get("version")
-                .and_then(Item::as_value)
-                .and_then(Value::as_str);
-            let Some(existing) = current else {
-                return false;
-            };
-
-            match compute_workspace_dependency_version(existing, new_version) {
-                Some(resolved) if resolved != existing => {
-                    table.insert("version", Item::Value(Value::from(resolved)));
-                    true
-                }
-                _ => false,
-            }
-        }
-        Item::Value(value) => {
-            let Some(existing) = value.as_str() else {
-                return false;
-            };
-
-            match compute_workspace_dependency_version(existing, new_version) {
-                Some(resolved) if resolved != existing => {
-                    *item = Item::Value(Value::from(resolved));
-                    true
-                }
-                _ => false,
-            }
-        }
-        _ => false,
-    }
+    update_deps_in_table(
+        deps,
+        dep_name,
+        new_version,
+        compute_workspace_dependency_version,
+    )
 }
 
 fn compute_workspace_dependency_version(existing: &str, new_version: &str) -> Option<String> {
@@ -1330,87 +1208,56 @@ fn expand_cargo_member_pattern(
     Ok(())
 }
 
-/// Collect internal dependencies for a crate.
-/// Returns (internal_deps, internal_dev_deps). Dev-dependencies are tracked
-/// separately because they don't create publish-order constraints (cargo strips
-/// them during publish), but their versions still potentially need updating during releases.
+/// Versioned dev dependencies affect release planning without adding a publish-order constraint.
 fn collect_cargo_internal_deps(
     crate_dir: &Path,
+    root: &Path,
     name_to_path: &BTreeMap<String, PathBuf>,
     workspace_deps: Option<&toml::map::Map<String, toml::Value>>,
     manifest: &toml::Value,
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut internal = BTreeSet::new();
     let mut internal_dev = BTreeSet::new();
-    for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
-            for (dep_name, dep_val) in tbl {
-                let package_name = dependency_package_name(dep_name, dep_val, workspace_deps);
-                if is_cargo_internal_dep(crate_dir, name_to_path, package_name, dep_val) {
-                    let id = PackageInfo::dependency_identifier(PackageKind::Cargo, package_name);
-                    if key == "dev-dependencies" {
-                        // Only track dev-deps that have a version field —
-                        // path-only dev-deps have no version to update.
-                        let has_version = dep_val
-                            .as_table()
-                            .map(|t| t.contains_key("version"))
-                            .unwrap_or(false);
-                        if has_version {
-                            internal_dev.insert(id);
-                        }
-                    } else {
-                        internal.insert(id);
-                    }
+    let mut tables = vec![manifest];
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        tables.extend(targets.values());
+    }
+
+    for table in tables {
+        for (section, kind) in DEPENDENCY_SECTIONS {
+            let Some(deps) = table.get(section).and_then(toml::Value::as_table) else {
+                continue;
+            };
+            for (dep_name, dep_val) in deps {
+                let (base, declaration) = if is_workspace_inherited(dep_val) {
+                    let Some(declaration) = workspace_deps.and_then(|deps| deps.get(dep_name))
+                    else {
+                        continue;
+                    };
+                    (root, declaration)
+                } else {
+                    (crate_dir, dep_val)
+                };
+                let Some(path) = declaration.get("path").and_then(toml::Value::as_str) else {
+                    continue;
+                };
+                let package_name = declaration
+                    .get("package")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or(dep_name);
+                if name_to_path.get(package_name) != Some(&clean_path(&base.join(path))) {
+                    continue;
+                }
+                let id = PackageInfo::dependency_identifier(PackageKind::Cargo, package_name);
+                if kind != DependencyKind::Development {
+                    internal.insert(id);
+                } else if dep_val.get("version").is_some() {
+                    internal_dev.insert(id);
                 }
             }
         }
     }
     (internal, internal_dev)
-}
-
-fn dependency_package_name<'a>(
-    key: &'a str,
-    dep_val: &'a toml::Value,
-    workspace_deps: Option<&'a toml::map::Map<String, toml::Value>>,
-) -> &'a str {
-    let package_of = |value: &'a toml::Value| value.get("package").and_then(toml::Value::as_str);
-    if let Some(name) = package_of(dep_val) {
-        return name;
-    }
-    if is_workspace_inherited(dep_val)
-        && let Some(name) = workspace_deps
-            .and_then(|deps| deps.get(key))
-            .and_then(package_of)
-    {
-        return name;
-    }
-    key
-}
-
-/// Check if a dependency is internal to the workspace
-fn is_cargo_internal_dep(
-    crate_dir: &Path,
-    name_to_path: &BTreeMap<String, PathBuf>,
-    dep_name: &str,
-    dep_val: &toml::Value,
-) -> bool {
-    if let Some(tbl) = dep_val.as_table() {
-        // Check for `path = "..."` dependency
-        if let Some(path_val) = tbl.get("path")
-            && let Some(path_str) = path_val.as_str()
-        {
-            let dep_path = clean_path(&crate_dir.join(path_str));
-            return name_to_path.values().any(|p| *p == dep_path);
-        }
-        // Check for `workspace = true` dependency
-        if let Some(workspace_val) = tbl.get("workspace")
-            && workspace_val.as_bool() == Some(true)
-        {
-            // Only internal if dependency name is another workspace member
-            return name_to_path.contains_key(dep_name);
-        }
-    }
-    false
 }
 
 fn resolve_package_version(
@@ -1513,7 +1360,7 @@ fn discover_cargo(root: &Path) -> std::result::Result<Vec<PackageInfo>, Workspac
     for (name, version, path, manifest) in crates {
         let identifier = PackageInfo::dependency_identifier(PackageKind::Cargo, &name);
         let (internal_deps, internal_dev_deps) =
-            collect_cargo_internal_deps(&path, &name_to_path, workspace_deps, &manifest);
+            collect_cargo_internal_deps(&path, root, &name_to_path, workspace_deps, &manifest);
         out.push(PackageInfo {
             name,
             identifier,

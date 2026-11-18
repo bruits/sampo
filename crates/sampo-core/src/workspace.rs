@@ -168,7 +168,7 @@ mod tests {
 
         fs::write(
             root.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/*\"]\n",
+            "[workspace]\nmembers = [\"crates/*\"]\n[workspace.dependencies]\nz = { path = \"crates/z\" }\n",
         )
         .unwrap();
 

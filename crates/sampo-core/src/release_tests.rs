@@ -2488,6 +2488,280 @@ bar = { version = "1.0.0", path = "crates/bar" }
         );
     }
 
+    fn fixed_target_dependency_workspace(version: &str, bump: Bump) -> TestWorkspace {
+        let mut fixture = TestWorkspace::new();
+        fixture
+            .add_crate("a", version)
+            .add_crate("b", version)
+            .set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n")
+            .add_changeset(&["cargo/b"], bump, "Update b");
+        fixture
+    }
+
+    fn target_prerelease_workspace(
+        member_deps: &str,
+        workspace_dep: Option<&str>,
+    ) -> TestWorkspace {
+        let fixture = fixed_target_dependency_workspace("1.0.0-alpha", Bump::Major);
+        let a = fixture.crates["a"].join("Cargo.toml");
+        let manifest = fs::read_to_string(&a).unwrap();
+        fs::write(
+            a,
+            format!("{manifest}\n[target.'cfg(unix)'.dependencies]\n{member_deps}\n"),
+        )
+        .unwrap();
+        if let Some(dep) = workspace_dep {
+            let root = fixture.root.join("Cargo.toml");
+            let manifest = fs::read_to_string(&root).unwrap();
+            fs::write(
+                root,
+                format!("{manifest}\n[workspace.dependencies]\n{dep}\n"),
+            )
+            .unwrap();
+        }
+        fixture
+    }
+
+    #[test]
+    fn target_prerelease_checks_rewritten_workspace_shorthand_before_files_change() {
+        let fixture = target_prerelease_workspace(
+            "b.workspace = true",
+            Some("b = { path = 'crates/b', version = '1' }"),
+        );
+        let files = [
+            fixture.root.join("Cargo.toml"),
+            fixture.crates["a"].join("Cargo.toml"),
+            fixture.crates["b"].join("Cargo.toml"),
+            fixture.root.join(".sampo/changesets/updateb.md"),
+        ];
+        let before = files.each_ref().map(|path| fs::read(path).unwrap());
+
+        let err = fixture.run_release(false).unwrap_err();
+        assert!(
+            matches!(err, SampoError::ConstraintViolation(ref msg) if msg.contains("constraint '2'") && msg.contains("2.0.0-alpha")),
+            "{err}"
+        );
+        assert_eq!(files.each_ref().map(|path| fs::read(path).unwrap()), before);
+        assert!(!fixture.root.join("Cargo.lock").exists());
+        assert!(!fixture.root.join(".sampo/prerelease/updateb.md").exists());
+        for member in fixture.crates.values() {
+            assert!(!member.join("CHANGELOG.md").exists());
+        }
+    }
+
+    #[test]
+    fn target_prerelease_allows_path_only_dependencies() {
+        for (member, root) in [
+            ("b = { path = '../b' }", None),
+            ("b.workspace = true", Some("b = { path = 'crates/b' }")),
+        ] {
+            let fixture = target_prerelease_workspace(member, root);
+            let plan = fixture.run_release(true).unwrap();
+            assert_eq!(
+                released_versions(&plan),
+                [("cargo/a", "2.0.0-alpha"), ("cargo/b", "2.0.0-alpha")]
+            );
+
+            fixture.set_config("[packages]\nbump_dependents = 'out-of-range'\n");
+            let output = fixture.run_release(false).unwrap();
+            assert_eq!(released_versions(&output), [("cargo/b", "2.0.0-alpha")]);
+        }
+    }
+
+    #[test]
+    fn target_prerelease_checks_explicit_wildcards() {
+        for (member, root) in [
+            ("b = { path = '../b', version = '*' }", None),
+            (
+                "b.workspace = true",
+                Some("b = { path = 'crates/b', version = '*' }"),
+            ),
+            (
+                "b = { path = '../b' }\n[target.'cfg( unix )'.dependencies]\nb = { path = '../b', version = '*' }",
+                None,
+            ),
+        ] {
+            let fixture = target_prerelease_workspace(member, root);
+            let err = fixture.run_release(false).unwrap_err();
+            assert!(
+                matches!(err, SampoError::ConstraintViolation(ref msg) if msg.contains("constraint '*'") && msg.contains("2.0.0-alpha")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn target_ranges_in_either_order_block_release_before_files_change() {
+        let unix = ("unix", "^1.0");
+        let windows = ("windows", "~1.0");
+        for targets in [[unix, windows], [windows, unix], [unix, (" unix ", "~1.0")]] {
+            let fixture = fixed_target_dependency_workspace("1.0.0", Bump::Minor);
+            let a = fixture.crates["a"].join("Cargo.toml");
+            let mut manifest = fs::read_to_string(&a).unwrap();
+            for (target, range) in targets {
+                manifest.push_str(&format!(
+                    "\n[target.'cfg({target})'.dependencies]\nb = {{ path = '../b', version = '{range}' }}\n"
+                ));
+            }
+            fs::write(&a, manifest).unwrap();
+            let files = [
+                a,
+                fixture.crates["b"].join("Cargo.toml"),
+                fixture.root.join(".sampo/changesets/updateb.md"),
+            ];
+            let before = files.each_ref().map(|path| fs::read(path).unwrap());
+
+            let err = fixture.run_release(false).unwrap_err();
+            assert!(
+                matches!(err, SampoError::ConstraintViolation(ref msg) if msg.contains("~1.0") && msg.contains("1.1.0")),
+                "{err}"
+            );
+            assert_eq!(files.each_ref().map(|path| fs::read(path).unwrap()), before);
+        }
+    }
+
+    #[test]
+    fn target_inherited_bare_pin_moves_but_caret_range_blocks_major_release() {
+        for requirement in ["1.0.0", "^1.0.0"] {
+            let fixture = fixed_target_dependency_workspace("1.0.0", Bump::Major);
+            let root = fixture.root.join("Cargo.toml");
+            let workspace_manifest = fs::read_to_string(&root).unwrap();
+            let dependencies = format!(
+                "\n[workspace.dependencies]\nb = {{ path = 'crates/b', version = '{requirement}' }}\n"
+            );
+            fs::write(&root, workspace_manifest + &dependencies).unwrap();
+            let a = fixture.crates["a"].join("Cargo.toml");
+            let manifest = fs::read_to_string(&a).unwrap();
+            fs::write(
+                a,
+                manifest + "\n[target.'cfg(unix)'.dependencies]\nb.workspace = true\n",
+            )
+            .unwrap();
+
+            let result = fixture.run_release(false);
+            if requirement == "1.0.0" {
+                result.unwrap();
+                let manifest: toml::Value =
+                    toml::from_str(&fs::read_to_string(root).unwrap()).unwrap();
+                assert_eq!(
+                    manifest["workspace"]["dependencies"]["b"]["version"].as_str(),
+                    Some("2.0.0")
+                );
+            } else {
+                let err = result.unwrap_err();
+                assert!(
+                    matches!(err, SampoError::ConstraintViolation(ref msg) if msg.contains(requirement) && msg.contains("2.0.0")),
+                    "{err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn target_inline_dependency_updates_its_exact_pin() {
+        let fixture = fixed_target_dependency_workspace("1.0.0", Bump::Minor);
+        let a = fixture.crates["a"].join("Cargo.toml");
+        let manifest = fs::read_to_string(&a).unwrap();
+        let target = "target = { 'cfg(unix)' = { dependencies = { b = { path = '../b', version = '=1.0.0' } } } }";
+        fs::write(&a, format!("{target}\n{manifest}")).unwrap();
+
+        fixture.run_release(false).unwrap();
+        let updated: toml::Value = toml::from_str(&fs::read_to_string(a).unwrap()).unwrap();
+        assert_eq!(
+            updated["target"]["cfg(unix)"]["dependencies"]["b"]["version"].as_str(),
+            Some("=1.1.0")
+        );
+    }
+
+    #[test]
+    fn target_inherited_registry_dependency_does_not_order_or_bump_its_dependent() {
+        let mut fixture = TestWorkspace::new();
+        fixture
+            .add_crate("app", "1.0.0")
+            .add_crate("private", "1.0.0")
+            .add_crate("local", "1.0.0")
+            .set_publishable("private", false)
+            .add_changeset(&["cargo/private"], Bump::Patch, "Update private");
+        fs::write(
+            fixture.root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/*"]
+[workspace.dependencies]
+private = "1"
+builder = { package = "local", path = "crates/local" }
+"#,
+        )
+        .unwrap();
+        let app = fixture.crates["app"].join("Cargo.toml");
+        let manifest = fs::read_to_string(&app).unwrap();
+        fs::write(
+            app,
+            manifest
+                + r#"
+[target.'cfg(unix)'.dependencies]
+private.workspace = true
+[target.'cfg(windows)'.build-dependencies]
+builder.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let workspace = discover_workspace(&fixture.root).unwrap();
+        let app = workspace.find_by_identifier("cargo/app").unwrap();
+        assert_eq!(app.internal_deps, BTreeSet::from(["cargo/local".into()]));
+        let packages = workspace
+            .members
+            .iter()
+            .map(|pkg| (pkg.identifier.clone(), pkg))
+            .collect();
+        assert_eq!(
+            topo_order(
+                &packages,
+                &BTreeSet::from(["cargo/app".into(), "cargo/local".into()])
+            )
+            .unwrap(),
+            ["cargo/local", "cargo/app"]
+        );
+        assert_eq!(
+            released_versions(&fixture.run_release(true).unwrap()),
+            [("cargo/private", "1.0.1")]
+        );
+    }
+
+    #[test]
+    fn target_inherited_local_pin_ignores_a_registry_range_for_the_same_package() {
+        let fixture = fixed_target_dependency_workspace("1.0.0", Bump::Patch);
+        fs::write(
+            fixture.root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/*"]
+[workspace.dependencies]
+b = { path = "crates/b", version = "=1.0.0" }
+"#,
+        )
+        .unwrap();
+        let a = fixture.crates["a"].join("Cargo.toml");
+        let manifest = fs::read_to_string(&a).unwrap();
+        fs::write(
+            a,
+            manifest
+                + r#"
+[dependencies]
+legacy = { package = "b", version = "~0.9" }
+[target.'cfg(unix)'.dependencies]
+b.workspace = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            released_versions(&fixture.run_release(true).unwrap()),
+            [("cargo/a", "1.0.1"), ("cargo/b", "1.0.1")]
+        );
+    }
+
     #[test]
     fn exact_pin_does_not_hide_a_range_in_another_section() {
         let mut workspace = TestWorkspace::new();

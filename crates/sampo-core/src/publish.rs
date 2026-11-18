@@ -49,7 +49,7 @@ impl PublishExtraArgs {
 ///
 /// This function discovers all packages in the workspace, determines which ones are
 /// publishable for their respective ecosystems, validates their dependencies, and publishes
-/// them in topological order (dependencies first).
+/// them in the order returned by `topo_order`.
 ///
 /// After publishing, git tags are created for all packages that have been released
 /// (including non-publishable packages, unless `git.tag_unpublished` leaves them out), as long
@@ -707,11 +707,7 @@ pub fn tag_published_crate(
     }
 }
 
-/// Computes topological ordering for publishing crates (dependencies first).
-///
-/// Given a set of crates and their internal dependencies, returns the order
-/// in which they should be published so that dependencies are always published
-/// before the crates that depend on them.
+/// Returns each included package after its included `internal_deps`.
 ///
 /// # Arguments
 /// * `name_to_package` - Map from package names to their info
@@ -1418,6 +1414,73 @@ fn main() {
             .expect("publish should succeed on configured branch");
     }
 
+    fn target_dependency_workspace() -> TestWorkspace {
+        let mut fixture = TestWorkspace::new();
+        fixture
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_crate("app", "0.1.0");
+        for (name, sections) in [
+            (
+                "b",
+                r#"
+[target.'cfg(unix)'.dependencies]
+a = { path = "../a", version = "0.1.0" }
+[target.'cfg(windows)'.dev-dependencies]
+app = { path = "../app", version = "0.1.0" }
+"#,
+            ),
+            (
+                "app",
+                r#"
+[target.x86_64-pc-windows-msvc.build-dependencies]
+builder = { package = "b", path = "../b", version = "0.1.0" }
+[target.'cfg(unix)'.dev-dependencies]
+a = { path = "../a" }
+"#,
+            ),
+        ] {
+            let manifest = fixture.crates[name].join("Cargo.toml");
+            let content = fs::read_to_string(&manifest).unwrap();
+            fs::write(manifest, content + sections).unwrap();
+        }
+        fixture
+    }
+
+    #[test]
+    fn discovers_target_specific_cargo_dependencies() {
+        let mut fixture = target_dependency_workspace();
+        fixture.add_dependency("app", "a", "0.1.0");
+        let workspace = discover_workspace(&fixture.root).unwrap();
+
+        let b = workspace.find_by_identifier("cargo/b").unwrap();
+        assert_eq!(b.internal_deps, BTreeSet::from(["cargo/a".into()]));
+        assert_eq!(b.internal_dev_deps, BTreeSet::from(["cargo/app".into()]));
+        let app = workspace.find_by_identifier("cargo/app").unwrap();
+        assert_eq!(
+            app.internal_deps,
+            BTreeSet::from(["cargo/a".into(), "cargo/b".into()])
+        );
+        assert!(app.internal_dev_deps.is_empty());
+    }
+
+    #[test]
+    fn publish_order_follows_target_build_dependencies_and_ignores_dev_dependencies() {
+        let fixture = target_dependency_workspace();
+        let workspace = discover_workspace(&fixture.root).unwrap();
+        let packages: BTreeMap<_, _> = workspace
+            .members
+            .iter()
+            .map(|pkg| (pkg.identifier.clone(), pkg))
+            .collect();
+        let package_ids = packages.keys().cloned().collect();
+
+        assert_eq!(
+            topo_order(&packages, &package_ids).unwrap(),
+            ["cargo/a", "cargo/b", "cargo/app"]
+        );
+    }
+
     #[test]
     fn topo_orders_deps_first() {
         // Build a small fake graph using PackageInfo structures
@@ -1509,9 +1572,6 @@ fn main() {
 
     #[test]
     fn dev_dep_cycle_does_not_block_publish_ordering() {
-        // A depends on B (regular dep), B dev-depends on A.
-        // This is valid in Cargo (dev-deps are stripped on publish)
-        // and should not be detected as a cycle.
         let a = PackageInfo {
             name: "a".into(),
             identifier: "cargo/a".into(),
