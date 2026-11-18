@@ -1418,6 +1418,69 @@ fn main() {
             .expect("publish should succeed on configured branch");
     }
 
+    fn target_dependency_workspace() -> TestWorkspace {
+        let mut workspace = TestWorkspace::new();
+        workspace
+            .add_crate("a", "0.1.0")
+            .add_crate("b", "0.1.0")
+            .add_crate("app", "0.1.0");
+        for (name, sections) in [
+            (
+                "b",
+                r#"
+[target.'cfg(unix)'.dependencies]
+a = { path = "../a", version = "0.1.0" }
+[target.'cfg(windows)'.dev-dependencies]
+app = { path = "../app", version = "0.1.0" }
+"#,
+            ),
+            (
+                "app",
+                r#"
+[target.x86_64-pc-windows-msvc.build-dependencies]
+builder = { package = "b", path = "../b", version = "0.1.0" }
+[target.'cfg(unix)'.dev-dependencies]
+a = { path = "../a" }
+"#,
+            ),
+        ] {
+            let manifest = workspace.crates[name].join("Cargo.toml");
+            let content = fs::read_to_string(&manifest).unwrap();
+            fs::write(manifest, content + sections).unwrap();
+        }
+        workspace
+    }
+
+    #[test]
+    fn discovers_target_specific_cargo_dependencies() {
+        let workspace = target_dependency_workspace();
+        let discovered = discover_workspace(&workspace.root).unwrap();
+
+        let b = discovered.find_by_identifier("cargo/b").unwrap();
+        assert_eq!(b.internal_deps, BTreeSet::from(["cargo/a".into()]));
+        assert_eq!(b.internal_dev_deps, BTreeSet::from(["cargo/app".into()]));
+        let app = discovered.find_by_identifier("cargo/app").unwrap();
+        assert_eq!(app.internal_deps, BTreeSet::from(["cargo/b".into()]));
+        assert!(app.internal_dev_deps.is_empty());
+    }
+
+    #[test]
+    fn orders_target_specific_cargo_dependencies_first() {
+        let workspace = target_dependency_workspace();
+        let discovered = discover_workspace(&workspace.root).unwrap();
+        let packages: BTreeMap<_, _> = discovered
+            .members
+            .iter()
+            .map(|pkg| (pkg.identifier.clone(), pkg))
+            .collect();
+        let include = packages.keys().cloned().collect();
+
+        assert_eq!(
+            topo_order(&packages, &include).unwrap(),
+            ["cargo/a", "cargo/b", "cargo/app"]
+        );
+    }
+
     #[test]
     fn topo_orders_deps_first() {
         // Build a small fake graph using PackageInfo structures

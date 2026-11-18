@@ -1342,9 +1342,17 @@ fn collect_cargo_internal_deps(
 ) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut internal = BTreeSet::new();
     let mut internal_dev = BTreeSet::new();
-    for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(tbl) = manifest.get(key).and_then(|v| v.as_table()) {
-            for (dep_name, dep_val) in tbl {
+    let mut tables = vec![manifest];
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        tables.extend(targets.values());
+    }
+
+    for table in tables {
+        for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let Some(deps) = table.get(key).and_then(toml::Value::as_table) else {
+                continue;
+            };
+            for (dep_name, dep_val) in deps {
                 let package_name = dependency_package_name(dep_name, dep_val, workspace_deps);
                 if is_cargo_internal_dep(crate_dir, name_to_path, package_name, dep_val) {
                     let id = PackageInfo::dependency_identifier(PackageKind::Cargo, package_name);
