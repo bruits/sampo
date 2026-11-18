@@ -892,16 +892,7 @@ fn compute_plan_state(
 
     let ignored = ignored_packages(workspace, config);
     let dependents = build_dependency_graph(workspace, &ignored);
-    let cargo_metadata = if config.bump_dependents == BumpDependents::OutOfRange
-        && workspace
-            .members
-            .iter()
-            .any(|p| p.kind == PackageKind::Cargo)
-    {
-        Some(ManifestMetadata::load(workspace)?)
-    } else {
-        None
-    };
+    let mut cargo_metadata = None;
     let fixed_groups = enforced_fixed_groups(workspace, config)?;
     let packages_by_id = workspace
         .members
@@ -928,7 +919,7 @@ fn compute_plan_state(
             &mut bump_by_pkg,
             &dependents,
             &mut planner,
-            cargo_metadata.as_ref(),
+            &mut cargo_metadata,
         )?;
         if !apply_linked_dependencies(&mut bump_by_pkg, config, workspace)? {
             break;
@@ -1127,13 +1118,18 @@ fn dependent_in_range(
     new_version: &str,
     ws: &Workspace,
     cfg: &Config,
-    cargo_metadata: Option<&ManifestMetadata>,
+    cargo_metadata: &mut Option<ManifestMetadata>,
 ) -> Result<bool> {
     // `pre exit` left it on a version no release has written yet.
-    if exited_prerelease(ws, cfg, dependent, &dependent.version)?
-        || !check_internal_dependency(dependent, dependency, new_version, cargo_metadata)?
-            .iter()
-            .all(|result| matches!(result, ConstraintCheckResult::Satisfied))
+    if exited_prerelease(ws, cfg, dependent, &dependent.version)? {
+        return Ok(false);
+    }
+    if dependent.kind == PackageKind::Cargo && cargo_metadata.is_none() {
+        *cargo_metadata = Some(ManifestMetadata::load(ws)?);
+    }
+    if !check_internal_dependency(dependent, dependency, new_version, cargo_metadata.as_ref())?
+        .iter()
+        .all(|result| matches!(result, ConstraintCheckResult::Satisfied))
     {
         return Ok(false);
     }
@@ -1767,7 +1763,6 @@ fn compute_initial_bumps(
     Ok((bump_by_pkg, messages_by_pkg, used_paths))
 }
 
-/// Build reverse dependency graph: dep -> set of dependents
 fn ignored_packages<'a>(ws: &'a Workspace, cfg: &Config) -> BTreeSet<&'a str> {
     ws.members
         .iter()
@@ -1776,6 +1771,7 @@ fn ignored_packages<'a>(ws: &'a Workspace, cfg: &Config) -> BTreeSet<&'a str> {
         .collect()
 }
 
+/// Map each dependency to its dependents.
 fn build_dependency_graph(
     ws: &Workspace,
     ignored_packages: &BTreeSet<&str>,
@@ -1809,7 +1805,7 @@ fn apply_dependency_cascade(
     bump_by_pkg: &mut BTreeMap<String, Bump>,
     dependents: &BTreeMap<String, BTreeSet<String>>,
     planner: &mut VersionPlanner<'_>,
-    cargo_metadata: Option<&ManifestMetadata>,
+    cargo_metadata: &mut Option<ManifestMetadata>,
 ) -> Result<()> {
     let ws = planner.workspace;
     let cfg = planner.config;
@@ -3302,7 +3298,7 @@ mod tests {
             fixed_versions: BTreeMap::new(),
         };
         let mut bump_by_pkg = BTreeMap::from([("cargo/main-package".to_string(), Bump::Minor)]);
-        apply_dependency_cascade(&mut bump_by_pkg, &dependents, &mut planner, None).unwrap();
+        apply_dependency_cascade(&mut bump_by_pkg, &dependents, &mut planner, &mut None).unwrap();
 
         // The ignored packages should NOT be added to bump_by_pkg
         assert_eq!(bump_by_pkg.len(), 1);

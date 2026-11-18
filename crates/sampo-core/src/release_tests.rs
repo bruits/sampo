@@ -2457,6 +2457,49 @@ tempfile = "3.0"
     }
 
     #[test]
+    fn workspace_inherited_version_protects_the_implicit_root_package() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("child", "1.0.0")
+            .add_changeset(&["child"], Bump::Minor, "Changed child")
+            .set_config("[packages]\nversioning = \"calver\"\ncalver_year_month = \"2026.11\"\n");
+        fs::create_dir(ws.root.join("src")).unwrap();
+        fs::write(ws.root.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            ws.root.join("Cargo.toml"),
+            "[package]\nname = \"root-crate\"\nversion.workspace = true\n\
+             [workspace]\nmembers = [\"crates/child\"]\n[workspace.package]\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.crates["child"].join("Cargo.toml"),
+            "[package]\nname = \"child\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+
+        let assert_refusal = || {
+            let before = ws.file_contents();
+            for dry_run in [true, false] {
+                let error = ws.run_release(dry_run).unwrap_err().to_string();
+                assert!(
+                    error.contains("'cargo/root-crate' from 1.0.0 without releasing it"),
+                    "{error}"
+                );
+                assert_eq!(ws.file_contents(), before);
+            }
+        };
+        assert_refusal();
+
+        // SemVer can restore changesets. Check the shared version before that write.
+        ws.set_config("");
+        fs::rename(
+            ws.root.join(".sampo/changesets"),
+            ws.root.join(".sampo/prerelease"),
+        )
+        .unwrap();
+        assert_refusal();
+    }
+
+    #[test]
     fn workspace_inherited_versions_rejects_conflicting_bumps() {
         let mut ws = TestWorkspace::new();
         ws.add_crate("foo", "1.0.0").add_crate("bar", "1.0.0");
