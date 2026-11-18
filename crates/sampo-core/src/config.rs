@@ -35,7 +35,6 @@ pub enum BumpDependents {
     OutOfRange,
 }
 
-/// How Sampo calculates the next version of a package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Versioning {
     #[default]
@@ -110,7 +109,6 @@ pub struct Config {
     pub linked_dependencies: Vec<Vec<String>>,
     pub bump_dependents: BumpDependents,
     pub versioning: Versioning,
-    /// Optional year and month for a fixed CalVer release line.
     pub calver_year_month: Option<(u64, u64)>,
     pub ignore_unpublished: bool,
     pub ignore: Vec<String>,
@@ -255,10 +253,8 @@ impl Config {
             })
             .unwrap_or_default();
 
-        let fixed_dependencies = value
-            .get("packages")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("fixed"))
+        let packages = value.get("packages").and_then(|v| v.as_table());
+        let fixed_dependencies = packages.and_then(|t| t.get("fixed"))
             .and_then(|v| v.as_array())
             .map(|outer_arr| -> Result<Vec<Vec<String>>, String> {
                 // Check if all elements are arrays (groups format)
@@ -311,7 +307,6 @@ impl Config {
             .map_err(SampoError::Config)?
             .unwrap_or_default();
 
-        let packages = value.get("packages").and_then(|v| v.as_table());
         let bump_dependents = match packages.and_then(|t| t.get("bump_dependents")) {
             Some(value) => match value.as_str() {
                 Some("always") => BumpDependents::Always,
@@ -342,21 +337,17 @@ impl Config {
                 "packages.calver_year_month requires packages.versioning = \"calver\"".into(),
             )),
             Some(value) => Some(parse_calver_year_month(value).ok_or_else(|| SampoError::Config(
-                "packages.calver_year_month must be \"YYYY.M\" with a four-digit year and a month from 1 to 12 without a leading zero".into(),
+                "Invalid packages.calver_year_month. Use YYYY.M, for example 2026.7. The year must be 1000-9999 and the month 1-12, with no leading zero.".into(),
             ))?),
             None => None,
         };
 
-        let ignore_unpublished = value
-            .get("packages")
-            .and_then(|v| v.as_table())
+        let ignore_unpublished = packages
             .and_then(|t| t.get("ignore_unpublished"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let ignore = value
-            .get("packages")
-            .and_then(|v| v.as_table())
+        let ignore = packages
             .and_then(|t| t.get("ignore"))
             .and_then(|v| v.as_array())
             .map(|arr| {
@@ -367,10 +358,7 @@ impl Config {
             })
             .unwrap_or_default();
 
-        let linked_dependencies = value
-            .get("packages")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("linked"))
+        let linked_dependencies = packages.and_then(|t| t.get("linked"))
             .and_then(|v| v.as_array())
             .map(|outer_arr| -> Result<Vec<Vec<String>>, String> {
                 // Check if all elements are arrays (groups format)
@@ -498,10 +486,7 @@ impl Config {
         )?;
 
         let npm_stage = PackageSelection::parse(
-            value
-                .get("packages")
-                .and_then(|v| v.as_table())
-                .and_then(|t| t.get("npm_stage")),
+            packages.and_then(|t| t.get("npm_stage")),
             "packages.npm_stage",
             PackageSelection::Never,
         )?;

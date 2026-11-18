@@ -3,7 +3,7 @@ name: sampo-changeset
 description: Create or update changesets to describe public API changes, and trigger changelog generation and release planning.
 ---
 
-[Sampo](https://github.com/bruits/sampo) is a tool to automate changelogs, versioning, and publishing. It uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries).
+Sampo uses changesets to version packages, write changelogs, and publish releases. It uses SemVer by default and also supports CalVer.
 
 See [CONTRIBUTING.md](/CONTRIBUTING.md#writing-changesets) for changeset redaction guidelines.
 

@@ -6,7 +6,7 @@ use sampo_core::types::{
 };
 use sampo_core::{
     AcknowledgmentStyle, Acknowledgments, AutomaticEntries, Config, PublishExtraArgs,
-    PublishOutput, ReleaseOutput, ReleasedPackage, detect_all_dependency_explanations,
+    PublishOutput, ReleasedPackage, detect_all_dependency_explanations,
     detect_github_repo_slug_with_config, discover_workspace, enrich_changeset_message,
     filter_prerelease_entries, get_commit_hash_for_path, load_changesets,
     run_publish as core_publish, run_release as core_release,
@@ -21,27 +21,8 @@ fn set_cargo_env_var(value: &str) {
     }
 }
 
-#[derive(Debug)]
-pub struct ReleasePlan {
-    pub has_changes: bool,
-    /// Releases by canonical package identifier.
-    pub releases: BTreeMap<String, ReleasedPackage>,
-}
+pub type ReleasePlan = Vec<ReleasedPackage>;
 
-impl From<ReleaseOutput> for ReleasePlan {
-    fn from(output: ReleaseOutput) -> Self {
-        Self {
-            has_changes: !output.released_packages.is_empty(),
-            releases: output
-                .released_packages
-                .into_iter()
-                .map(|pkg| (pkg.identifier.clone(), pkg))
-                .collect(),
-        }
-    }
-}
-
-/// Run sampo release and capture the plan
 pub fn capture_release_plan(workspace: &Path) -> Result<ReleasePlan> {
     let release_output =
         core_release(workspace, true).map_err(|e| ActionError::SampoCommandFailed {
@@ -49,7 +30,7 @@ pub fn capture_release_plan(workspace: &Path) -> Result<ReleasePlan> {
             message: format!("Release plan failed: {}", e),
         })?;
 
-    Ok(ReleasePlan::from(release_output))
+    Ok(release_output.released_packages)
 }
 
 /// Execute sampo release
@@ -99,7 +80,7 @@ pub fn capture_stabilize_plan(workspace: &Path) -> Result<ReleasePlan> {
             message: format!("Stabilize plan failed: {}", e),
         })?;
 
-    Ok(ReleasePlan::from(release_output))
+    Ok(release_output.released_packages)
 }
 
 /// Execute stabilize release (prerelease → stable).
@@ -120,8 +101,7 @@ pub fn run_stabilize_release(
     Ok(())
 }
 
-/// Compute a markdown PR body summarizing the pending release by crate,
-/// grouping changes by semantic bump type, and showing old -> new versions.
+/// Render package versions and changelog entries for the release pull request.
 ///
 /// # Arguments
 /// * `workspace` - Path to the workspace root
@@ -134,7 +114,7 @@ pub fn run_stabilize_release(
 /// A formatted markdown string for the PR body, or empty string if no releases are planned
 pub fn build_release_pr_body(
     workspace: &Path,
-    releases: &BTreeMap<String, ReleasedPackage>,
+    releases: &[ReleasedPackage],
     config: &Config,
     stabilize: bool,
 ) -> Result<String> {
@@ -142,7 +122,11 @@ pub fn build_release_pr_body(
         return Ok(String::new());
     }
 
-    // Load workspace for dependency explanations
+    let releases_by_id: BTreeMap<_, _> = releases
+        .iter()
+        .map(|pkg| (pkg.identifier.as_str(), pkg))
+        .collect();
+
     let ws = discover_workspace(workspace).map_err(|e| ActionError::SampoCommandFailed {
         operation: "workspace-discovery".into(),
         message: e.to_string(),
@@ -174,7 +158,7 @@ pub fn build_release_pr_body(
     for cs in &changesets {
         for (pkg_spec, bump, tag) in &cs.entries {
             let identifier = resolve_specifier_identifier(&ws, pkg_spec)?;
-            if releases.contains_key(&identifier) {
+            if releases_by_id.contains_key(identifier.as_str()) {
                 // A pre-release moved preserved changesets, so look them up where they were added.
                 let added_at = changesets_dir.join(cs.path.file_name().unwrap_or_default());
                 let commit_hash = get_commit_hash_for_path(workspace, &added_at);
@@ -211,29 +195,8 @@ pub fn build_release_pr_body(
         }
     }
 
-    // Add automatic dependency explanations using unified function
-    let release_lookup: BTreeMap<String, (String, String)> = releases
-        .iter()
-        .map(|(identifier, pkg)| {
-            (
-                identifier.clone(),
-                (pkg.old_version.clone(), pkg.new_version.clone()),
-            )
-        })
-        .collect();
-    let planned_bumps = releases
-        .iter()
-        .map(|(id, pkg)| (id.clone(), pkg.bump))
-        .collect();
-    let explanations = detect_all_dependency_explanations(
-        &changesets,
-        &ws,
-        config,
-        &release_lookup,
-        &planned_bumps,
-    )?;
-
-    // Merge explanations into messages_by_pkg
+    let explanations =
+        detect_all_dependency_explanations(&changesets, &ws, config, &releases_by_id)?;
     for (pkg_name, explanations) in explanations {
         messages_by_pkg
             .entry(pkg_name)
@@ -252,14 +215,10 @@ pub fn build_release_pr_body(
     // entries, as their changelogs do in collapse mode.
     let mut bump_only: Vec<String> = Vec::new();
 
-    // Deterministic crate order by name
-    let mut crate_ids: Vec<_> = releases.keys().cloned().collect();
-    crate_ids.sort();
-    for identifier in crate_ids {
-        let pkg = &releases[&identifier];
-        let pretty_name = display_label_for_release(&ws, &identifier, include_kind, &pkg.name);
+    for (identifier, pkg) in releases_by_id {
+        let pretty_name = display_label_for_release(&ws, identifier, include_kind, &pkg.name);
         if config.changelog_automatic_entries == AutomaticEntries::Collapse
-            && messages_by_pkg.get(&identifier).is_none_or(Vec::is_empty)
+            && messages_by_pkg.get(identifier).is_none_or(Vec::is_empty)
         {
             bump_only.push(format!(
                 "{} {} -> {}",
@@ -275,7 +234,7 @@ pub fn build_release_pr_body(
         // Collect changes by category
         let mut changes_by_category: BTreeMap<ChangelogCategory, Vec<String>> = BTreeMap::new();
 
-        if let Some(changeset_list) = messages_by_pkg.get(&identifier) {
+        if let Some(changeset_list) = messages_by_pkg.get(identifier) {
             // Helper to push without duplicates (preserve append order)
             let push_unique = |list: &mut Vec<String>, msg: &str| {
                 if !list.iter().any(|m| m == msg) {
@@ -532,9 +491,9 @@ mod tests {
 
         // Compute the release plan using core logic (structured)
         let plan = capture_release_plan(root).unwrap();
-        assert!(plan.has_changes);
+        assert!(!plan.is_empty());
         let config = Config::default();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+        let pr_body = build_release_pr_body(root, &plan, &config, false).unwrap();
 
         // Should contain dependency update information for package a
         assert!(pr_body.contains("## a 0.1.0 -> 0.1.1"));
@@ -562,6 +521,15 @@ mod tests {
             ),
             ("b", ""),
             ("c", ""),
+            ("d", ""),
+            (
+                "e",
+                "\n[dependencies]\nb = { path=\"../b\", version=\"=2026.3.8\" }\n",
+            ),
+            (
+                "f",
+                "\n[dependencies]\nc = { path=\"../c\", version=\"=2026.3.8\" }\n",
+            ),
         ] {
             let dir = root.join("crates").join(name);
             fs::create_dir_all(dir.join("src")).unwrap();
@@ -580,27 +548,29 @@ mod tests {
             "---\nc: major\n---\n\nRemoved the old API\n",
         )
         .unwrap();
-        let body_for = |settings: &str| {
+        let build_body = |settings: &str| {
             fs::write(
                 sampo_dir.join("config.toml"),
                 format!("[packages]\n{settings}"),
             )
             .unwrap();
             let plan = capture_release_plan(root).unwrap();
-            assert!(plan.has_changes);
+            assert!(!plan.is_empty());
             let config = Config::load(root).unwrap();
-            build_release_pr_body(root, &plan.releases, &config, false).unwrap()
+            build_release_pr_body(root, &plan, &config, false).unwrap()
         };
 
-        let body = body_for("fixed = [[\"a\", \"c\"]]");
+        let body = build_body("fixed = [[\"a\", \"c\"]]");
         assert!(body.contains("## a 2026.3.8 -> 2027.0.0"));
         assert!(body.contains("## c 2026.3.8 -> 2027.0.0"));
         assert!(body.contains("Removed the old API"));
         assert!(body.contains("Updated dependencies: c@2027.0.0"));
 
-        let body = body_for(
-            "fixed = [[\"a\", \"b\"]]\nversioning = \"calver\"\ncalver_year_month = \"2026.4\"",
+        let body = build_body(
+            "fixed = [[\"a\", \"b\"], [\"d\", \"e\"]]\nversioning = \"calver\"\ncalver_year_month = \"2026.4\"",
         );
+        assert!(body.contains("## f 2026.3.8 -> 2026.4.0\n\n### Patch changes\n\n- Updated dependencies: c@2026.4.0"), "{body}");
+        assert!(body.contains("## d 2026.3.8 -> 2026.4.0\n\n### Major changes\n\n- Bumped due to fixed dependency group policy"), "{body}");
         assert!(body.contains("## b 2026.3.8 -> 2026.4.0\n\n### Major changes\n\n- Bumped due to fixed dependency group policy"), "{body}");
         assert!(body.contains("## a 2026.3.8 -> 2026.4.0\n\n### Major changes\n\n- Updated dependencies: c@2026.4.0"), "{body}");
     }
@@ -659,9 +629,9 @@ mod tests {
 
         // Compute the plan using core logic and the fixed dependency config
         let plan = capture_release_plan(root).unwrap();
-        assert!(plan.has_changes);
+        assert!(!plan.is_empty());
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+        let pr_body = build_release_pr_body(root, &plan, &config, false).unwrap();
 
         println!("PR Body:\n{}", pr_body);
 
@@ -715,7 +685,7 @@ mod tests {
 
         let plan = capture_release_plan(root).unwrap();
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+        let pr_body = build_release_pr_body(root, &plan, &config, false).unwrap();
 
         assert!(
             pr_body.contains(
@@ -806,7 +776,7 @@ mod tests {
 
         let plan = capture_stabilize_plan(root).unwrap();
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config, true).unwrap();
+        let pr_body = build_release_pr_body(root, &plan, &config, true).unwrap();
 
         assert!(
             pr_body.contains("## a 0.2.0-alpha.2 -> 0.2.0\n\n### Minor changes\n\n- "),
@@ -848,7 +818,7 @@ mod tests {
 
         let plan = capture_release_plan(root).unwrap();
         let config = Config::load(root).unwrap();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+        let pr_body = build_release_pr_body(root, &plan, &config, false).unwrap();
 
         assert!(
             pr_body.contains(
@@ -892,11 +862,10 @@ mod tests {
         )
         .unwrap();
 
-        // Capture release plan (dry-run) using core logic
         let plan = capture_release_plan(root).expect("plan should succeed");
-        assert!(plan.has_changes);
+        assert!(!plan.is_empty());
         assert_eq!(
-            plan.releases.get("cargo/example"),
+            plan.first(),
             Some(&ReleasedPackage {
                 identifier: "cargo/example".into(),
                 name: "example".into(),
@@ -906,9 +875,8 @@ mod tests {
             })
         );
 
-        // Build PR body from the structured plan
         let config = Config::load(root).unwrap_or_default();
-        let pr_body = build_release_pr_body(root, &plan.releases, &config, false).unwrap();
+        let pr_body = build_release_pr_body(root, &plan, &config, false).unwrap();
 
         // Ensure PR body uses the changelog layout
         assert!(pr_body.contains("## example 0.1.0 -> 0.2.0"));
