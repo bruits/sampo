@@ -13,7 +13,7 @@ use sampo_core::{
     header_matches_release_version,
 };
 use semver::Version;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -400,12 +400,12 @@ fn execute_operations(
     match config.mode {
         Mode::Auto => {
             let plan = sampo::capture_release_plan(workspace)?;
-            if plan.has_changes {
+            if !plan.is_empty() {
                 println!(
                     "Detected {} pending release package(s); preparing release PR.",
-                    plan.releases.len()
+                    plan.len()
                 );
-                let plan_requires_stabilize = plan_includes_prerelease(&plan.releases);
+                let plan_requires_stabilize = plan.iter().any(ReleasedPackage::is_prerelease);
                 let github_client = create_github_client()?;
                 let release_prepared = prepare_release_pr(
                     workspace,
@@ -532,19 +532,19 @@ fn prepare_release_pr(
         None => sampo::capture_release_plan(workspace)?,
     };
 
-    if !plan.has_changes {
+    if plan.is_empty() {
         println!("No changesets detected. Skipping PR preparation.");
         return Ok(false);
     }
 
-    let releases = &plan.releases;
+    let releases = &plan;
 
     // Configuration
     let base_branch = config
         .base_branch
         .clone()
         .unwrap_or_else(|| branch.to_string());
-    let is_prerelease = plan_includes_prerelease(releases);
+    let is_prerelease = releases.iter().any(ReleasedPackage::is_prerelease);
     let pr_branch = config
         .pr_branch
         .clone()
@@ -659,7 +659,7 @@ fn prepare_stabilize_pr(
     )?;
 
     let plan = sampo::capture_stabilize_plan(workspace)?;
-    if !plan.has_changes {
+    if plan.is_empty() {
         println!("No stable release changes detected. Skipping stabilize PR.");
         git::git(
             &["reset", "--hard", &format!("origin/{}", base_branch)],
@@ -670,7 +670,7 @@ fn prepare_stabilize_pr(
     }
 
     let pr_body = {
-        let body = sampo::build_release_pr_body(workspace, &plan.releases, repo_config, true)?;
+        let body = sampo::build_release_pr_body(workspace, &plan, repo_config, true)?;
         if body.trim().is_empty() {
             println!("No applicable package changes for stabilize PR body. Skipping PR creation.",);
             git::git(
@@ -715,7 +715,7 @@ fn prepare_stabilize_pr(
 
     println!(
         "Prepared stabilize PR with {} pending package(s).",
-        plan.releases.len()
+        plan.len()
     );
 
     Ok(true)
@@ -723,14 +723,6 @@ fn prepare_stabilize_pr(
 
 fn sanitized_branch_name(branch: &str) -> String {
     branch.replace('/', "-")
-}
-
-fn plan_includes_prerelease(releases: &BTreeMap<String, ReleasedPackage>) -> bool {
-    releases.values().any(|pkg| {
-        Version::parse(&pkg.new_version)
-            .map(|version| !version.pre.is_empty())
-            .unwrap_or(false)
-    })
 }
 
 fn collect_prerelease_packages(workspace: &Path) -> Result<Vec<String>> {
