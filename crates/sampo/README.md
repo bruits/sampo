@@ -2,7 +2,7 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com)), Ruby ([RubyGems](https://rubygems.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
-**In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
+**In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions, generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer or CalVer).
 
 If you've ever struggled with keeping user-facing changelogs updated, coordinating version bumps across dependent packages, or automating your publishing process... Sampo might be the tool you were looking for!
 
@@ -43,7 +43,7 @@ This command creates a `.sampo` directory at your repository root:
 
 #### Versioning
 
-Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate the nature of changes in each release. Versions follow the `MAJOR.MINOR.PATCH` format with three bump levels:
+By default, Sampo uses [Semantic Versioning](https://semver.org/) (SemVer) to indicate the nature of changes in each release. Versions follow the `MAJOR.MINOR.PATCH` format with three bump levels:
 
 - **patch**: Bug fixes and backwards-compatible changes
 - **minor**: New features that are backwards-compatible
@@ -52,6 +52,8 @@ Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate t
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
 
 Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). For the first pre-release after entering pre mode, Sampo advances the base version according to the pending changeset bump so pre-releases stay ahead of the latest stable version (for example, `1.2.3-alpha` + patch → `1.2.4-alpha`). After that, while a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
+
+For calendar versions, set `versioning = "calver"` in `[packages]`. Then `sampo release` takes the year and month from the UTC date or from `calver_year_month`. For example, `2026.3.7` advances to `2026.3.8` in March and to `2026.4.0` in April. Changeset levels still control dependency bumps and changelog headings. CalVer suits a single release line. Sampo stops before it writes files if the next version would not advance, a release includes a pre-release version, or `.sampo/prerelease` holds a changeset.
 
 #### Changesets
 
@@ -227,6 +229,12 @@ npm_stage = false
 `automatic_entries`: How to render the entries Sampo writes for packages bumped by other packages, such as "Updated dependencies" (default: `"list"`). With `"collapse"`, releases keep only their changeset entries, and consecutive releases with nothing else share one section, headed by their version range (for example, `## 1.0.1 ... 1.1.0`) and the latest release date.
 
 ### `[packages]` section
+
+`versioning` selects `"semver"` (default) or `"calver"` for all packages. CalVer uses `YYYY.M.MICRO`. The micro version starts at zero each month and increases by one with each subsequent release. Sampo calculates one version for a fixed group from the highest current version among its non-ignored members. Linked groups share bump levels and calculate each package's calendar version separately.
+
+`calver_year_month` sets an optional release line when `versioning = "calver"`. Use a four-digit year and a month from 1 to 12 without a leading zero. For example, `calver_year_month = "2026.12"` keeps releases on `2026.12.x` even in January.
+
+With CalVer, a caret range accepts later versions in the same calendar year. A tilde range accepts later versions in the same month. Pin internal dependencies that release together, for example with `workspace:*` or `=2026.11.0`.
 
 You can ignore certain packages, so they do not appear in the CLI commands, changesets, releases, or publishing steps. This is useful for packages that are not meant to be published or versioned, such as internal tools, examples, or documentation packages. Changesets targeting only ignored packages are left unconsumed.
 

@@ -35,6 +35,31 @@ pub enum BumpDependents {
     OutOfRange,
 }
 
+/// How Sampo calculates the next version of a package.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Versioning {
+    #[default]
+    SemVer,
+    CalVer,
+}
+
+fn parse_calver_year_month(value: &toml::Value) -> Option<(u64, u64)> {
+    let (year, month) = value.as_str()?.split_once('.')?;
+    if year.len() != 4
+        || year.starts_with('0')
+        || month.starts_with('0')
+        || !year
+            .bytes()
+            .chain(month.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let year = year.parse().ok()?;
+    let month = month.parse().ok()?;
+    (1..=12).contains(&month).then_some((year, month))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageSelection {
     All,
@@ -84,6 +109,9 @@ pub struct Config {
     pub fixed_dependencies: Vec<Vec<String>>,
     pub linked_dependencies: Vec<Vec<String>>,
     pub bump_dependents: BumpDependents,
+    pub versioning: Versioning,
+    /// Optional year and month for a fixed CalVer release line.
+    pub calver_year_month: Option<(u64, u64)>,
     pub ignore_unpublished: bool,
     pub ignore: Vec<String>,
     pub git_default_branch: Option<String>,
@@ -115,6 +143,8 @@ impl Default for Config {
             fixed_dependencies: Vec::new(),
             linked_dependencies: Vec::new(),
             bump_dependents: BumpDependents::default(),
+            versioning: Versioning::default(),
+            calver_year_month: None,
             ignore_unpublished: false,
             ignore: Vec::new(),
             git_default_branch: None,
@@ -281,11 +311,8 @@ impl Config {
             .map_err(SampoError::Config)?
             .unwrap_or_default();
 
-        let bump_dependents = match value
-            .get("packages")
-            .and_then(|v| v.as_table())
-            .and_then(|t| t.get("bump_dependents"))
-        {
+        let packages = value.get("packages").and_then(|v| v.as_table());
+        let bump_dependents = match packages.and_then(|t| t.get("bump_dependents")) {
             Some(value) => match value.as_str() {
                 Some("always") => BumpDependents::Always,
                 Some("out-of-range") => BumpDependents::OutOfRange,
@@ -296,6 +323,28 @@ impl Config {
                 }
             },
             None => BumpDependents::default(),
+        };
+
+        let versioning = match packages.and_then(|t| t.get("versioning")) {
+            Some(value) => match value.as_str() {
+                Some("semver") => Versioning::SemVer,
+                Some("calver") => Versioning::CalVer,
+                _ => {
+                    return Err(SampoError::Config(
+                        "packages.versioning must be \"semver\" or \"calver\"".into(),
+                    ));
+                }
+            },
+            None => Versioning::default(),
+        };
+        let calver_year_month = match packages.and_then(|t| t.get("calver_year_month")) {
+            Some(_) if versioning != Versioning::CalVer => return Err(SampoError::Config(
+                "packages.calver_year_month requires packages.versioning = \"calver\"".into(),
+            )),
+            Some(value) => Some(parse_calver_year_month(value).ok_or_else(|| SampoError::Config(
+                "packages.calver_year_month must be \"YYYY.M\" with a four-digit year and a month from 1 to 12 without a leading zero".into(),
+            ))?),
+            None => None,
         };
 
         let ignore_unpublished = value
@@ -471,6 +520,8 @@ impl Config {
             fixed_dependencies,
             linked_dependencies,
             bump_dependents,
+            versioning,
+            calver_year_month,
             ignore_unpublished,
             ignore,
             git_default_branch,
@@ -820,6 +871,71 @@ mod tests {
                 .contains("packages.bump_dependents must be \"always\" or \"out-of-range\""),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn reads_calver_options() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".sampo");
+        fs::create_dir_all(&dir).unwrap();
+        for (settings, versioning, year_month) in [
+            ("", Versioning::SemVer, None),
+            ("versioning = \"semver\"", Versioning::SemVer, None),
+            ("versioning = \"calver\"", Versioning::CalVer, None),
+            (
+                "versioning = \"calver\"\ncalver_year_month = \"2026.12\"",
+                Versioning::CalVer,
+                Some((2026, 12)),
+            ),
+        ] {
+            fs::write(dir.join("config.toml"), format!("[packages]\n{settings}")).unwrap();
+            let config = Config::load(temp.path()).unwrap();
+            assert_eq!(
+                (config.versioning, config.calver_year_month),
+                (versioning, year_month),
+                "{settings}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_calver_options() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join(".sampo");
+        fs::create_dir_all(&dir).unwrap();
+        for (settings, reason) in [
+            (
+                "versioning = \"other\"",
+                "packages.versioning must be \"semver\" or \"calver\"",
+            ),
+            (
+                "versioning = \"calver\"\ncalver_year_month = \"2026.13\"",
+                "packages.calver_year_month",
+            ),
+            (
+                "versioning = \"calver\"\ncalver_year_month = \"2026.07\"",
+                "packages.calver_year_month",
+            ),
+            (
+                "versioning = \"calver\"\ncalver_year_month = \"26.7\"",
+                "packages.calver_year_month",
+            ),
+            (
+                "versioning = \"calver\"\ncalver_year_month = \"0026.7\"",
+                "packages.calver_year_month",
+            ),
+            (
+                "calver_year_month = \"2026.12\"",
+                "requires packages.versioning",
+            ),
+        ] {
+            fs::write(dir.join("config.toml"), format!("[packages]\n{settings}")).unwrap();
+            let err = Config::load(temp.path()).unwrap_err();
+            assert!(
+                matches!(err, SampoError::Config(ref message) if message.contains(reason)),
+                "{settings}: {err}"
+            );
+        }
     }
 
     #[test]

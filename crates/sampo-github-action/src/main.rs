@@ -9,7 +9,8 @@ use glob::glob;
 use sampo_core::errors::SampoError;
 use sampo_core::workspace::discover_workspace;
 use sampo_core::{
-    Config as SampoConfig, PublishExtraArgs, current_branch, header_matches_release_version,
+    Config as SampoConfig, PublishExtraArgs, ReleasedPackage, current_branch,
+    header_matches_release_version,
 };
 use semver::Version;
 use std::collections::{BTreeMap, BTreeSet};
@@ -724,9 +725,9 @@ fn sanitized_branch_name(branch: &str) -> String {
     branch.replace('/', "-")
 }
 
-fn plan_includes_prerelease(releases: &BTreeMap<String, (String, String, String)>) -> bool {
-    releases.values().any(|(_, _, new_version)| {
-        Version::parse(new_version)
+fn plan_includes_prerelease(releases: &BTreeMap<String, ReleasedPackage>) -> bool {
+    releases.values().any(|pkg| {
+        Version::parse(&pkg.new_version)
             .map(|version| !version.pre.is_empty())
             .unwrap_or(false)
     })

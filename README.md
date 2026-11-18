@@ -21,7 +21,7 @@ Sampo is deeply inspired by [Changesets](https://github.com/changesets/changeset
 Sampo also builds on the work of these open-source projects:
 
 - Knope's [changesets](https://github.com/knope-dev/changesets) crate, which parses changeset files. [Knope](https://github.com/knope-dev/knope) is another Rust project inspired by Changesets, well worth a look
-- [Semantic Versioning](https://semver.org/), whose `MAJOR.MINOR.PATCH` format and version bumps Sampo uses and enforces
+- [Semantic Versioning](https://semver.org/), which Sampo uses by default, and [Calendar Versioning](https://calver.org/), which Sampo supports as `YYYY.M.MICRO`
 
 Thank you to everyone who contributes, or would like to. [CONTRIBUTING.md](./CONTRIBUTING.md) is the place to start.
 
