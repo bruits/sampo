@@ -1303,6 +1303,10 @@ fn parse_cargo_workspace_members(
         expand_cargo_member_pattern(root, pattern, &mut paths)?;
     }
 
+    // Cargo includes the root package even when workspace.members omits ".".
+    if root_toml.get("package").is_some() && !paths.contains(&clean_path(root)) {
+        paths.push(root.to_path_buf());
+    }
     Ok(paths)
 }
 

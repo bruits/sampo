@@ -53,7 +53,9 @@ For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or
 
 SemVer pre-releases follow [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). For the first pre-release after entering pre mode, Sampo advances the base version according to the pending changeset bump so pre-releases stay ahead of the latest stable version (for example, `1.2.3-alpha` + patch → `1.2.4-alpha`). After that, while a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
 
-Set `versioning = "calver"` in `[packages]` to use calendar versions on a single release line. Sampo takes the year and month from the UTC date or from `calver_year_month`. Changeset levels control which dependents release and select the default changelog heading. A changeset tag selects its own heading. Sampo stops before it writes files if a version would fail to advance, a package has a pre-release version, or `.sampo/prerelease` holds changesets.
+Set `versioning = "calver"` in `[packages]` to use calendar versions on a single release line. Sampo takes the year and month from the UTC date or from `calver_year_month`. Dependency and group policies determine which other packages join the release. Changeset levels select the default changelog headings. A changeset tag selects its own heading.
+
+Sampo stops before it writes files if a planned version would fail to advance or a package in the release plan has a pre-release version. It also stops if `.sampo/prerelease` holds changesets.
 
 #### Changesets
 
@@ -261,7 +263,7 @@ When a workspace dependency gets a release, Sampo gives its dependents at least 
 
 `fixed` lists groups of packages that release together (default `[]`). Each group can span ecosystems. All non-ignored members receive the highest changeset level in the group. Under SemVer, each member applies that level to its own version. Under CalVer, all members get the same calendar version.
 
-> In Rust (Cargo) projects, crates that inherit `workspace.package.version` must agree on the release version. Group those crates with `fixed` or give independent crates explicit versions.
+> In Rust (Cargo) projects, crates that inherit `workspace.package.version` share one version. Group those crates with `fixed` or give independent crates explicit versions. To keep an ignored crate at its current version, set that version explicitly in its `Cargo.toml`.
 
 `linked` lists groups that share the highest changeset level among members already scheduled for release (default `[]`). Each member calculates its own version. For example, if `cargo/a` depends on `cargo/b`, a major change to `b` gives both members the major level. A change to `a` alone leaves `b` at its current version.
 

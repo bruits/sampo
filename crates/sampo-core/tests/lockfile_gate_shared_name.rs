@@ -21,7 +21,7 @@ const ROOT_MANIFEST: &str = "[workspace]\nmembers = [\"crates/*\"]\nresolver = \
 const NPM_MANIFEST: &str = r#"{"name":"shared","version":"2.0.0"}"#;
 
 /// Only the crate inherits the workspace version and has a committed lockfile.
-fn write_colliding_workspace(root: &Path) {
+fn write_colliding_workspace(root: &Path, bump_dependents: &str) {
     fs::write(root.join("Cargo.toml"), ROOT_MANIFEST).unwrap();
     fs::create_dir_all(root.join("crates/shared/src")).unwrap();
     fs::write(
@@ -43,7 +43,7 @@ fn write_colliding_workspace(root: &Path) {
     fs::create_dir_all(root.join(".sampo/changesets")).unwrap();
     fs::write(
         root.join(".sampo/config.toml"),
-        "[git]\nrelease_branches = [\"main\"]\n",
+        format!("[git]\nrelease_branches = [\"main\"]\n[packages]\nbump_dependents = \"{bump_dependents}\"\n"),
     )
     .unwrap();
     fs::write(
@@ -55,14 +55,24 @@ fn write_colliding_workspace(root: &Path) {
 
 #[test]
 fn an_npm_release_with_a_shared_name_does_not_require_cargo() {
+    for policy in ["always", "out-of-range"] {
+        assert_npm_only_release(policy);
+    }
+}
+
+fn assert_npm_only_release(bump_dependents: &str) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write_colliding_workspace(root);
+    write_colliding_workspace(root, bump_dependents);
     let _guard = common::use_only(&root.join("empty-bin"));
+    // cargo test sets CARGO to its absolute path, which cargo_metadata uses before PATH.
+    unsafe { std::env::remove_var("CARGO") };
 
-    let output = sampo_core::run_release(root, false).unwrap();
-    assert_eq!(output.released_packages.len(), 1);
-    assert_eq!(output.released_packages[0].identifier, "npm/shared");
+    for dry_run in [true, false] {
+        let output = sampo_core::run_release(root, dry_run).unwrap();
+        assert_eq!(output.released_packages.len(), 1);
+        assert_eq!(output.released_packages[0].identifier, "npm/shared");
+    }
     assert_eq!(
         fs::read_to_string(root.join("Cargo.toml")).unwrap(),
         ROOT_MANIFEST,
