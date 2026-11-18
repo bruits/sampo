@@ -158,6 +158,13 @@ pub struct ReleasedPackage {
     pub bump: Bump,
 }
 
+impl ReleasedPackage {
+    /// Whether the planned version is a pre-release.
+    pub fn is_prerelease(&self) -> bool {
+        semver::Version::parse(&self.new_version).is_ok_and(|version| !version.pre.is_empty())
+    }
+}
+
 /// Output information from a release operation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseOutput {
@@ -403,14 +410,14 @@ impl TryFrom<changesets::ChangeType> for Bump {
 /// the section heading. Otherwise, the bump level determines the heading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChangelogCategory {
-    /// Categorize by semver bump level (default behavior)
+    /// Categorize by changeset level (default behavior)
     Bump(Bump),
     /// Categorize by custom tag (e.g., "Added", "Fixed", "Changed")
     Tag(String),
 }
 
 impl ChangelogCategory {
-    /// Returns the underlying bump level for version calculation.
+    /// Returns the changeset level of a bump heading, or patch for a tag.
     pub fn bump(&self) -> Bump {
         match self {
             Self::Bump(b) => *b,

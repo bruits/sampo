@@ -327,50 +327,37 @@ impl PackageAdapter {
         }
     }
 
-    /// Finalize manifests that carry inherited versions after all member manifests have
-    /// been updated.
-    ///
-    /// Cargo detects which members inherit their version, validates they resolve to the
-    /// same version, and updates the workspace root manifest accordingly. Maven keeps the
-    /// `<parent><version>` of members left out of the plan current, so a release never
-    /// leaves a reactor Maven cannot resolve. RubyGems writes the version constants gemspecs
-    /// reference, by identifier, so a same-named package of another ecosystem is left alone.
+    pub(crate) fn versions_by_kind(
+        workspace: &Workspace,
+        new_version_by_id: &BTreeMap<String, String>,
+    ) -> BTreeMap<PackageKind, BTreeMap<String, String>> {
+        let mut versions = BTreeMap::<_, BTreeMap<_, _>>::new();
+        for pkg in &workspace.members {
+            if let Some(version) = new_version_by_id.get(pkg.canonical_identifier()) {
+                versions
+                    .entry(pkg.kind)
+                    .or_default()
+                    .insert(pkg.name.clone(), version.clone());
+            }
+        }
+        versions
+    }
+
+    /// Update workspace pins and inherited versions from targets keyed by canonical identifier.
     pub fn finalize_workspace_roots(
         workspace: &Workspace,
-        new_version_by_name: &BTreeMap<String, String>,
         new_version_by_id: &BTreeMap<String, String>,
     ) -> Result<()> {
-        let has_cargo = workspace
-            .members
-            .iter()
-            .any(|pkg| pkg.kind == PackageKind::Cargo);
-
-        if has_cargo {
-            cargo::finalize_workspace_root(
-                &workspace.root,
-                &workspace.members,
-                new_version_by_name,
-            )?;
+        let versions = Self::versions_by_kind(workspace, new_version_by_id);
+        if let Some(cargo_versions) = versions.get(&PackageKind::Cargo) {
+            cargo::finalize_workspace_root(&workspace.root, &workspace.members, cargo_versions)?;
         }
-
-        let has_maven = workspace
-            .members
-            .iter()
-            .any(|pkg| pkg.kind == PackageKind::Maven);
-
-        if has_maven {
-            maven::finalize_inherited_references(&workspace.members, new_version_by_name)?;
+        if let Some(maven_versions) = versions.get(&PackageKind::Maven) {
+            maven::finalize_inherited_references(&workspace.members, maven_versions)?;
         }
-
-        let has_rubygems = workspace
-            .members
-            .iter()
-            .any(|pkg| pkg.kind == PackageKind::RubyGems);
-
-        if has_rubygems {
+        if versions.contains_key(&PackageKind::RubyGems) {
             rubygems::finalize_version_files(&workspace.members, new_version_by_id)?;
         }
-
         Ok(())
     }
 
