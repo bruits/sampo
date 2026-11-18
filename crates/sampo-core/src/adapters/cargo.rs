@@ -595,8 +595,20 @@ pub struct ManifestMetadata {
 struct MetadataDependency {
     package_name: String,
     path: Option<PathBuf>,
-    version_req: String,
+    version_req: Option<String>,
     inherited: bool,
+}
+
+impl MetadataDependency {
+    fn planned_requirement(&self, new_version: &str) -> Option<String> {
+        let requirement = self.version_req.as_ref()?;
+        let updated = if self.inherited {
+            compute_workspace_dependency_version(requirement, new_version)
+        } else {
+            updated_dependency_requirement(requirement, new_version)
+        };
+        Some(updated.unwrap_or_else(|| requirement.clone()))
+    }
 }
 
 impl ManifestMetadata {
@@ -632,8 +644,8 @@ impl ManifestMetadata {
                 .map(|dep| {
                     let (version_req, inherited) =
                         dependency_requirement(&manifest, workspace_deps, &dep)
-                            .map(|(version, inherited)| (version.to_owned(), inherited))
-                            .unwrap_or_else(|| (dep.req.to_string(), false));
+                            .map(|(version, inherited)| (version.map(str::to_owned), inherited))
+                            .unwrap_or_else(|| (Some(dep.req.to_string()), false));
                     MetadataDependency {
                         package_name: dep.name,
                         path: dep.path.map(|path| path.into_std_path_buf()),
@@ -660,16 +672,17 @@ impl ManifestMetadata {
             .filter(move |dep| dep.package_name == dep_name)
     }
 
-    /// Returns a range for the named dependency, or a pin if every declaration is pinned.
+    /// Returns a Cargo-normalized constraint for the named dependency, preferring a range over a pin.
     pub fn get_dependency_constraint(
         &self,
         manifest_path: &Path,
         dep_name: &str,
     ) -> Option<String> {
-        let dep = self
+        let requirement = self
             .dependencies(manifest_path, dep_name)
-            .min_by_key(|dep| is_pin(&dep.version_req))?;
-        VersionReq::parse(&dep.version_req)
+            .map(|dep| dep.version_req.as_deref().unwrap_or("*"))
+            .min_by_key(|requirement| is_pin(requirement))?;
+        VersionReq::parse(requirement)
             .ok()
             .map(|req| req.to_string())
     }
@@ -677,7 +690,8 @@ impl ManifestMetadata {
     /// Whether every declaration of the named dependency specifies a bare or exact pin.
     pub fn is_dependency_pinned(&self, manifest_path: &Path, dep_name: &str) -> bool {
         let mut dependencies = self.dependencies(manifest_path, dep_name).peekable();
-        dependencies.peek().is_some() && dependencies.all(|dep| is_pin(&dep.version_req))
+        dependencies.peek().is_some()
+            && dependencies.all(|dep| dep.version_req.as_deref().is_some_and(is_pin))
     }
 
     pub(crate) fn check_internal_dependency(
@@ -686,25 +700,22 @@ impl ManifestMetadata {
         dependency: &PackageInfo,
         new_version: &str,
     ) -> Result<Vec<ConstraintCheckResult>> {
-        let ranges: BTreeSet<_> = self
+        let requirements: BTreeSet<_> = self
             .dependencies(manifest_path, &dependency.name)
             .filter(|dep| dep.path.as_deref() == Some(&dependency.path))
-            .filter(|dep| {
-                !(is_pin(&dep.version_req)
-                    || dep.inherited
-                        && compute_workspace_dependency_version(&dep.version_req, new_version)
-                            .is_some())
-            })
-            .map(|dep| dep.version_req.as_str())
+            .map(|dep| dep.planned_requirement(new_version))
             .collect();
-        if ranges.is_empty() {
+        if requirements.is_empty() {
             return Ok(vec![ConstraintCheckResult::Skipped {
-                reason: "no preserved range".into(),
+                reason: "no matching path dependency".into(),
             }]);
         }
-        ranges
+        requirements
             .into_iter()
-            .map(|range| check_dependency_constraint(&dependency.name, range, new_version))
+            .map(|requirement| match requirement {
+                Some(req) => check_dependency_constraint(&dependency.name, &req, new_version),
+                None => Ok(ConstraintCheckResult::Satisfied),
+            })
             .collect()
     }
 }
@@ -725,7 +736,7 @@ fn dependency_requirement<'a>(
     doc: &'a DocumentMut,
     workspace_deps: Option<&'a Item>,
     dep: &Dependency,
-) -> Option<(&'a str, bool)> {
+) -> Option<(Option<&'a str>, bool)> {
     let key = dep.rename.as_deref().unwrap_or(&dep.name);
     let (section, _) = DEPENDENCY_SECTIONS
         .iter()
@@ -740,7 +751,7 @@ fn dependency_requirement<'a>(
         };
         let version = declaration
             .as_str()
-            .or_else(|| declaration.get("version")?.as_str())?;
+            .or_else(|| declaration.get("version")?.as_str());
         Some((version, inherited))
     };
     let Some(platform) = &dep.target else {
@@ -751,9 +762,13 @@ fn dependency_requirement<'a>(
         .iter()
         .filter(|(target, _)| target.parse().ok().as_ref() == Some(platform))
         .filter_map(|(_, target)| requirement(target.as_table_like()?))
-        .filter(|(version, _)| VersionReq::parse(version).ok().as_ref() == Some(&dep.req))
+        .filter(|(version, _)| {
+            VersionReq::parse(version.unwrap_or("*")).ok().as_ref() == Some(&dep.req)
+        })
         .min_by_key(|(version, inherited)| {
-            is_pin(version) || *inherited && parse_numeric_shorthand(version).is_some()
+            version.is_none_or(|req| {
+                is_pin(req) || *inherited && parse_numeric_shorthand(req).is_some()
+            })
         })
 }
 

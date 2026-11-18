@@ -1176,7 +1176,7 @@ pub(crate) fn validate_dependency_constraints(
     Ok(warnings)
 }
 
-/// Checks each range that the release preserves on this dependency.
+/// Checks the requirements this dependency will have after the release.
 fn check_internal_dependency(
     pkg_info: &PackageInfo,
     dep_info: &PackageInfo,
