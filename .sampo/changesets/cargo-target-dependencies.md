@@ -4,4 +4,4 @@ cargo/sampo-core: patch
 cargo/sampo-github-action: patch
 ---
 
-In Rust (Cargo) projects, fixed the publish order for crates whose workspace dependencies appear only under `[target.*]`. `sampo release` now checks these dependencies when it validates version ranges and bumps dependents.
+In Rust (Cargo) projects, fixed `sampo publish` to order crates after their target-specific normal and build dependencies in the workspace. `sampo release` checks ranges on those dependencies and includes dev dependencies with an explicit `version` when it determines version bumps.

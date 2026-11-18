@@ -185,8 +185,7 @@ pub struct PackageInfo {
     pub version: String,
     pub path: PathBuf,
     pub internal_deps: BTreeSet<String>,
-    /// Dev-only internal dependencies (not needed for publish ordering, but
-    /// their versions should still be updated during releases).
+    /// Internal dependencies used for release planning. A package can appear in both sets.
     pub internal_dev_deps: BTreeSet<String>,
     pub kind: PackageKind,
 }
