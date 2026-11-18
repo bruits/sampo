@@ -8,6 +8,7 @@ mod tests {
         sync::Once,
     };
 
+    use crate::release::run_release_with_now;
     use crate::*;
 
     /// Test workspace builder for reducing test boilerplate
@@ -273,6 +274,178 @@ mod tests {
             } else {
                 String::new()
             }
+        }
+
+        fn release_on(&self, instant: &str) -> Result<ReleaseOutput> {
+            run_release_with_now(&self.root, false, instant.parse().unwrap())
+        }
+
+        fn file_contents(&self) -> BTreeMap<PathBuf, Vec<u8>> {
+            let mut files = BTreeMap::new();
+            let mut dirs = vec![self.root.clone()];
+            while let Some(dir) = dirs.pop() {
+                for entry in fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        dirs.push(path);
+                    } else {
+                        files.insert(path.clone(), fs::read(path).unwrap());
+                    }
+                }
+            }
+            files
+        }
+    }
+
+    const CALVER: &str = "[packages]\nversioning = \"calver\"\n";
+    const FIXED_CALVER: &str = "[packages]\nversioning = \"calver\"\nfixed = [[\"a\", \"b\"]]\n";
+    const MARCH_31: &str = "2026-03-31T23:59:59Z";
+
+    #[test]
+    fn calver_ignores_the_bump_level() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "2026.3.7")
+            .set_config(CALVER)
+            .add_changeset(&["a"], Bump::Major, "Removed the old API")
+            .add_changeset(&["b"], Bump::Patch, "Fixed the display");
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_crate_version("a", "2026.3.8");
+        ws.assert_crate_version("b", "2026.3.8");
+        ws.assert_changelog_contains("a", "### Major changes\n\n- Removed the old API");
+        ws.assert_changelog_contains("b", "### Patch changes\n\n- Fixed the display");
+    }
+
+    #[test]
+    fn calver_fixed_group_shares_the_highest_version() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "0.0.0")
+            .set_config(FIXED_CALVER)
+            .add_changeset(&["b"], Bump::Patch, "Added b");
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_crate_version("a", "2026.3.8");
+        ws.assert_crate_version("b", "2026.3.8");
+    }
+
+    #[test]
+    fn calver_dependent_follows_and_its_pin_is_rewritten() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "1.4.2")
+            .add_dependency("b", "a", "=2026.3.7")
+            .set_config(CALVER)
+            .add_changeset(&["a"], Bump::Minor, "Added an API");
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_crate_version("a", "2026.3.8");
+        ws.assert_crate_version("b", "2026.3.0");
+        ws.assert_dependency_version("b", "a", "=2026.3.8");
+    }
+
+    #[test]
+    fn calver_refuses_a_version_that_is_not_higher_before_any_write() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.4.0")
+            .set_config(CALVER)
+            .add_changeset(&["a"], Bump::Patch, "Fixed a");
+        let before = ws.file_contents();
+        let err = ws.release_on(MARCH_31).unwrap_err().to_string();
+        assert!(
+            err.contains("cargo/a") && err.contains("2026.3.0") && err.contains("2026.4.0"),
+            "{err}"
+        );
+        assert_eq!(ws.file_contents(), before);
+    }
+
+    #[test]
+    fn calver_refuses_a_prerelease_member_below_a_stable_one() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "2026.3.0-alpha.1")
+            .set_config(FIXED_CALVER)
+            .add_changeset(&["a"], Bump::Patch, "Fixed a");
+        let before = ws.file_contents();
+        let err = ws.release_on(MARCH_31).unwrap_err().to_string();
+        assert!(
+            err.contains("cargo/b")
+                && err.contains("2026.3.0-alpha.1")
+                && err.contains("joined this release"),
+            "{err}"
+        );
+        assert_eq!(ws.file_contents(), before);
+    }
+
+    #[test]
+    fn calver_ignored_member_does_not_set_the_version() {
+        for ignore in ["ignore = [\"b\"]", "ignore_unpublished = true"] {
+            let mut ws = TestWorkspace::new();
+            ws.add_crate("a", "2026.3.7")
+                .add_crate("b", "2027.1.0")
+                .set_publishable("b", false)
+                .set_config(&format!("{FIXED_CALVER}{ignore}"))
+                .add_changeset(&["a"], Bump::Major, "Changed a");
+            ws.release_on(MARCH_31).unwrap();
+            ws.assert_crate_version("a", "2026.3.8");
+            ws.assert_crate_version("b", "2027.1.0");
+            assert!(!ws.crates["b"].join("CHANGELOG.md").exists());
+        }
+    }
+
+    #[test]
+    fn calver_automatic_entry_takes_the_planned_bump() {
+        for (target, bump, heading) in [("a", Bump::Patch, "Patch"), ("c", Bump::Major, "Major")] {
+            let mut ws = TestWorkspace::new();
+            ws.add_crate("a", "2026.3.8")
+                .add_crate("b", "2026.3.8")
+                .add_crate("c", "2026.3.8")
+                .add_dependency("a", "c", "=2026.3.8")
+                .set_config(FIXED_CALVER)
+                .add_changeset(&[target], bump, "Changed the API");
+            ws.release_on("2026-04-01T00:00:00Z").unwrap();
+            ws.assert_changelog_contains(
+                "b",
+                &format!("### {heading} changes\n\n- Bumped due to fixed dependency group policy"),
+            );
+            if target == "c" {
+                ws.assert_changelog_contains(
+                    "a",
+                    "### Major changes\n\n- Updated dependencies: c@2026.4.0",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn calver_year_month_fixes_the_release_line() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "0.0.0")
+            .add_crate("b", "0.0.0")
+            .set_config(&format!("{FIXED_CALVER}calver_year_month = \"2026.12\""))
+            .add_changeset(&["a"], Bump::Minor, "Added an API");
+        ws.release_on("2026-11-18T00:00:00Z").unwrap();
+        for name in ["a", "b"] {
+            ws.assert_crate_version(name, "2026.12.0");
+        }
+        ws.add_changeset(&["b"], Bump::Patch, "Fixed the API");
+        ws.release_on("2027-01-05T00:00:00Z").unwrap();
+        for name in ["a", "b"] {
+            ws.assert_crate_version(name, "2026.12.1");
+        }
+    }
+
+    #[test]
+    fn calver_refuses_preserved_change_files_before_the_restore() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "0.0.0")
+            .set_config(CALVER)
+            .add_changeset(&["a"], Bump::Minor, "Pending")
+            .add_preserved_changeset(&["a"], Bump::Patch, "Preserved");
+        assert!(!ws.root.join("Cargo.lock").exists());
+        let before = ws.file_contents();
+        for release in [run_release, run_stabilize_release] {
+            let err = release(&ws.root, false).unwrap_err().to_string();
+            assert!(err.contains(".sampo/prerelease"), "{err}");
+            assert_eq!(ws.file_contents(), before);
         }
     }
 
@@ -2120,8 +2293,14 @@ tempfile = "3.0"
             ("1.0.0".to_string(), "1.1.0".to_string()),
         );
 
-        let explanations =
-            detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
+        let explanations = detect_all_dependency_explanations(
+            &changesets,
+            &ws,
+            &config,
+            &releases,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         // pkg-a should have dependency update message (depends on pkg-b)
         let pkg_a_messages = explanations.get("cargo/pkg-a").unwrap();
@@ -2165,8 +2344,14 @@ tempfile = "3.0"
         let changesets = vec![];
         let releases = BTreeMap::new();
 
-        let explanations =
-            detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
+        let explanations = detect_all_dependency_explanations(
+            &changesets,
+            &ws,
+            &config,
+            &releases,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(explanations.is_empty());
     }
 

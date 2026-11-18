@@ -10,12 +10,12 @@ use crate::types::{
 use crate::{
     AcknowledgmentStyle, Acknowledgments,
     changeset::{ChangesetInfo, parse_changeset, render_changeset_markdown_with_tags},
-    config::{AutomaticEntries, BumpDependents, Config},
+    config::{AutomaticEntries, BumpDependents, Config, Versioning},
     current_branch, detect_github_repo_slug_with_config, discover_workspace,
     enrich_changeset_message, get_commit_hash_for_path, load_changesets,
     publish::package_tag_exists,
 };
-use chrono::{DateTime, FixedOffset, Local, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, Local, Utc};
 use chrono_tz::Tz;
 use semver::{BuildMetadata, Prerelease, Version};
 use std::collections::{BTreeMap, BTreeSet};
@@ -285,6 +285,7 @@ pub fn infer_bump_from_versions(old_ver: &str, new_ver: &str) -> Bump {
 /// * `workspace` - The workspace containing all packages
 /// * `config` - The configuration with dependency policies
 /// * `releases` - Map of package name to (old_version, new_version) for all planned releases
+/// * `planned_bumps` - Bump level for each released package, keyed by canonical identifier
 ///
 /// # Returns
 /// A map of package name to list of (message, category) explanations to add to changelogs
@@ -293,12 +294,19 @@ pub fn detect_all_dependency_explanations(
     workspace: &Workspace,
     config: &Config,
     releases: &BTreeMap<String, (String, String)>,
+    planned_bumps: &BTreeMap<String, Bump>,
 ) -> Result<BTreeMap<String, Vec<(String, ChangelogCategory)>>> {
     let mut messages_by_pkg: BTreeMap<String, Vec<(String, ChangelogCategory)>> = BTreeMap::new();
     if config.changelog_automatic_entries == AutomaticEntries::Collapse {
         return Ok(messages_by_pkg);
     }
     let include_kind = workspace.has_multiple_package_kinds();
+    let planned_bump = |id: &str| {
+        planned_bumps
+            .get(id)
+            .copied()
+            .ok_or_else(|| SampoError::Release(format!("Missing planned bump for '{id}'")))
+    };
 
     // 1. Detect packages bumped due to fixed dependency group policy
     let bumped_packages: BTreeSet<String> = releases.keys().cloned().collect();
@@ -319,8 +327,9 @@ pub fn detect_all_dependency_explanations(
         .collect();
 
     for (pkg_name, policy_bump) in policy_packages {
-        // For accurate bump detection, infer from actual version changes
-        let actual_bump = if let Some((old_ver, new_ver)) = releases.get(&pkg_name) {
+        let actual_bump = if config.versioning == Versioning::CalVer {
+            planned_bump(&pkg_name)?
+        } else if let Some((old_ver, new_ver)) = releases.get(&pkg_name) {
             infer_bump_from_versions(old_ver, new_ver)
         } else {
             policy_bump
@@ -384,6 +393,11 @@ pub fn detect_all_dependency_explanations(
                 // Create dependency update entry
                 let updates = build_dependency_updates(&updated_deps);
                 if let Some((msg, bump)) = create_dependency_update_entry(&updates) {
+                    let bump = if config.versioning == Versioning::CalVer {
+                        planned_bump(crate_id)?
+                    } else {
+                        bump
+                    };
                     messages_by_pkg
                         .entry(crate_id.clone())
                         .or_default()
@@ -551,7 +565,15 @@ enum PlanOutcome {
 }
 
 /// Main release function that can be called from CLI or other interfaces
-pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutput> {
+pub fn run_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput> {
+    run_release_with_now(root, dry_run, Utc::now())
+}
+
+pub(crate) fn run_release_with_now(
+    root: &Path,
+    dry_run: bool,
+    now: DateTime<Utc>,
+) -> Result<ReleaseOutput> {
     let workspace = discover_workspace(root)?;
     let config = Config::load(&workspace.root)?;
 
@@ -572,7 +594,8 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
     let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
     let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
-    let preserved_targets = collect_preserved_targets(&preserved_changesets, &workspace)?;
+    let preserved_targets =
+        collect_preserved_targets(&preserved_changesets, &workspace, config.versioning)?;
 
     let mut using_preserved = false;
     let mut cached_plan_state: Option<PlanState> = None;
@@ -609,6 +632,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             &preserved_targets,
             false,
             true,
+            now,
         )? {
             PlanOutcome::Plan(plan) => {
                 let is_prerelease_preview = releases_include_prerelease(&plan.releases);
@@ -663,6 +687,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
                     &config,
                     &preserved_targets,
                     false,
+                    now,
                 )?
             }
         };
@@ -692,6 +717,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
             &preserved_targets,
             false,
             true,
+            now,
         )? {
             PlanOutcome::Plan(plan) => plan,
             PlanOutcome::NoApplicablePackages => {
@@ -720,6 +746,7 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
                 &preserved_targets,
                 false,
                 true,
+                now,
             )? {
                 PlanOutcome::Plan(plan) => plan,
                 PlanOutcome::NoApplicablePackages => {
@@ -760,11 +787,12 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
     }
 
     apply_releases(
-        &releases,
+        &released_packages,
         &workspace,
         &mut messages_by_pkg,
         &final_changesets,
         &config,
+        now,
     )?;
 
     let prerelease_targets = collect_prerelease_targets(&releases);
@@ -787,6 +815,14 @@ pub fn run_release(root: &std::path::Path, dry_run: bool) -> Result<ReleaseOutpu
 
 /// Stabilize prerelease packages in the workspace, producing stable version numbers
 pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput> {
+    run_stabilize_release_with_now(root, dry_run, Utc::now())
+}
+
+pub(crate) fn run_stabilize_release_with_now(
+    root: &Path,
+    dry_run: bool,
+    now: DateTime<Utc>,
+) -> Result<ReleaseOutput> {
     let workspace = discover_workspace(root)?;
     let config = Config::load(&workspace.root)?;
 
@@ -806,7 +842,8 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
 
     let current_changesets = load_changesets(&changesets_dir, &config.changesets_tags)?;
     let preserved_changesets = load_changesets(&prerelease_dir, &config.changesets_tags)?;
-    let preserved_targets = collect_preserved_targets(&preserved_changesets, &workspace)?;
+    let preserved_targets =
+        collect_preserved_targets(&preserved_changesets, &workspace, config.versioning)?;
 
     if current_changesets.is_empty() && preserved_changesets.is_empty() {
         println!(
@@ -824,8 +861,14 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
     if !dry_run && restores_changesets && any_lockfile_present(&workspace) {
         let mut preview = current_changesets.clone();
         preview.extend(preserved_changesets.clone());
-        let planned =
-            preview_released_ecosystems(&preview, &workspace, &config, &preserved_targets, true)?;
+        let planned = preview_released_ecosystems(
+            &preview,
+            &workspace,
+            &config,
+            &preserved_targets,
+            true,
+            now,
+        )?;
         preflight_lockfile_tools(&workspace, &planned)?;
     }
 
@@ -856,6 +899,7 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
         &preserved_targets,
         true,
         true,
+        now,
     )? {
         PlanOutcome::Plan(plan) => plan,
         PlanOutcome::NoApplicablePackages => {
@@ -897,11 +941,12 @@ pub fn run_stabilize_release(root: &Path, dry_run: bool) -> Result<ReleaseOutput
     }
 
     apply_releases(
-        &releases,
+        &released_packages,
         &workspace,
         &mut messages_by_pkg,
         &final_changesets,
         &config,
+        now,
     )?;
 
     let prerelease_targets = BTreeSet::new();
@@ -931,6 +976,7 @@ fn compute_plan_state(
     preserved_targets: &BTreeSet<String>,
     stabilize: bool,
     report_warnings: bool,
+    now: DateTime<Utc>,
 ) -> Result<PlanOutcome> {
     let (mut bump_by_pkg, messages_by_pkg, used_paths) =
         compute_initial_bumps(changesets, workspace, config)?;
@@ -954,17 +1000,21 @@ fn compute_plan_state(
     } else {
         None
     };
-    let new_version_of = |info: &PackageInfo, bump: Bump| {
-        planned_version(
-            info,
-            bump,
-            workspace,
-            config,
-            preserved_targets,
-            stabilize,
-            &direct_targets,
-        )
-        .map(|(_, new_version)| new_version)
+    let fixed_groups = enforced_fixed_groups(workspace, config)?;
+    let mut planner = VersionPlanner {
+        workspace,
+        config,
+        preserved_targets,
+        stabilize,
+        direct_targets,
+        now,
+        by_id: workspace
+            .members
+            .iter()
+            .map(|info| (info.canonical_identifier(), info))
+            .collect(),
+        fixed_groups: &fixed_groups,
+        fixed_versions: BTreeMap::new(),
     };
     // A linked raise can outrun the coupling the cascade just settled, so re-settle until
     // linked has nothing left to raise. Bumps only ever rise through three levels over a
@@ -975,7 +1025,8 @@ fn compute_plan_state(
             &dependents,
             config,
             workspace,
-            &new_version_of,
+            &fixed_groups,
+            |info, bump| planner.planned_version(info, bump).map(|(_, new)| new),
             cargo_metadata.as_ref(),
         )?;
         if !apply_linked_dependencies(&mut bump_by_pkg, config, workspace)? {
@@ -983,14 +1034,7 @@ fn compute_plan_state(
         }
     }
 
-    let releases = prepare_release_plan(
-        &bump_by_pkg,
-        workspace,
-        config,
-        preserved_targets,
-        stabilize,
-        &direct_targets,
-    )?;
+    let releases = prepare_release_plan(&bump_by_pkg, &mut planner)?;
     if releases.is_empty() {
         return Ok(PlanOutcome::NoMatchingCrates);
     }
@@ -1123,8 +1167,8 @@ pub(crate) fn validate_dependency_constraints(
                         new_version: new_version.clone(),
                     };
 
-                    let is_fixed_or_linked =
-                        is_in_group(pkg_id, &fixed_groups) || is_in_group(pkg_id, &linked_groups);
+                    let is_fixed_or_linked = group_index(pkg_id, &fixed_groups).is_some()
+                        || group_index(pkg_id, &linked_groups).is_some();
 
                     if is_fixed_or_linked {
                         violations.push(violation);
@@ -1275,11 +1319,10 @@ fn unverifiable_pin_warning(
     )
 }
 
-/// Check if a package identifier is in any of the provided groups.
-fn is_in_group(pkg_id: &str, groups: &[Vec<String>]) -> bool {
+fn group_index(pkg_id: &str, groups: &[Vec<String>]) -> Option<usize> {
     groups
         .iter()
-        .any(|group| group.contains(&pkg_id.to_string()))
+        .position(|group| group.iter().any(|member| member == pkg_id))
 }
 
 fn releases_include_prerelease(releases: &ReleasePlan) -> bool {
@@ -1347,7 +1390,13 @@ fn all_preserved_targets_in_prerelease(
 fn collect_preserved_targets(
     changesets: &[ChangesetInfo],
     workspace: &Workspace,
+    versioning: Versioning,
 ) -> Result<BTreeSet<String>> {
+    if versioning == Versioning::CalVer && !changesets.is_empty() {
+        return Err(SampoError::Release(
+            "CalVer cannot release changesets in .sampo/prerelease. Finish the pre-release with packages.versioning = \"semver\" first.".into(),
+        ));
+    }
     let mut targets = BTreeSet::new();
     for changeset in changesets {
         for (spec, _, _) in &changeset.entries {
@@ -1757,6 +1806,7 @@ fn preview_released_ecosystems(
     config: &Config,
     preserved_targets: &BTreeSet<String>,
     stabilize: bool,
+    now: DateTime<Utc>,
 ) -> Result<BTreeSet<PackageKind>> {
     match compute_plan_state(
         changesets,
@@ -1765,6 +1815,7 @@ fn preview_released_ecosystems(
         preserved_targets,
         stabilize,
         false,
+        now,
     )? {
         PlanOutcome::Plan(plan) => Ok(released_ecosystems(workspace, &plan.releases)),
         PlanOutcome::NoApplicablePackages | PlanOutcome::NoMatchingCrates => Ok(BTreeSet::new()),
@@ -1897,18 +1948,10 @@ fn apply_dependency_cascade(
     dependents: &BTreeMap<String, BTreeSet<String>>,
     cfg: &Config,
     ws: &Workspace,
-    new_version_of: &impl Fn(&PackageInfo, Bump) -> Result<String>,
+    resolved_fixed_groups: &[Vec<String>],
+    mut new_version_of: impl FnMut(&PackageInfo, Bump) -> Result<String>,
     cargo_metadata: Option<&ManifestMetadata>,
 ) -> Result<()> {
-    let resolved_fixed_groups = enforced_fixed_groups(ws, cfg)?;
-
-    // Helper function to find which fixed group a package belongs to, if any
-    let find_fixed_group = |pkg_id: &str| -> Option<usize> {
-        resolved_fixed_groups
-            .iter()
-            .position(|group| group.contains(&pkg_id.to_string()))
-    };
-
     // Build a quick lookup map for package info by canonical identifier
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
     for c in &ws.members {
@@ -1968,7 +2011,7 @@ fn apply_dependency_cascade(
                 }
 
                 // Determine bump level for this dependent
-                let dependent_bump = if find_fixed_group(dep_name).is_some() {
+                let dependent_bump = if group_index(dep_name, resolved_fixed_groups).is_some() {
                     // Fixed dependencies: same bump level as the dependency
                     changed_bump
                 } else {
@@ -1994,7 +2037,7 @@ fn apply_dependency_cascade(
         }
 
         // 2. Handle fixed dependency groups (bidirectional)
-        if let Some(group_idx) = find_fixed_group(&changed) {
+        if let Some(group_idx) = group_index(&changed, resolved_fixed_groups) {
             // All packages in the same fixed group should bump together
             for group_member in &resolved_fixed_groups[group_idx] {
                 if group_member == &changed {
@@ -2082,90 +2125,119 @@ fn apply_linked_dependencies(
     Ok(raised)
 }
 
-/// A version Sampo cannot parse or bump stops the run: planning it as a no-op would
-/// consume the changeset and log an entry under a version that never moved. Packages
-/// the user never named get extra context explaining how they joined the plan.
-fn version_plan_error(
-    identifier: &str,
-    old: &str,
-    reason: &str,
-    direct_targets: &BTreeSet<String>,
-) -> SampoError {
-    let mut message = format!("Cannot release '{identifier}' ({old}): {reason}");
-    if !direct_targets.contains(identifier) {
-        message.push_str(
-            ". It joined this release because it depends on a package being released or \
-             shares a version group with it",
-        );
-    }
-    message.push_str("; fix its version, or exclude it with packages.ignore");
-    SampoError::Release(message)
-}
-
 /// Prepare the release plan by matching bumps to workspace members
 fn prepare_release_plan(
     bump_by_pkg: &BTreeMap<String, Bump>,
-    ws: &Workspace,
-    config: &Config,
-    preserved_targets: &BTreeSet<String>,
-    stabilize: bool,
-    direct_targets: &BTreeSet<String>,
+    planner: &mut VersionPlanner<'_>,
 ) -> Result<ReleasePlan> {
-    // Map package identifier -> PackageInfo for quick lookup
-    let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
-    for c in &ws.members {
-        by_id.insert(c.canonical_identifier().to_string(), c);
-    }
-
-    let mut releases: Vec<(String, String, String)> = Vec::new(); // (name, old_version, new_version)
+    let mut releases = Vec::new();
     for (identifier, bump) in bump_by_pkg {
-        if let Some(info) = by_id.get(identifier) {
-            let (old, newv) = planned_version(
-                info,
-                *bump,
-                ws,
-                config,
-                preserved_targets,
-                stabilize,
-                direct_targets,
-            )?;
-            releases.push((identifier.clone(), old, newv));
+        if let Some(&info) = planner.by_id.get(identifier.as_str()) {
+            let (old, new) = planner.planned_version(info, *bump)?;
+            releases.push((identifier.clone(), old, new));
         }
     }
-
     Ok(releases)
 }
 
-fn planned_version(
-    info: &PackageInfo,
-    bump: Bump,
-    ws: &Workspace,
-    config: &Config,
-    preserved_targets: &BTreeSet<String>,
+struct VersionPlanner<'a> {
+    workspace: &'a Workspace,
+    config: &'a Config,
+    preserved_targets: &'a BTreeSet<String>,
     stabilize: bool,
-    direct_targets: &BTreeSet<String>,
-) -> Result<(String, String)> {
-    let identifier = info.canonical_identifier();
-    let old = if info.version.is_empty() {
-        "0.0.0".to_string()
-    } else {
-        info.version.clone()
-    };
+    direct_targets: BTreeSet<String>,
+    now: DateTime<Utc>,
+    by_id: BTreeMap<&'a str, &'a PackageInfo>,
+    fixed_groups: &'a [Vec<String>],
+    fixed_versions: BTreeMap<usize, String>,
+}
 
-    let parsed = parse_version_string(&old)
-        .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
-    let newv = if stabilize && !parsed.pre.is_empty() {
-        stabilize_version_from_parsed(&parsed, bump)
-    } else if parsed.pre.is_empty() && exited_prerelease(ws, config, info, &old)? {
-        stabilize_base(&parsed, bump)
-    } else if should_bump_prerelease_base(&parsed, identifier, preserved_targets) {
-        bump_prerelease_entry(&parsed, bump)
+fn current_version(info: &PackageInfo) -> &str {
+    if info.version.is_empty() {
+        "0.0.0"
     } else {
-        bump_version_from_parsed(&parsed, bump)
+        &info.version
     }
-    .map_err(|err| version_plan_error(identifier, &old, &err, direct_targets))?;
+}
 
-    Ok((old, newv))
+impl VersionPlanner<'_> {
+    /// A version Sampo cannot parse or bump stops the run: planning it as a no-op would
+    /// consume the changeset and log an entry under a version that never moved. Packages
+    /// the user never named get extra context explaining how they joined the plan.
+    fn version_plan_error(&self, info: &PackageInfo, reason: &str) -> SampoError {
+        let identifier = info.canonical_identifier();
+        let old = current_version(info);
+        let mut message = format!("Cannot release '{identifier}' ({old}): {reason}");
+        if !self.direct_targets.contains(identifier) {
+            message.push_str(
+                ". It joined this release because it depends on a package being released or \
+                 shares a version group with it",
+            );
+        }
+        message.push_str("; fix its version, or exclude it with packages.ignore");
+        SampoError::Release(message)
+    }
+
+    fn planned_version(&mut self, info: &PackageInfo, bump: Bump) -> Result<(String, String)> {
+        let old = current_version(info);
+        let parsed =
+            parse_version_string(old).map_err(|err| self.version_plan_error(info, &err))?;
+        if self.config.versioning == Versioning::CalVer {
+            return Ok((old.to_owned(), self.planned_calver(info, parsed)?));
+        }
+        let new = if self.stabilize && !parsed.pre.is_empty() {
+            stabilize_version_from_parsed(&parsed, bump)
+        } else if parsed.pre.is_empty()
+            && exited_prerelease(self.workspace, self.config, info, old)?
+        {
+            stabilize_base(&parsed, bump)
+        } else if should_bump_prerelease_base(
+            &parsed,
+            info.canonical_identifier(),
+            self.preserved_targets,
+        ) {
+            bump_prerelease_entry(&parsed, bump)
+        } else {
+            bump_version_from_parsed(&parsed, bump)
+        }
+        .map_err(|err| self.version_plan_error(info, &err))?;
+        Ok((old.to_owned(), new))
+    }
+
+    fn planned_calver(&mut self, info: &PackageInfo, parsed: Version) -> Result<String> {
+        let (year, month) = calver_year_month(self.config, self.now);
+        let Some(index) = group_index(info.canonical_identifier(), self.fixed_groups) else {
+            return calver_version(&parsed, year, month)
+                .map_err(|err| self.version_plan_error(info, &err));
+        };
+        if let Some(version) = self.fixed_versions.get(&index) {
+            return Ok(version.clone());
+        }
+
+        let mut highest = info;
+        let mut baseline = parsed;
+        require_stable_calver(&baseline).map_err(|err| self.version_plan_error(info, &err))?;
+        for member in self.fixed_groups[index]
+            .iter()
+            .filter(|id| *id != info.canonical_identifier())
+            .filter_map(|id| self.by_id.get(id.as_str()).copied())
+        {
+            if should_ignore_package(self.config, self.workspace, member)? {
+                continue;
+            }
+            let version = parse_version_string(current_version(member))
+                .map_err(|err| self.version_plan_error(member, &err))?;
+            require_stable_calver(&version).map_err(|err| self.version_plan_error(member, &err))?;
+            if version > baseline {
+                highest = member;
+                baseline = version;
+            }
+        }
+        let new = calver_version(&baseline, year, month)
+            .map_err(|err| self.version_plan_error(highest, &err))?;
+        self.fixed_versions.insert(index, new.clone());
+        Ok(new)
+    }
 }
 
 /// Print the planned releases
@@ -2271,10 +2343,6 @@ fn parse_release_date_timezone(spec: &str) -> Result<ReleaseDateTimezone> {
     }
 }
 
-fn compute_release_date_display(cfg: &Config) -> Result<Option<String>> {
-    compute_release_date_display_with_now(cfg, Utc::now())
-}
-
 fn compute_release_date_display_with_now(
     cfg: &Config,
     now: DateTime<Utc>,
@@ -2312,11 +2380,12 @@ fn compute_release_date_display_with_now(
 
 /// Apply all releases: update manifests and changelogs
 fn apply_releases(
-    releases: &ReleasePlan,
+    releases: &[ReleasedPackage],
     ws: &Workspace,
     messages_by_pkg: &mut BTreeMap<String, Vec<(String, ChangelogCategory)>>,
     changesets: &[ChangesetInfo],
     cfg: &Config,
+    now: DateTime<Utc>,
 ) -> Result<()> {
     // Build lookup map for all packages
     let mut by_id: BTreeMap<String, &PackageInfo> = BTreeMap::new();
@@ -2327,14 +2396,17 @@ fn apply_releases(
     // Build releases map for dependency explanations
     let releases_map: BTreeMap<String, (String, String)> = releases
         .iter()
-        .map(|(name, old, new)| (name.clone(), (old.clone(), new.clone())))
+        .map(|pkg| {
+            (
+                pkg.identifier.clone(),
+                (pkg.old_version.clone(), pkg.new_version.clone()),
+            )
+        })
         .collect();
 
     let mut new_version_by_name: BTreeMap<String, String> = BTreeMap::new();
-    for (identifier, _old, newv) in releases {
-        if let Some(info) = by_id.get(identifier) {
-            new_version_by_name.insert(info.name.clone(), newv.clone());
-        }
+    for pkg in releases {
+        new_version_by_name.insert(pkg.name.clone(), pkg.new_version.clone());
     }
 
     // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
@@ -2345,8 +2417,12 @@ fn apply_releases(
         });
 
     // Use unified function to detect all dependency explanations
+    let planned_bumps = releases
+        .iter()
+        .map(|pkg| (pkg.identifier.clone(), pkg.bump))
+        .collect();
     let dependency_explanations =
-        detect_all_dependency_explanations(changesets, ws, cfg, &releases_map)?;
+        detect_all_dependency_explanations(changesets, ws, cfg, &releases_map, &planned_bumps)?;
 
     // Merge dependency explanations into existing messages
     for (pkg_name, explanations) in dependency_explanations {
@@ -2356,9 +2432,12 @@ fn apply_releases(
             .extend(explanations);
     }
 
-    let release_date_display = compute_release_date_display(cfg)?;
+    let release_date_display = compute_release_date_display_with_now(cfg, now)?;
 
-    for (name, old, newv) in releases {
+    for pkg in releases {
+        let name = &pkg.identifier;
+        let old = &pkg.old_version;
+        let newv = &pkg.new_version;
         let info = by_id
             .get(name.as_str())
             .ok_or_else(|| SampoError::Release(format!("package '{}' not found", name)))?;
@@ -2583,6 +2662,43 @@ fn bump_prerelease_entry(version: &Version, bump: Bump) -> std::result::Result<S
     apply_base_bump(&mut updated, bump)?;
     updated.pre = base_pre;
     Ok(updated.to_string())
+}
+
+fn calver_year_month(cfg: &Config, now: DateTime<Utc>) -> (u64, u64) {
+    cfg.calver_year_month
+        .unwrap_or_else(|| (now.year() as u64, u64::from(now.month())))
+}
+
+fn require_stable_calver(version: &Version) -> std::result::Result<(), String> {
+    if !version.pre.is_empty() {
+        return Err(format!(
+            "CalVer cannot release pre-release version {version}"
+        ));
+    }
+    Ok(())
+}
+
+fn calver_version(
+    baseline: &Version,
+    year: u64,
+    month: u64,
+) -> std::result::Result<String, String> {
+    require_stable_calver(baseline)?;
+    let micro = if (baseline.major, baseline.minor) == (year, month) {
+        baseline
+            .patch
+            .checked_add(1)
+            .ok_or_else(|| format!("CalVer micro component overflow for {baseline}"))?
+    } else {
+        0
+    };
+    let next = Version::new(year, month, micro);
+    if next <= *baseline {
+        return Err(format!(
+            "CalVer version {next} must be higher than {baseline}"
+        ));
+    }
+    Ok(next.to_string())
 }
 
 fn bump_version_from_parsed(parsed: &Version, bump: Bump) -> std::result::Result<String, String> {
@@ -2974,6 +3090,66 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn calver_versions_from_utc_or_a_fixed_month() {
+        for (old, instant, fixed, expected) in [
+            ("0.0.0", "2026-03-03T00:00:00Z", None, "2026.3.0"),
+            ("1.4.2", "2026-03-03T00:00:00Z", None, "2026.3.0"),
+            ("2026.3.7", "2026-03-31T23:59:59Z", None, "2026.3.8"),
+            ("2026.3.8", "2026-04-01T00:00:00Z", None, "2026.4.0"),
+            ("2026.12.3", "2027-01-01T00:30:00Z", None, "2027.1.0"),
+            (
+                "0.0.0",
+                "2026-11-18T00:00:00Z",
+                Some((2026, 12)),
+                "2026.12.0",
+            ),
+            (
+                "2026.12.0",
+                "2027-01-05T00:00:00Z",
+                Some((2026, 12)),
+                "2026.12.1",
+            ),
+        ] {
+            let cfg = Config {
+                calver_year_month: fixed,
+                changelog_release_date_timezone: Some("Pacific/Honolulu".into()),
+                ..Config::default()
+            };
+            let (year, month) = calver_year_month(&cfg, instant.parse().unwrap());
+            let next = calver_version(&Version::parse(old).unwrap(), year, month).unwrap();
+            assert_eq!(next, expected, "{old} at {instant} with {fixed:?}");
+        }
+    }
+
+    #[test]
+    fn calver_refuses_future_and_prerelease_versions() {
+        for (old, instant, fixed, reason) in [
+            ("2026.4.0", "2026-03-31T00:00:00Z", None, "2026.3.0"),
+            ("2027.1.0", "2026-12-31T00:00:00Z", None, "2026.12.0"),
+            (
+                "2027.1.0",
+                "2027-01-05T00:00:00Z",
+                Some((2026, 12)),
+                "2026.12.0",
+            ),
+            (
+                "2026.3.0-alpha.1",
+                "2026-03-31T00:00:00Z",
+                None,
+                "pre-release",
+            ),
+        ] {
+            let cfg = Config {
+                calver_year_month: fixed,
+                ..Config::default()
+            };
+            let (year, month) = calver_year_month(&cfg, instant.parse().unwrap());
+            let err = calver_version(&Version::parse(old).unwrap(), year, month).unwrap_err();
+            assert!(err.contains(old) && err.contains(reason), "{err}");
+        }
+    }
+
+    #[test]
     fn preserves_changelog_intro_when_updating() {
         use std::fs;
         use tempfile::tempdir;
@@ -3308,7 +3484,8 @@ mod tests {
             &dependents,
             &config,
             &workspace,
-            &new_version_of,
+            &[],
+            new_version_of,
             None,
         )
         .unwrap();
