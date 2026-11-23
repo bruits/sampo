@@ -40,10 +40,22 @@ struct PullRequest {
     html_url: String,
 }
 
+#[derive(Debug, Serialize)]
+struct PublishReleasePayload {
+    draft: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Release {
+    id: u64,
+    tag_name: String,
     pub upload_url: String,
     html_url: String,
+    #[serde(default)]
+    pub draft: bool,
+    /// Absent on GitHub Enterprise Server versions without immutable releases.
+    #[serde(default)]
+    pub immutable: bool,
     #[serde(default)]
     pub assets: Vec<ReleaseAsset>,
     #[serde(skip)]
@@ -299,15 +311,21 @@ impl GitHubClient {
         }
     }
 
-    /// Create a GitHub Release for a tag.
-    pub fn create_release(&self, tag: &str, body: &str, prerelease: bool) -> Result<Release> {
+    /// Create a GitHub Release for a tag, or return the published one it already has.
+    pub fn create_release(
+        &self,
+        tag: &str,
+        body: &str,
+        prerelease: bool,
+        draft: bool,
+    ) -> Result<Release> {
         let api_url = format!("{}/repos/{}/releases", self.api_url, self.repo);
 
         let payload = CreateReleasePayload {
             tag_name: tag.to_string(),
             name: tag.to_string(),
             body: body.to_string(),
-            draft: false,
+            draft,
             prerelease,
         };
 
@@ -333,7 +351,11 @@ impl GitHubClient {
                         message: format!("Failed to parse release response: {}", e),
                     })?;
 
-            println!("Created GitHub release for {}: {}", tag, release.html_url);
+            let kind = if release.draft { "draft " } else { "" };
+            println!(
+                "Created {}GitHub release for {}: {}",
+                kind, tag, release.html_url
+            );
 
             Ok(Release {
                 created: true,
@@ -345,7 +367,12 @@ impl GitHubClient {
 
             if status == 422 && error_text.contains("already_exists") {
                 println!("Release for {} already exists, fetching it.", tag);
-                return self.get_release_by_tag(tag);
+                return self.published_release_by_tag(tag)?.ok_or_else(|| {
+                    ActionError::SampoCommandFailed {
+                        operation: "github-get-release".to_string(),
+                        message: format!("No published release found for tag {}", tag),
+                    }
+                });
             }
 
             Err(ActionError::SampoCommandFailed {
@@ -355,8 +382,16 @@ impl GitHubClient {
         }
     }
 
-    /// Fetch an existing GitHub Release by tag name.
-    pub fn get_release_by_tag(&self, tag: &str) -> Result<Release> {
+    /// Find the release of a tag, published or draft.
+    pub fn find_release(&self, tag: &str) -> Result<Option<Release>> {
+        match self.published_release_by_tag(tag)? {
+            Some(release) => Ok(Some(release)),
+            None => self.draft_release_by_tag(tag),
+        }
+    }
+
+    /// `releases/tags/{tag}` returns published releases only.
+    fn published_release_by_tag(&self, tag: &str) -> Result<Option<Release>> {
         let api_url = format!("{}/repos/{}/releases/tags/{}", self.api_url, self.repo, tag);
 
         let response = self
@@ -371,6 +406,9 @@ impl GitHubClient {
                 message: format!("HTTP request failed: {}", e),
             })?;
 
+        if response.status() == 404 {
+            return Ok(None);
+        }
         if response.status().is_success() {
             let release: Release =
                 response
@@ -385,7 +423,7 @@ impl GitHubClient {
                 tag, release.html_url
             );
 
-            Ok(release.without_upload_url_template())
+            Ok(Some(release.without_upload_url_template()))
         } else {
             let status = response.status();
             let error_text = response.text().unwrap_or_default();
@@ -395,6 +433,80 @@ impl GitHubClient {
                     "Failed to fetch release for tag {} ({}): {}",
                     tag, status, error_text
                 ),
+            })
+        }
+    }
+
+    /// Only the 100 most recent releases are searched.
+    fn draft_release_by_tag(&self, tag: &str) -> Result<Option<Release>> {
+        let api_url = format!("{}/repos/{}/releases?per_page=100", self.api_url, self.repo);
+
+        let response = self
+            .client
+            .get(&api_url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .map_err(|e| ActionError::SampoCommandFailed {
+                operation: "github-list-releases".to_string(),
+                message: format!("HTTP request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            return Err(ActionError::SampoCommandFailed {
+                operation: "github-list-releases".to_string(),
+                message: format!("Failed to list releases ({}): {}", status, error_text),
+            });
+        }
+
+        let releases: Vec<Release> =
+            response
+                .json()
+                .map_err(|e| ActionError::SampoCommandFailed {
+                    operation: "github-list-releases".to_string(),
+                    message: format!("Failed to parse release list response: {}", e),
+                })?;
+
+        let draft = releases
+            .into_iter()
+            .find(|release| release.draft && release.tag_name == tag);
+        if let Some(draft) = &draft {
+            println!("Found draft GitHub release for {}: {}", tag, draft.html_url);
+        }
+        Ok(draft.map(Release::without_upload_url_template))
+    }
+
+    pub fn publish_release(&self, release: &Release) -> Result<()> {
+        let api_url = format!(
+            "{}/repos/{}/releases/{}",
+            self.api_url, self.repo, release.id
+        );
+
+        let response = self
+            .client
+            .patch(&api_url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&PublishReleasePayload { draft: false })
+            .send()
+            .map_err(|e| ActionError::SampoCommandFailed {
+                operation: "github-publish-release".to_string(),
+                message: format!("HTTP request failed: {}", e),
+            })?;
+
+        if response.status().is_success() {
+            println!("Published GitHub release {}", release.tag_name);
+            Ok(())
+        } else {
+            let status = response.status();
+            let error_text = response.text().unwrap_or_default();
+            Err(ActionError::SampoCommandFailed {
+                operation: "github-publish-release".to_string(),
+                message: format!("Failed to publish release ({}): {}", status, error_text),
             })
         }
     }

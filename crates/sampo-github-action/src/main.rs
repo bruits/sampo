@@ -931,38 +931,63 @@ fn create_github_release_for_tag(
         None => format!("Automated release for tag {}", tag),
     };
 
-    let release = github_client.create_release(
-        tag,
-        &body,
-        tag_is_prerelease_with_config(tag, config.as_ref()),
-    )?;
-    *published |= release.created;
+    let prerelease = tag_is_prerelease_with_config(tag, config.as_ref());
+    let assets = resolve_release_assets(workspace, tag, &github_options.asset_specs)?;
+    if assets.is_empty() && !github_options.asset_specs.is_empty() {
+        eprintln!(
+            "Warning: No release assets matched the configured patterns for {}.",
+            tag
+        );
+    }
 
-    let mut failed_assets = Vec::new();
-    if !release.upload_url.is_empty() {
-        let assets = resolve_release_assets(workspace, tag, &github_options.asset_specs)?;
-        if assets.is_empty() && !github_options.asset_specs.is_empty() {
-            eprintln!(
-                "Warning: No release assets matched the configured patterns for {}.",
-                tag
-            );
-        }
-        for asset in assets {
-            if release
-                .assets
+    let published_now = if assets.is_empty() {
+        github_client
+            .create_release(tag, &body, prerelease, false)?
+            .created
+    } else {
+        // A published release takes no more assets once immutable releases are on, so a
+        // release with assets stays a draft until they are all uploaded.
+        let release = match github_client.find_release(tag)? {
+            Some(release) => release,
+            None => github_client.create_release(tag, &body, prerelease, true)?,
+        };
+        let missing: Vec<ResolvedAsset> = assets
+            .into_iter()
+            .filter(|asset| {
+                let uploaded = release
+                    .assets
+                    .iter()
+                    .any(|a| a.name == asset.asset_name && a.state == "uploaded");
+                if uploaded {
+                    println!("Release asset '{}' is already uploaded", asset.asset_name);
+                }
+                !uploaded
+            })
+            .collect();
+
+        if !release.draft && release.immutable && !missing.is_empty() {
+            let names: Vec<String> = missing
                 .iter()
-                .any(|a| a.name == asset.asset_name && a.state == "uploaded")
-            {
-                println!("Release asset '{}' is already uploaded", asset.asset_name);
-                continue;
-            }
+                .map(|asset| format!("'{}'", asset.asset_name))
+                .collect();
+            return Err(ActionError::SampoCommandFailed {
+                operation: "github-release".to_string(),
+                message: format!(
+                    "the release is published and immutable, so it takes no more assets ({}); only a new version can carry them",
+                    names.join(", ")
+                ),
+            });
+        }
+
+        let mut failed_assets = Vec::new();
+        for asset in &missing {
             match github_client.upload_release_asset(
                 &release.upload_url,
                 &asset.path,
                 &asset.asset_name,
             ) {
                 Ok(()) => {
-                    *published = true;
+                    *published |= !release.draft;
                     println!(
                         "Uploaded release asset '{}' from {}",
                         asset.asset_name,
@@ -972,10 +997,22 @@ fn create_github_release_for_tag(
                 Err(e) => failed_assets.push(format!("'{}' ({})", asset.asset_name, e)),
             }
         }
-    }
+        if !failed_assets.is_empty() {
+            return Err(ActionError::SampoCommandFailed {
+                operation: "release-asset-upload".to_string(),
+                message: format!("failed to upload {}", failed_assets.join(", ")),
+            });
+        }
+
+        if release.draft {
+            github_client.publish_release(&release)?;
+        }
+        release.draft
+    };
+    *published |= published_now;
 
     // Optionally open a Discussion for this release (based on filter)
-    if release.created
+    if published_now
         && let Some((package_name, _version)) = parse_tag_with_config(tag, config.as_ref())
         && github_options
             .open_discussion
@@ -989,14 +1026,7 @@ fn create_github_release_for_tag(
         eprintln!("Warning: Failed to create discussion for {}: {}", tag, e);
     }
 
-    if failed_assets.is_empty() {
-        Ok(())
-    } else {
-        Err(ActionError::SampoCommandFailed {
-            operation: "release-asset-upload".to_string(),
-            message: format!("failed to upload {}", failed_assets.join(", ")),
-        })
-    }
+    Ok(())
 }
 
 /// Build a release body by extracting the matching section from the crate's CHANGELOG.md

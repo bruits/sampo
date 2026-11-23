@@ -627,7 +627,7 @@ fn test_a_rejected_tag_push_still_pushes_the_other_tags() {
     use std::os::unix::fs::PermissionsExt;
 
     let mut release = npm_release(None);
-    let (api_url, requests) = serve_github_with_existing_release("201 Created");
+    let (api_url, requests) = serve_github(Some(PUBLISHED_WITH_A), "201 Created");
     add_github_release_env(&mut release.env_vars, &release.ws, api_url);
     let hook = release.remote.path().join("hooks/pre-receive");
     fs::write(
@@ -662,9 +662,17 @@ fn test_a_rejected_tag_push_still_pushes_the_other_tags() {
     );
 }
 
-/// A GitHub API stand-in whose releases already exist with `a.txt` uploaded, and whose uploads
-/// answer `upload_status`. Records each request as `METHOD path`.
-fn serve_github_with_existing_release(
+const RELEASE_ASSETS: &str = "dist/a.txt, dist/b.txt";
+
+const PUBLISHED_WITH_A: &str = r#"{"id":1,"tag_name":"foo-v0.1.0","draft":false,"assets":[{"name":"a.txt","state":"uploaded"}]}"#;
+
+const IMMUTABLE_WITH_A: &str = r#"{"id":1,"tag_name":"foo-v0.1.0","draft":false,"immutable":true,"assets":[{"name":"a.txt","state":"uploaded"}]}"#;
+
+/// A GitHub API stand-in holding `existing`, a release (published or draft) as JSON without its
+/// URLs, whose uploads answer `upload_status`. Records each request as `METHOD path`, and a
+/// request to a release endpoint with a body as `METHOD path body`.
+fn serve_github(
+    existing: Option<&'static str>,
     upload_status: &'static str,
 ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
     use std::io::{BufRead, BufReader, Read, Write};
@@ -675,7 +683,13 @@ fn serve_github_with_existing_release(
     let base = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&requests);
-    let upload_url = format!("{base}/upload{{?name,label}}");
+    let urls =
+        format!(r#""upload_url":"{base}/upload{{?name,label}}","html_url":"https://example.com""#);
+    let existing = existing.map(|release| release.replacen('{', &format!("{{{urls},"), 1));
+    let (draft, published) = match existing {
+        Some(release) if release.contains(r#""draft":true"#) => (Some(release), None),
+        release => (None, release),
+    };
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut reader = BufReader::new(&stream);
@@ -693,32 +707,51 @@ fn serve_github_with_existing_release(
                     content_length = value.trim().parse().unwrap_or(0);
                 }
             }
-            let _ = reader.read_exact(&mut vec![0; content_length]);
+            let mut body = vec![0; content_length];
+            let _ = reader.read_exact(&mut body);
+            let body = String::from_utf8_lossy(&body).to_string();
 
             let request: String = request_line
                 .split_whitespace()
                 .take(2)
                 .collect::<Vec<_>>()
                 .join(" ");
-            let (status, body) = match request.as_str() {
-                "POST /repos/owner/repo/releases" => (
+            let (status, response) = match request.as_str() {
+                "POST /repos/owner/repo/releases" if published.is_some() => (
                     "422 Unprocessable Entity",
                     r#"{"errors":[{"code":"already_exists"}]}"#.to_string(),
                 ),
-                r if r.starts_with("GET /repos/owner/repo/releases/tags/") => (
-                    "200 OK",
+                "POST /repos/owner/repo/releases" => (
+                    "201 Created",
                     format!(
-                        r#"{{"upload_url":"{upload_url}","html_url":"https://example.com","assets":[{{"id":1,"name":"a.txt","state":"uploaded"}}]}}"#
+                        r#"{{{urls},"id":2,"tag_name":"foo-v0.1.0","draft":{},"assets":[]}}"#,
+                        body.contains(r#""draft":true"#)
                     ),
                 ),
+                r if r.starts_with("GET /repos/owner/repo/releases/tags/") => match &published {
+                    Some(release) => ("200 OK", release.clone()),
+                    None => ("404 Not Found", String::new()),
+                },
+                "GET /repos/owner/repo/releases?per_page=100" => {
+                    ("200 OK", format!("[{}]", draft.clone().unwrap_or_default()))
+                }
+                r if r.starts_with("PATCH /repos/owner/repo/releases/") => {
+                    ("200 OK", "{}".to_string())
+                }
                 r if r.starts_with("POST /upload") => (upload_status, "{}".to_string()),
                 _ => ("404 Not Found", String::new()),
             };
-            recorded.lock().unwrap().push(request);
+            let recorded_request =
+                if request.contains("/repos/owner/repo/releases") && !body.is_empty() {
+                    format!("{request} {body}")
+                } else {
+                    request
+                };
+            recorded.lock().unwrap().push(recorded_request);
             let _ = (&stream).write_all(
                 format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                    response.len()
                 )
                 .as_bytes(),
             );
@@ -740,14 +773,25 @@ fn add_github_release_env(
     );
     env_vars.insert(
         "INPUT_RELEASE_ASSETS".to_string(),
-        "dist/a.txt, dist/b.txt".to_string(),
+        RELEASE_ASSETS.to_string(),
     );
     env_vars.insert("GITHUB_REPOSITORY".to_string(), "owner/repo".to_string());
     env_vars.insert("GITHUB_TOKEN".to_string(), "token".to_string());
     env_vars.insert("GITHUB_API_URL".to_string(), api_url);
 }
 
-fn rerun_with_a_tag_at_head(upload_status: &'static str) -> (TestWorkspace, Output, Vec<String>) {
+fn rerun_with_a_tag_at_head(
+    existing: Option<&'static str>,
+    upload_status: &'static str,
+) -> (TestWorkspace, Output, Vec<String>) {
+    rerun_with_a_tag_at_head_and_assets(existing, upload_status, RELEASE_ASSETS)
+}
+
+fn rerun_with_a_tag_at_head_and_assets(
+    existing: Option<&'static str>,
+    upload_status: &'static str,
+    release_assets: &str,
+) -> (TestWorkspace, Output, Vec<String>) {
     let ws = TestWorkspace::new();
     setup_publish_workspace(&ws);
     git(
@@ -755,7 +799,7 @@ fn rerun_with_a_tag_at_head(upload_status: &'static str) -> (TestWorkspace, Outp
         &["tag", "-a", "foo-v0.1.0", "-m", "Release foo 0.1.0"],
     );
 
-    let (api_url, requests) = serve_github_with_existing_release(upload_status);
+    let (api_url, requests) = serve_github(existing, upload_status);
     let mut env_vars = FxHashMap::default();
     env_vars.insert(
         "GITHUB_WORKSPACE".to_string(),
@@ -769,6 +813,10 @@ fn rerun_with_a_tag_at_head(upload_status: &'static str) -> (TestWorkspace, Outp
     env_vars.insert("INPUT_DRY_RUN".to_string(), "false".to_string());
     env_vars.insert("SAMPO_RELEASE_BRANCH".to_string(), "main".to_string());
     add_github_release_env(&mut env_vars, &ws, api_url);
+    env_vars.insert(
+        "INPUT_RELEASE_ASSETS".to_string(),
+        release_assets.to_string(),
+    );
 
     let output = run_action(&[], &env_vars, ws.path());
     let requests = requests.lock().unwrap().clone();
@@ -777,17 +825,13 @@ fn rerun_with_a_tag_at_head(upload_status: &'static str) -> (TestWorkspace, Outp
 
 #[test]
 fn test_rerun_completes_the_release_of_a_tag_at_head() {
-    let (ws, output, requests) = rerun_with_a_tag_at_head("201 Created");
+    let (ws, output, requests) = rerun_with_a_tag_at_head(Some(PUBLISHED_WITH_A), "201 Created");
 
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_success(&output);
     assert!(
         requests.contains(&"POST /upload?name=b.txt".to_string())
-            && !requests.contains(&"POST /upload?name=a.txt".to_string()),
+            && !requests.contains(&"POST /upload?name=a.txt".to_string())
+            && !requests.iter().any(|request| request.starts_with("PATCH")),
         "{requests:?}"
     );
     let outputs = parse_outputs(&ws.file_path("github_output"));
@@ -796,7 +840,8 @@ fn test_rerun_completes_the_release_of_a_tag_at_head() {
 
 #[test]
 fn test_a_failed_asset_upload_fails_the_run() {
-    let (ws, output, _) = rerun_with_a_tag_at_head("500 Internal Server Error");
+    let (ws, output, _) =
+        rerun_with_a_tag_at_head(Some(PUBLISHED_WITH_A), "500 Internal Server Error");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "the upload of b.txt must fail");
@@ -807,6 +852,181 @@ fn test_a_failed_asset_upload_fails_the_run() {
     assert!(!parse_outputs(&ws.file_path("github_output")).contains_key("published"));
 }
 
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_a_release_with_assets_stays_a_draft_until_they_are_uploaded() {
+    let (ws, output, requests) = rerun_with_a_tag_at_head(None, "201 Created");
+
+    assert_success(&output);
+    let position = |prefix: &str| {
+        requests
+            .iter()
+            .position(|request| request.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix} in {requests:?}"))
+    };
+    let create = position("POST /repos/owner/repo/releases ");
+    assert!(requests[create].contains(r#""draft":true"#), "{requests:?}");
+    let publish = position("PATCH /repos/owner/repo/releases/2 ");
+    assert!(
+        requests[publish].contains(r#""draft":false"#),
+        "{requests:?}"
+    );
+    assert!(
+        create < position("POST /upload?name=a.txt")
+            && position("POST /upload?name=b.txt") < publish,
+        "{requests:?}"
+    );
+    let outputs = parse_outputs(&ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn test_a_rerun_completes_and_publishes_the_draft_left_behind() {
+    let (ws, output, requests) = rerun_with_a_tag_at_head(
+        Some(
+            r#"{"id":1,"tag_name":"foo-v0.1.0","draft":true,"assets":[{"name":"a.txt","state":"uploaded"}]}"#,
+        ),
+        "201 Created",
+    );
+
+    assert_success(&output);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.starts_with("POST /repos/owner/repo/releases"))
+            && !requests.contains(&"POST /upload?name=a.txt".to_string())
+            && requests.contains(&"POST /upload?name=b.txt".to_string())
+            && requests
+                .iter()
+                .any(|request| request.starts_with("PATCH /repos/owner/repo/releases/1 ")),
+        "{requests:?}"
+    );
+    let outputs = parse_outputs(&ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn test_a_failed_asset_upload_leaves_the_release_a_draft() {
+    let (ws, output, requests) = rerun_with_a_tag_at_head(None, "500 Internal Server Error");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "the uploads must fail");
+    assert!(
+        stderr.contains("Failed to finish the release") && stderr.contains("'b.txt'"),
+        "{stderr}"
+    );
+    assert!(
+        !requests.iter().any(|request| request.starts_with("PATCH")),
+        "{requests:?}"
+    );
+    assert!(!parse_outputs(&ws.file_path("github_output")).contains_key("published"));
+}
+
+#[test]
+fn test_an_immutable_release_missing_assets_fails_without_uploading() {
+    let (_ws, output, requests) = rerun_with_a_tag_at_head(Some(IMMUTABLE_WITH_A), "201 Created");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "b.txt can no longer be added");
+    assert!(
+        stderr.contains("published and immutable") && stderr.contains("'b.txt'"),
+        "{stderr}"
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.starts_with("POST /upload")),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn test_a_rerun_leaves_a_complete_immutable_release_alone() {
+    let (ws, output, requests) =
+        rerun_with_a_tag_at_head_and_assets(Some(IMMUTABLE_WITH_A), "201 Created", "dist/a.txt");
+
+    assert_success(&output);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.starts_with("POST") || request.starts_with("PATCH")),
+        "{requests:?}"
+    );
+    let outputs = parse_outputs(&ws.file_path("github_output"));
+    assert_eq!(outputs.get("published").map(String::as_str), Some("false"));
+}
+
+#[test]
+fn test_the_draft_of_another_tag_is_left_alone() {
+    let (_ws, output, requests) = rerun_with_a_tag_at_head(
+        Some(r#"{"id":1,"tag_name":"bar-v0.1.0","draft":true,"assets":[]}"#),
+        "201 Created",
+    );
+
+    assert_success(&output);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("POST /repos/owner/repo/releases "))
+            && requests
+                .iter()
+                .any(|request| request.starts_with("PATCH /repos/owner/repo/releases/2 "))
+            && !requests
+                .iter()
+                .any(|request| request.starts_with("PATCH /repos/owner/repo/releases/1 ")),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn test_a_release_without_assets_is_published_at_once() {
+    let (_ws, output, requests) =
+        rerun_with_a_tag_at_head_and_assets(None, "201 Created", "dist/none-*.txt");
+
+    assert_success(&output);
+    assert!(
+        requests.iter().any(|request| {
+            request.starts_with("POST /repos/owner/repo/releases ")
+                && request.contains(r#""draft":false"#)
+        }) && !requests.iter().any(|request| request.starts_with("PATCH")),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn test_a_rerun_reuses_the_published_release_without_assets() {
+    let (_ws, output, requests) = rerun_with_a_tag_at_head_and_assets(
+        Some(PUBLISHED_WITH_A),
+        "201 Created",
+        "dist/none-*.txt",
+    );
+
+    assert_success(&output);
+    let create = requests
+        .iter()
+        .position(|request| request.starts_with("POST /repos/owner/repo/releases "));
+    let reuse = requests
+        .iter()
+        .position(|request| request.starts_with("GET /repos/owner/repo/releases/tags/foo-v0.1.0"));
+    assert!(
+        matches!((create, reuse), (Some(create), Some(reuse)) if create < reuse)
+            && !requests.iter().any(|request| {
+                request.starts_with("PATCH")
+                    || request.starts_with("POST /upload")
+                    || request.contains("per_page")
+            }),
+        "{requests:?}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn test_a_failed_publish_still_completes_the_releases_at_head() {
@@ -815,7 +1035,7 @@ fn test_a_failed_publish_still_completes_the_releases_at_head() {
         release.ws.path(),
         &["tag", "-a", "pkg-z-v1.0.0", "-m", "Release pkg-z 1.0.0"],
     );
-    let (api_url, requests) = serve_github_with_existing_release("201 Created");
+    let (api_url, requests) = serve_github(Some(PUBLISHED_WITH_A), "201 Created");
     add_github_release_env(&mut release.env_vars, &release.ws, api_url);
 
     let output = run_action(&[], &release.env_vars, release.ws.path());
