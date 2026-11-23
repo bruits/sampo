@@ -672,28 +672,6 @@ impl ManifestMetadata {
             .filter(move |dep| dep.package_name == dep_name)
     }
 
-    /// Returns a Cargo-normalized constraint for the named dependency, preferring a range over a pin.
-    pub fn get_dependency_constraint(
-        &self,
-        manifest_path: &Path,
-        dep_name: &str,
-    ) -> Option<String> {
-        let requirement = self
-            .dependencies(manifest_path, dep_name)
-            .map(|dep| dep.version_req.as_deref().unwrap_or("*"))
-            .min_by_key(|requirement| is_pin(requirement))?;
-        VersionReq::parse(requirement)
-            .ok()
-            .map(|req| req.to_string())
-    }
-
-    /// Whether every declaration of the named dependency specifies a bare or exact pin.
-    pub fn is_dependency_pinned(&self, manifest_path: &Path, dep_name: &str) -> bool {
-        let mut dependencies = self.dependencies(manifest_path, dep_name).peekable();
-        dependencies.peek().is_some()
-            && dependencies.all(|dep| dep.version_req.as_deref().is_some_and(is_pin))
-    }
-
     pub(crate) fn check_internal_dependency(
         &self,
         manifest_path: &Path,
@@ -703,7 +681,12 @@ impl ManifestMetadata {
         let requirements: BTreeSet<_> = self
             .dependencies(manifest_path, &dependency.name)
             .filter(|dep| dep.path.as_deref() == Some(&dependency.path))
-            .map(|dep| dep.planned_requirement(new_version))
+            .map(|dep| {
+                (
+                    dep.planned_requirement(new_version),
+                    dep.version_req.clone(),
+                )
+            })
             .collect();
         if requirements.is_empty() {
             return Ok(vec![ConstraintCheckResult::Skipped {
@@ -712,9 +695,22 @@ impl ManifestMetadata {
         }
         requirements
             .into_iter()
-            .map(|requirement| match requirement {
-                Some(req) => check_dependency_constraint(&dependency.name, &req, new_version),
-                None => Ok(ConstraintCheckResult::Satisfied),
+            .map(|(planned, written)| {
+                let Some(req) = planned else {
+                    return Ok(ConstraintCheckResult::Satisfied);
+                };
+                // Checked as Sampo will rewrite it, reported as the manifest writes it.
+                Ok(
+                    match check_dependency_constraint(&dependency.name, &req, new_version)? {
+                        ConstraintCheckResult::NotSatisfied { new_version, .. } => {
+                            ConstraintCheckResult::NotSatisfied {
+                                constraint: written.unwrap_or(req),
+                                new_version,
+                            }
+                        }
+                        result => result,
+                    },
+                )
             })
             .collect()
     }
@@ -1251,7 +1247,7 @@ fn collect_cargo_internal_deps(
                 let id = PackageInfo::dependency_identifier(PackageKind::Cargo, package_name);
                 if kind != DependencyKind::Development {
                     internal.insert(id);
-                } else if dep_val.get("version").is_some() {
+                } else if declaration.get("version").is_some() {
                     internal_dev.insert(id);
                 }
             }

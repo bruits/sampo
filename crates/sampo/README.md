@@ -257,7 +257,7 @@ Sampo detects packages within the same monorepo (even one mixing ecosystems) tha
 > Packages cannot appear in both `fixed` and `linked` configurations.
 
 > [!NOTE]
-> Sampo supports range constraints (e.g., `^1.0`, `~1.2`) for internal dependencies. In this case, when a package is released, Sampo validates that the updated version still satisfies the specified range constraints. If not, you'll get an error for packages in `fixed` or `linked` groups, or a warning otherwise. In Cargo projects, this range check skips dev-only dependencies.
+> Sampo supports range constraints (e.g., `^1.0`, `~1.2`) for internal dependencies. In this case, when a package is released, Sampo validates that the updated version still satisfies the specified range constraints. If not, you'll get an error for packages in `fixed` or `linked` groups, or a warning otherwise.
 
 `npm_stage`: Which npm packages `sampo publish` stages through [npm staged publishing](https://docs.npmjs.com/staged-publishing) (default: `false`), `true` for all of them or a list of patterns matched like `ignore`. A staged version goes live once a maintainer approves it, on npmjs.com or with `npm stage approve`. Sampo tags it when staging and skips it on later runs, so after a rejection, release a new version or delete the tag. A version staged by a run that then failed has no tag, and npm refuses to stage it again until it is approved or rejected. Staging needs npm 11.15.0, pnpm 11.3.0, or Yarn 4.16.0 or later, and Bun packages are staged through npm, with npm's credentials.
 

@@ -49,7 +49,7 @@ impl PublishExtraArgs {
 ///
 /// This function discovers all packages in the workspace, determines which ones are
 /// publishable for their respective ecosystems, validates their dependencies, and publishes
-/// them in the order returned by `topo_order`.
+/// them in topological order (dependencies first).
 ///
 /// After publishing, git tags are created for all packages that have been released
 /// (including non-publishable packages, unless `git.tag_unpublished` leaves them out), as long
@@ -707,7 +707,11 @@ pub fn tag_published_crate(
     }
 }
 
-/// Returns each included package after its included `internal_deps`.
+/// Computes topological ordering for publishing crates (dependencies first).
+///
+/// Given a set of crates and their internal dependencies, returns the order
+/// in which they should be published so that dependencies are always published
+/// before the crates that depend on them.
 ///
 /// # Arguments
 /// * `name_to_package` - Map from package names to their info
@@ -1572,6 +1576,9 @@ a = { path = "../a" }
 
     #[test]
     fn dev_dep_cycle_does_not_block_publish_ordering() {
+        // A depends on B (regular dep), B dev-depends on A.
+        // This is valid in Cargo (dev-deps are stripped on publish)
+        // and should not be detected as a cycle.
         let a = PackageInfo {
             name: "a".into(),
             identifier: "cargo/a".into(),

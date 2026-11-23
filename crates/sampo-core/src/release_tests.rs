@@ -2538,7 +2538,7 @@ bar = { version = "1.0.0", path = "crates/bar" }
 
         let err = fixture.run_release(false).unwrap_err();
         assert!(
-            matches!(err, SampoError::ConstraintViolation(ref msg) if msg.contains("constraint '2'") && msg.contains("2.0.0-alpha")),
+            matches!(err, SampoError::ConstraintViolation(ref msg) if msg.contains("constraint '1'") && msg.contains("2.0.0-alpha")),
             "{err}"
         );
         assert_eq!(files.each_ref().map(|path| fs::read(path).unwrap()), before);
@@ -2726,6 +2726,33 @@ builder.workspace = true
         assert_eq!(
             released_versions(&fixture.run_release(true).unwrap()),
             [("cargo/private", "1.0.1")]
+        );
+    }
+
+    #[test]
+    fn inherited_dev_dependency_pin_bumps_its_dependent() {
+        let mut fixture = TestWorkspace::new();
+        fixture
+            .add_crate("a", "1.0.0")
+            .add_crate("b", "1.0.0")
+            .add_changeset(&["cargo/b"], Bump::Patch, "Update b");
+        fs::write(
+            fixture.root.join("Cargo.toml"),
+            r#"
+[workspace]
+members = ["crates/*"]
+[workspace.dependencies]
+b = { path = "crates/b", version = "=1.0.0" }
+"#,
+        )
+        .unwrap();
+        let a = fixture.crates["a"].join("Cargo.toml");
+        let manifest = fs::read_to_string(&a).unwrap();
+        fs::write(a, manifest + "\n[dev-dependencies]\nb.workspace = true\n").unwrap();
+
+        assert_eq!(
+            released_versions(&fixture.run_release(true).unwrap()),
+            [("cargo/a", "1.0.1"), ("cargo/b", "1.0.1")]
         );
     }
 
