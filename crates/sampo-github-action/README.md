@@ -66,7 +66,7 @@ To also open a GitHub Discussion for each release, set `open-discussion` to `tru
 
 ### Uploading release assets in GitHub Releases
 
-Build binaries or archives in earlier workflow steps, then pass their paths or glob patterns through the `release-assets` input for upload. Patterns are resolved relative to `working-directory` unless absolute.
+Build binaries or archives in earlier workflow steps, then pass their paths or glob patterns through the `release-assets` input for upload. Patterns are resolved relative to `working-directory` unless absolute. A release with assets stays a draft until they are all uploaded, so the action works with GitHub's immutable releases.
 
 - Separate multiple entries with commas or new lines.
 - Use `=>` to rename matches (for example `dist/*.zip => my-tool.zip`).
@@ -83,9 +83,6 @@ Example:
       target/release/my-cli => my-cli-{{tag}}
       dist/{{crate}}-v{{version}}-*.tar.gz
 ```
-
-> [!IMPORTANT]
-> GitHub's **Immutable releases** repository setting must be disabled for release asset uploads to work.
 
 ### Using outputs to conditionally run steps
 
