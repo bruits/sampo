@@ -1,6 +1,6 @@
 {
   "name": "@bruits/sampo-darwin-x64",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "description": "Sampo CLI binary for darwin-x64",
   "repository": {
     "type": "git",

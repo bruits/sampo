@@ -1,6 +1,6 @@
 {
   "name": "@bruits/sampo-linux-arm64",
-  "version": "0.24.1",
+  "version": "0.25.0",
   "description": "Sampo CLI binary for linux-arm64",
   "repository": {
     "type": "git",

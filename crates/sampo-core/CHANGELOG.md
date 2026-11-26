@@ -1,5 +1,15 @@
 # sampo-core
 
+## 0.21.0 — 2026-11-26
+
+### Minor changes
+
+- [8494f0f](https://github.com/bruits/sampo/commit/8494f0fd88b6b3ada5adabf8a1ac682a927a96ee) **⚠️ breaking change:** Removed `ManifestMetadata::get_dependency_constraint` and `ManifestMetadata::is_dependency_pinned` from `sampo_core::adapters::cargo`, as Sampo no longer uses them. — Thanks @jrandolf for your first contribution 🎉!
+
+### Patch changes
+
+- [8494f0f](https://github.com/bruits/sampo/commit/8494f0fd88b6b3ada5adabf8a1ac682a927a96ee) In Rust (Cargo) projects, fixed `sampo publish` publishing a crate before a workspace crate it depends on only under a `[target.'cfg(…)']` table, and `sampo release` not bumping crates for those dependencies or for dev-dependencies inherited from `[workspace.dependencies]`. `sampo release` also no longer reports a range violation for a path-only dependency on a prerelease, or for a `[workspace.dependencies]` requirement it rewrites. — Thanks @jrandolf for your first contribution 🎉!
+
 ## 0.20.1 — 2026-11-11
 
 ### Patch changes
