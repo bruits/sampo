@@ -8,6 +8,7 @@ mod tests {
         sync::Once,
     };
 
+    use crate::release::run_release_with_now;
     use crate::*;
 
     /// Test workspace builder for reducing test boilerplate
@@ -273,6 +274,238 @@ mod tests {
             } else {
                 String::new()
             }
+        }
+
+        fn release_on(&self, instant: &str) -> Result<ReleaseOutput> {
+            run_release_with_now(&self.root, false, instant.parse().unwrap())
+        }
+
+        fn file_contents(&self) -> BTreeMap<PathBuf, Vec<u8>> {
+            ignore::WalkBuilder::new(&self.root)
+                .standard_filters(false)
+                .build()
+                .map(|entry| entry.unwrap().into_path())
+                .filter(|path| path.is_file())
+                .map(|path| {
+                    let contents = fs::read(&path).unwrap();
+                    (path, contents)
+                })
+                .collect()
+        }
+    }
+
+    const CALVER_CONFIG: &str = "[packages]\nversioning = \"calver\"\n";
+    const CALVER_FIXED_GROUP_CONFIG: &str =
+        "[packages]\nversioning = \"calver\"\nfixed = [[\"a\", \"b\"]]\n";
+    const MARCH_31: &str = "2026-03-31T23:59:59Z";
+
+    #[test]
+    fn calver_ignores_the_bump_level() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "2026.3.7")
+            .set_config(CALVER_CONFIG)
+            .add_changeset(&["a"], Bump::Major, "Removed the old API")
+            .add_changeset(&["b"], Bump::Patch, "Fixed the display");
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_crate_version("a", "2026.3.8");
+        ws.assert_crate_version("b", "2026.3.8");
+        ws.assert_changelog_contains("a", "### Major changes\n\n- Removed the old API");
+        ws.assert_changelog_contains("b", "### Patch changes\n\n- Fixed the display");
+    }
+
+    #[test]
+    fn calver_fixed_group_advances_from_its_highest_version() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "0.0.0")
+            .add_crate("b", "2026.3.7")
+            .set_config(CALVER_FIXED_GROUP_CONFIG)
+            .add_changeset(&["a"], Bump::Patch, "Added a");
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_crate_version("a", "2026.3.8");
+        ws.assert_crate_version("b", "2026.3.8");
+    }
+
+    #[test]
+    fn calver_dependent_follows_and_its_pin_is_rewritten() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "1.4.2")
+            .add_dependency("b", "a", "=2026.3.7")
+            .set_config(CALVER_CONFIG)
+            .add_changeset(&["a"], Bump::Minor, "Added an API");
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_crate_version("a", "2026.3.8");
+        ws.assert_crate_version("b", "2026.3.0");
+        ws.assert_dependency_version("b", "a", "=2026.3.8");
+        ws.assert_changelog_contains(
+            "b",
+            "### Patch changes\n\n- Updated dependencies: a@2026.3.8",
+        );
+    }
+
+    #[test]
+    fn calver_exact_pins_use_the_release_from_the_same_ecosystem() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("core", "2026.3.7")
+            .add_crate("app", "0.0.0")
+            .add_dependency("app", "core", "=2026.3.7")
+            .set_config(CALVER_CONFIG)
+            .add_changeset(
+                &["cargo/core", "npm/core"],
+                Bump::Minor,
+                "Changed both APIs",
+            );
+        let root_manifest = ws.root.join("Cargo.toml");
+        fs::write(&root_manifest, "[workspace]\nmembers=[\"crates/*\"]\n[workspace.dependencies]\ncore={path=\"crates/core\",version=\"=2026.3.7\"}\n").unwrap();
+        fs::write(
+            ws.root.join("package.json"),
+            r#"{"private":true,"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        let npm = ws.root.join("packages/core");
+        fs::create_dir_all(&npm).unwrap();
+        fs::write(
+            npm.join("package.json"),
+            r#"{"name":"core","version":"2026.3.2"}"#,
+        )
+        .unwrap();
+
+        ws.release_on(MARCH_31).unwrap();
+        ws.assert_dependency_version("app", "core", "=2026.3.8");
+        ws.assert_crate_version("core", "2026.3.8");
+        let root: toml::Value =
+            toml::from_str(&fs::read_to_string(root_manifest).unwrap()).unwrap();
+        assert_eq!(
+            root["workspace"]["dependencies"]["core"]["version"].as_str(),
+            Some("=2026.3.8")
+        );
+        let npm: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(npm.join("package.json")).unwrap()).unwrap();
+        assert_eq!(npm["version"], "2026.3.3");
+    }
+
+    #[test]
+    fn calver_refuses_a_version_that_is_not_higher_before_any_write() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.4.0")
+            .set_config(CALVER_CONFIG)
+            .add_changeset(&["a"], Bump::Patch, "Fixed a");
+        let files_before_release = ws.file_contents();
+        let err = ws.release_on(MARCH_31).unwrap_err().to_string();
+        assert!(
+            err.contains("cargo/a")
+                && err.contains("2026.3.0")
+                && err.contains("2026.4.0")
+                && err.ends_with("Check the UTC date."),
+            "{err}"
+        );
+        assert_eq!(ws.file_contents(), files_before_release);
+    }
+
+    #[test]
+    fn calver_refuses_a_prerelease_member_below_a_stable_one() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "2026.3.7")
+            .add_crate("b", "2026.3.0-alpha.1")
+            .set_config(CALVER_FIXED_GROUP_CONFIG)
+            .add_changeset(&["a"], Bump::Patch, "Fixed a");
+        let files_before_release = ws.file_contents();
+        let err = ws.release_on(MARCH_31).unwrap_err().to_string();
+        assert!(
+            err.contains("cargo/b")
+                && err.contains("2026.3.0-alpha.1")
+                && err.contains("joined this release")
+                && err.contains("packages.calver_year_month"),
+            "{err}"
+        );
+        assert_eq!(ws.file_contents(), files_before_release);
+    }
+
+    #[test]
+    fn calver_ignored_member_does_not_set_the_version() {
+        for ignore_setting in ["ignore = [\"b\"]", "ignore_unpublished = true"] {
+            let mut ws = TestWorkspace::new();
+            ws.add_crate("a", "2026.3.7")
+                .add_crate("b", "2027.1.0")
+                .set_publishable("b", false)
+                .set_config(&format!("{CALVER_FIXED_GROUP_CONFIG}{ignore_setting}"))
+                .add_changeset(&["a"], Bump::Major, "Changed a");
+            ws.release_on(MARCH_31).unwrap();
+            ws.assert_crate_version("a", "2026.3.8");
+            ws.assert_crate_version("b", "2027.1.0");
+            assert!(!ws.crates["b"].join("CHANGELOG.md").exists());
+        }
+    }
+
+    #[test]
+    fn calver_automatic_entry_takes_the_planned_bump() {
+        for (target, bump, heading) in [("a", Bump::Patch, "Patch"), ("c", Bump::Major, "Major")] {
+            let mut ws = TestWorkspace::new();
+            ws.add_crate("a", "2026.3.8")
+                .add_crate("b", "2026.3.8")
+                .add_crate("c", "2026.3.8")
+                .add_crate("d", "2026.3.8")
+                .add_crate("e", "2026.3.8")
+                .add_dependency("e", "b", "=2026.3.8")
+                .add_dependency("a", "c", "=2026.3.8")
+                .set_config(&format!(
+                    "{CALVER_CONFIG}fixed = [[\"a\", \"b\"], [\"d\", \"e\"]]"
+                ))
+                .add_changeset(&[target], bump, "Changed the API");
+            ws.release_on("2026-04-01T00:00:00Z").unwrap();
+            ws.assert_changelog_contains(
+                "b",
+                &format!("### {heading} changes\n\n- Bumped due to fixed dependency group policy"),
+            );
+            ws.assert_changelog_contains(
+                "d",
+                &format!("### {heading} changes\n\n- Bumped due to fixed dependency group policy"),
+            );
+            if target == "c" {
+                ws.assert_changelog_contains(
+                    "a",
+                    "### Major changes\n\n- Updated dependencies: c@2026.4.0",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn calver_year_month_fixes_the_release_line() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "0.0.0")
+            .add_crate("b", "0.0.0")
+            .set_config(&format!(
+                "{CALVER_FIXED_GROUP_CONFIG}calver_year_month = \"2026.12\""
+            ))
+            .add_changeset(&["a"], Bump::Minor, "Added an API");
+        ws.release_on("2026-11-18T00:00:00Z").unwrap();
+        for name in ["a", "b"] {
+            ws.assert_crate_version(name, "2026.12.0");
+        }
+        ws.add_changeset(&["b"], Bump::Patch, "Fixed the API");
+        ws.release_on("2027-01-05T00:00:00Z").unwrap();
+        for name in ["a", "b"] {
+            ws.assert_crate_version(name, "2026.12.1");
+        }
+    }
+
+    #[test]
+    fn calver_refuses_preserved_change_files_before_the_restore() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("a", "0.0.0")
+            .set_config(CALVER_CONFIG)
+            .add_preserved_changeset(&["a"], Bump::Patch, "Preserved");
+        assert!(!ws.root.join("Cargo.lock").exists());
+        let files_before_release = ws.file_contents();
+        for release in [run_release, run_stabilize_release] {
+            let err = release(&ws.root, false).unwrap_err().to_string();
+            assert!(
+                err.contains(".sampo/prerelease") && err.contains("packages.calver_year_month"),
+                "{err}"
+            );
+            assert_eq!(ws.file_contents(), files_before_release);
         }
     }
 
@@ -2105,23 +2338,23 @@ tempfile = "3.0"
             path: PathBuf::from("/test/.sampo/changesets/test.md"),
         }];
 
-        // Simulate releases: pkg-a and pkg-c get fixed bump, pkg-b gets direct bump
-        let mut releases = BTreeMap::new();
-        releases.insert(
-            "cargo/pkg-a".to_string(),
-            ("1.0.0".to_string(), "1.1.0".to_string()),
-        );
-        releases.insert(
-            "cargo/pkg-b".to_string(),
-            ("1.0.0".to_string(), "1.1.0".to_string()),
-        );
-        releases.insert(
-            "cargo/pkg-c".to_string(),
-            ("1.0.0".to_string(), "1.1.0".to_string()),
-        );
-
+        let releases = ws
+            .members
+            .iter()
+            .map(|pkg| ReleasedPackage {
+                identifier: pkg.identifier.clone(),
+                name: pkg.name.clone(),
+                old_version: pkg.version.clone(),
+                new_version: "1.1.0".into(),
+                bump: Bump::Minor,
+            })
+            .collect::<Vec<_>>();
+        let releases_by_id = releases
+            .iter()
+            .map(|pkg| (pkg.identifier.as_str(), pkg))
+            .collect();
         let explanations =
-            detect_all_dependency_explanations(&changesets, &ws, &config, &releases).unwrap();
+            detect_all_dependency_explanations(&changesets, &ws, &config, &releases_by_id).unwrap();
 
         // pkg-a should have dependency update message (depends on pkg-b)
         let pkg_a_messages = explanations.get("cargo/pkg-a").unwrap();
@@ -2224,69 +2457,93 @@ tempfile = "3.0"
     }
 
     #[test]
-    fn workspace_inherited_versions_rejects_conflicting_bumps() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let root = temp_dir.path().to_path_buf();
-
-        pin_main_branch();
-
-        fs::create_dir_all(root.join(".sampo")).unwrap();
-        fs::create_dir_all(root.join("crates/foo/src")).unwrap();
-        fs::create_dir_all(root.join("crates/bar/src")).unwrap();
-
+    fn workspace_inherited_version_protects_the_implicit_root_package() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("child", "1.0.0")
+            .add_changeset(&["child"], Bump::Minor, "Changed child")
+            .set_config("[packages]\nversioning = \"calver\"\ncalver_year_month = \"2026.11\"\n");
+        fs::create_dir(ws.root.join("src")).unwrap();
+        fs::write(ws.root.join("src/lib.rs"), "").unwrap();
         fs::write(
-            root.join("Cargo.toml"),
-            r#"[workspace]
-members = ["crates/*"]
-
-[workspace.package]
-version = "1.0.0"
-
-[workspace.dependencies]
-foo = { version = "1.0.0", path = "crates/foo" }
-bar = { version = "1.0.0", path = "crates/bar" }
-"#,
-        )
-        .unwrap();
-
-        fs::write(
-            root.join("crates/foo/Cargo.toml"),
-            "[package]\nname = \"foo\"\nversion.workspace = true\n",
-        )
-        .unwrap();
-        fs::write(root.join("crates/foo/src/lib.rs"), "").unwrap();
-
-        fs::write(
-            root.join("crates/bar/Cargo.toml"),
-            "[package]\nname = \"bar\"\nversion.workspace = true\n",
-        )
-        .unwrap();
-        fs::write(root.join("crates/bar/src/lib.rs"), "").unwrap();
-
-        // Create changesets with conflicting bump levels
-        let changesets_dir = root.join(".sampo/changesets");
-        fs::create_dir_all(&changesets_dir).unwrap();
-        fs::write(
-            changesets_dir.join("bump-foo.md"),
-            "---\nfoo: minor\n---\n\nfeat: foo minor change\n",
+            ws.root.join("Cargo.toml"),
+            "[package]\nname = \"root-crate\"\nversion.workspace = true\n\
+             [workspace]\nmembers = [\"crates/child\"]\n[workspace.package]\nversion = \"1.0.0\"\n",
         )
         .unwrap();
         fs::write(
-            changesets_dir.join("bump-bar.md"),
-            "---\nbar: major\n---\n\nbreaking: bar major change\n",
+            ws.crates["child"].join("Cargo.toml"),
+            "[package]\nname = \"child\"\nversion.workspace = true\n",
         )
         .unwrap();
 
-        let result = run_release(&root, false);
-        let err = result.expect_err("should fail with conflicting workspace-inherited versions");
-        match err {
-            crate::errors::SampoError::Release(message) => {
+        let assert_refusal = || {
+            let before = ws.file_contents();
+            for dry_run in [true, false] {
+                let error = ws.run_release(dry_run).unwrap_err().to_string();
                 assert!(
-                    message.contains("conflicting versions"),
-                    "unexpected error message: {message}"
+                    error.contains("'cargo/root-crate' from 1.0.0 without releasing it"),
+                    "{error}"
                 );
+                assert_eq!(ws.file_contents(), before);
             }
-            other => panic!("expected Release error, got {other:?}"),
+        };
+        assert_refusal();
+
+        // SemVer can restore changesets. Check the shared version before that write.
+        ws.set_config("");
+        fs::rename(
+            ws.root.join(".sampo/changesets"),
+            ws.root.join(".sampo/prerelease"),
+        )
+        .unwrap();
+        assert_refusal();
+    }
+
+    #[test]
+    fn workspace_inherited_versions_rejects_conflicting_bumps() {
+        let mut ws = TestWorkspace::new();
+        ws.add_crate("foo", "1.0.0").add_crate("bar", "1.0.0");
+        fs::write(
+            ws.root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n[workspace.package]\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        for name in ["foo", "bar"] {
+            fs::write(
+                ws.crates[name].join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion.workspace = true\n"),
+            )
+            .unwrap();
+        }
+        ws.add_changeset(&["foo"], Bump::Minor, "Changed foo");
+        for reason in ["without releasing it", "conflicting versions"] {
+            let files_before_release = ws.file_contents();
+            let preview = ws.run_release(true).unwrap_err().to_string();
+            assert!(
+                preview.contains("cargo/foo")
+                    && preview.contains("cargo/bar")
+                    && preview.contains(reason)
+                    && preview.contains("packages.fixed"),
+                "{preview}"
+            );
+            assert_eq!(ws.file_contents(), files_before_release);
+            assert_eq!(ws.run_release(false).unwrap_err().to_string(), preview);
+            assert_eq!(ws.file_contents(), files_before_release);
+            if reason == "without releasing it" {
+                ws.add_changeset(&["bar"], Bump::Major, "Changed bar");
+            }
+        }
+        fs::rename(
+            ws.root.join(".sampo/changesets"),
+            ws.root.join(".sampo/prerelease"),
+        )
+        .unwrap();
+        let files_before_release = ws.file_contents();
+        for release in [run_release, run_stabilize_release] {
+            let preview = release(&ws.root, true).unwrap_err().to_string();
+            assert!(preview.contains("conflicting versions"), "{preview}");
+            assert_eq!(release(&ws.root, false).unwrap_err().to_string(), preview);
+            assert_eq!(ws.file_contents(), files_before_release);
         }
     }
 
@@ -4309,8 +4566,6 @@ end
         workspace.add_crate("b", "1.0.0");
         workspace.set_config("[packages]\nfixed = [[\"cargo/a\", \"cargo/b\"]]\n");
 
-        // `fixed` is a bump-level policy, not structural coupling, so `sampo pre` leaves
-        // `b` behind and the release below publishes it as a stable version.
         enter_prerelease(&workspace.root, &["cargo/a".to_string()], "rc").unwrap();
         workspace.add_changeset(&["a"], Bump::Patch, "fix: one");
         workspace.run_release(false).expect("first release");
@@ -4651,17 +4906,24 @@ end
         // run_release only prints warnings, so capture them from the validator directly.
         let workspace = discover_workspace(root).unwrap();
         let config = Config::load(root).unwrap();
-        let releases: Vec<(String, String, String)> = [
-            ("maven/com.example/parent", "1.0.0", "1.1.0"),
-            ("maven/com.example/core", "1.0.0", "1.1.0"),
-            ("maven/com.example/app", "1.0.0", "1.1.0"),
-        ]
-        .into_iter()
-        .map(|(id, old, new)| (id.to_string(), old.to_string(), new.to_string()))
-        .collect();
-        let warnings =
-            crate::release::validate_dependency_constraints(&releases, &workspace, &config)
-                .unwrap();
+        let packages_by_id = workspace
+            .members
+            .iter()
+            .map(|pkg| (pkg.canonical_identifier(), pkg))
+            .collect();
+        let versions = workspace
+            .members
+            .iter()
+            .map(|pkg| (pkg.identifier.clone(), "1.1.0".to_string()))
+            .collect();
+        let warnings = crate::release::validate_dependency_constraints(
+            &versions,
+            &workspace,
+            &config,
+            &packages_by_id,
+            &[],
+        )
+        .unwrap();
         assert!(
             warnings
                 .iter()

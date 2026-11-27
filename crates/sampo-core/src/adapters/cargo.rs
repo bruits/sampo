@@ -852,47 +852,63 @@ pub fn has_workspace_version_inheritance(manifest_content: &str) -> Result<bool>
     Ok(has_workspace_flag(version_item))
 }
 
-/// Finalize the workspace root manifest after member manifests have been updated.
-///
-/// Reads each Cargo member manifest to detect `version.workspace = true`, cross-references with
-/// `new_version_by_name` to determine the workspace version, validates that all inheriting members
-/// agree on the same version, then updates `[workspace.package].version` and
-/// `[workspace.dependencies]` in the root `Cargo.toml`.
+pub(crate) fn workspace_version_inheritors(members: &[PackageInfo]) -> Result<Vec<&PackageInfo>> {
+    let mut inheritors = Vec::new();
+    for pkg in members.iter().filter(|pkg| pkg.kind == PackageKind::Cargo) {
+        if has_workspace_version_inheritance(&fs::read_to_string(pkg.path.join(CARGO_MANIFEST))?)? {
+            inheritors.push(pkg);
+        }
+    }
+    Ok(inheritors)
+}
+
+pub(crate) fn inherited_workspace_version<'a>(
+    members: &[PackageInfo],
+    versions: &'a BTreeMap<String, String>,
+    ignore_unplanned: impl Fn(&PackageInfo) -> Result<bool>,
+) -> Result<Option<&'a str>> {
+    if versions.is_empty() {
+        return Ok(None);
+    }
+    let mut target: Option<(&PackageInfo, &str)> = None;
+    let mut unplanned = Vec::new();
+    for member in workspace_version_inheritors(members)? {
+        if let Some(version) = versions.get(&member.name) {
+            if let Some((other, other_version)) = target
+                && other_version != version
+            {
+                return Err(SampoError::Release(format!(
+                    "'{}' and '{}' inherit conflicting versions {other_version} and {version} from workspace.package.version. Group the crates with packages.fixed or give one an explicit version.",
+                    other.identifier, member.identifier
+                )));
+            }
+            target = Some((member, version));
+        } else {
+            unplanned.push(member);
+        }
+    }
+    let Some((released, version)) = target else {
+        return Ok(None);
+    };
+    for member in unplanned {
+        if member.version != version && !ignore_unplanned(member)? {
+            return Err(SampoError::Release(format!(
+                "Releasing '{}' at {version} would change '{}' from {} without releasing it. Group the crates with packages.fixed or give '{}' an explicit version.",
+                released.identifier, member.identifier, member.version, member.identifier
+            )));
+        }
+    }
+    Ok(Some(version))
+}
+
+/// Update the workspace version and dependency pins for the released crates.
 pub fn finalize_workspace_root(
     workspace_root: &Path,
     members: &[PackageInfo],
     new_version_by_name: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let mut workspace_version: Option<String> = None;
-
-    for member in members {
-        if member.kind != PackageKind::Cargo {
-            continue;
-        }
-
-        let member_manifest = member.path.join(CARGO_MANIFEST);
-        let content = fs::read_to_string(&member_manifest)?;
-
-        if !has_workspace_version_inheritance(&content)? {
-            continue;
-        }
-
-        if let Some(new_version) = new_version_by_name.get(&member.name) {
-            match &workspace_version {
-                None => {
-                    workspace_version = Some(new_version.clone());
-                }
-                Some(existing) if existing != new_version => {
-                    return Err(SampoError::Release(format!(
-                        "workspace-inherited packages resolved to conflicting versions: '{}' and '{}'",
-                        existing, new_version
-                    )));
-                }
-                Some(_) => {}
-            }
-        }
-    }
-
+    let workspace_version =
+        inherited_workspace_version(members, new_version_by_name, |_| Ok(true))?;
     let manifest_path = workspace_root.join(CARGO_MANIFEST);
     let input = fs::read_to_string(&manifest_path)?;
 
@@ -907,12 +923,8 @@ pub fn finalize_workspace_root(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
-    let (updated, changed) = update_workspace_root_manifest(
-        &manifest_path,
-        &input,
-        workspace_version.as_deref(),
-        &cargo_versions,
-    )?;
+    let (updated, changed) =
+        update_workspace_root_manifest(&manifest_path, &input, workspace_version, &cargo_versions)?;
 
     if changed {
         fs::write(&manifest_path, updated)?;
@@ -1165,6 +1177,10 @@ fn parse_cargo_workspace_members(
         expand_cargo_member_pattern(root, pattern, &mut paths)?;
     }
 
+    // Cargo includes the root package even when workspace.members omits ".".
+    if root_toml.get("package").is_some() && !paths.contains(&clean_path(root)) {
+        paths.push(root.to_path_buf());
+    }
     Ok(paths)
 }
 

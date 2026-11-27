@@ -6,7 +6,7 @@ use crate::release::{
     restore_prerelease_changesets,
 };
 use crate::types::{
-    PackageInfo, PackageKind, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
+    PackageInfo, PackageSpecifier, SpecResolution, Workspace, format_ambiguity_options,
 };
 use semver::{BuildMetadata, Prerelease};
 use std::collections::{BTreeMap, BTreeSet};
@@ -314,47 +314,22 @@ fn apply_version_updates(
 ) -> Result<()> {
     validate_version_updates(workspace, new_versions)?;
 
-    // Matched by name, like the manifest rewrite below: a shared name is bumped in every
-    // ecosystem holding it, staling each of their lockfiles.
-    let updated_kinds: BTreeSet<PackageKind> = workspace
-        .members
-        .iter()
-        .filter(|member| new_versions.contains_key(&member.name))
-        .map(|member| member.kind)
-        .collect();
-
+    let new_version_by_id = versions_by_id(workspace, new_versions);
+    let versions_by_kind = PackageAdapter::versions_by_kind(workspace, &new_version_by_id);
+    let updated_kinds = versions_by_kind.keys().copied().collect();
     preflight_lockfile_tools(workspace, &updated_kinds).map_err(to_prerelease)?;
 
-    // Build per-ecosystem member name sets to avoid cross-ecosystem version leakage
-    let names_by_kind: BTreeMap<_, BTreeSet<&str>> =
-        workspace
-            .members
-            .iter()
-            .fold(BTreeMap::new(), |mut acc, m| {
-                acc.entry(m.kind).or_default().insert(m.name.as_str());
-                acc
-            });
-
     for info in &workspace.members {
+        let Some(versions) = versions_by_kind.get(&info.kind) else {
+            continue;
+        };
         let adapter = PackageAdapter::from_kind(info.kind);
         let manifest_path = adapter.manifest_path(&info.path);
         let original = fs::read_to_string(&manifest_path)?;
-        let new_pkg_version = new_versions.get(&info.name).map(|s| s.as_str());
-
-        let ecosystem_names = names_by_kind.get(&info.kind);
-        let filtered_versions: BTreeMap<String, String> = new_versions
-            .iter()
-            .filter(|(name, _)| ecosystem_names.is_some_and(|names| names.contains(name.as_str())))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
+        let new_pkg_version = versions.get(&info.name).map(String::as_str);
 
         let (updated, _deps) = adapter
-            .update_manifest_versions(
-                &manifest_path,
-                &original,
-                new_pkg_version,
-                &filtered_versions,
-            )
+            .update_manifest_versions(&manifest_path, &original, new_pkg_version, versions)
             .map_err(to_prerelease)?;
 
         if updated != original {
@@ -362,8 +337,7 @@ fn apply_version_updates(
         }
     }
 
-    let new_version_by_id = versions_by_id(workspace, new_versions);
-    PackageAdapter::finalize_workspace_roots(workspace, new_versions, &new_version_by_id)
+    PackageAdapter::finalize_workspace_roots(workspace, &new_version_by_id)
         .map_err(to_prerelease)?;
 
     regenerate_lockfile(workspace, &updated_kinds).map_err(to_prerelease)?;

@@ -2,7 +2,7 @@
 
 Automate changelogs, versioning, and publishing—even for monorepos across multiple package registries. Currently supported ecosystems: Rust ([Crates](https://crates.io)), JavaScript/TypeScript ([npm](https://www.npmjs.com)), Elixir/Gleam/Erlang ([Hex](https://hex.pm)), Python ([PyPI](https://pypi.org)), PHP ([Packagist](https://packagist.org)), Java ([Maven Central](https://central.sonatype.com)), Ruby ([RubyGems](https://rubygems.org))... And more [coming soon](https://github.com/bruits/sampo/issues/104)!
 
-**In a nutshell,** Sampo is a CLI, a GitHub App, and a GitHub Action, that automatically detects packages in your repository, and uses changesets (markdown files describing changes explicitly) to bump versions (in SemVer format), generate changelogs (human-readable files listing changes), and publish packages (to their respective registries). It's designed to be easy to opt-in and opt-out, with minimal configuration required, sensible defaults, and no assumptions/constraints on your workflow (except using SemVer).
+Sampo uses changesets to version packages, write changelogs, and publish releases. It uses SemVer by default and also supports CalVer. You can use Sampo through the CLI, GitHub App, or GitHub Action.
 
 If you've ever struggled with keeping user-facing changelogs updated, coordinating version bumps across dependent packages, or automating your publishing process... Sampo might be the tool you were looking for!
 
@@ -43,7 +43,7 @@ This command creates a `.sampo` directory at your repository root:
 
 #### Versioning
 
-Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate the nature of changes in each release. Versions follow the `MAJOR.MINOR.PATCH` format with three bump levels:
+By default, Sampo uses [Semantic Versioning](https://semver.org/) (SemVer) to indicate the nature of changes in each release. Versions follow the `MAJOR.MINOR.PATCH` format with three bump levels:
 
 - **patch**: Bug fixes and backwards-compatible changes
 - **minor**: New features that are backwards-compatible
@@ -51,11 +51,15 @@ Sampo enforces [Semantic Versioning](https://semver.org/) (SemVer) to indicate t
 
 For example, a user can safely update from version `1.2.3` to `1.2.4` (patch) or `1.3.0` (minor), but should review changes before updating to `2.0.0` (major).
 
-Pre-release versions are supported using [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). For the first pre-release after entering pre mode, Sampo advances the base version according to the pending changeset bump so pre-releases stay ahead of the latest stable version (for example, `1.2.3-alpha` + patch → `1.2.4-alpha`). After that, while a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
+SemVer pre-releases follow [SemVer §9](https://semver.org/#spec-item-9) conventions (e.g., `1.0.0-alpha`, `2.1.0-beta.2`, `3.0.0-rc.5`, etc). For the first pre-release after entering pre mode, Sampo advances the base version according to the pending changeset bump so pre-releases stay ahead of the latest stable version (for example, `1.2.3-alpha` + patch → `1.2.4-alpha`). After that, while a pre-release stays within its implied level (patch for `x.y.z-prerelease`, minor for `x.y.0-prerelease`, major for `x.0.0-prerelease`), we only bump the numeric suffix (`alpha` → `alpha.1` → `alpha.2` → etc). If a higher bump is required, the base version advances and the numeric suffix is reset (`1.8.0-alpha.2` + major → `2.0.0-alpha`).
+
+Set `versioning = "calver"` in `[packages]` to use calendar versions on a single release line. Sampo takes the year and month from the UTC date or from `calver_year_month`. Dependency and group policies determine which other packages join the release. Changeset levels select the default changelog headings. A changeset tag selects its own heading.
+
+Sampo stops before it writes files if a planned version would fail to advance or a package in the release plan has a pre-release version. It also stops if `.sampo/prerelease` holds changesets.
 
 #### Changesets
 
-A markdown file describing what changed, which packages are affected, and the type of version bump required:
+A changeset is a Markdown file that names the affected packages and gives each a changeset level. The message describes the change.
 
 ```
 ---
@@ -124,6 +128,8 @@ Finally, run `sampo publish` to publish updated packages to their respective reg
 > Use `--cargo-args`, `--npm-args`, `--hex-args`, `--pypi-args`, `--packagist-args`, `--maven-args`, or `--rubygems-args` to forward extra arguments to a specific ecosystem. Arguments after `--` are forwarded to all ecosystems. A package that gets `--dry-run` this way is neither published nor tagged.
 
 #### Pre-release versions
+
+Use SemVer for pre-releases. Finish any pre-release before you enable CalVer. If you already enabled CalVer, remove `packages.versioning` and, if set, `packages.calver_year_month` until you finish the pre-release. This also applies when `.sampo/prerelease` holds changesets.
 
 Run `sampo pre` to manage pre-release versions for one or more packages.
 
@@ -205,7 +211,7 @@ npm_stage = false
 
 ### `[changesets]` section
 
-`tags`: An optional array of custom changelog section names (default: `[]`). When configured, changesets can use the `bump (Tag)` format to categorize entries under custom headings instead of the default bump-based sections. For example, `tags = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]` enables [Keep a Changelog](https://keepachangelog.com/) style formatting where `cargo/my-crate: minor (Added)` appears under `### Added` while still applying a minor version bump.
+`tags` lists optional changelog headings (default `[]`). For example, with `tags = ["Added", "Fixed"]`, `cargo/my-crate: minor (Added)` puts the entry under `### Added` and keeps the minor changeset level. [Keep a Changelog](https://keepachangelog.com/)
 
 ### `[changelog]` section
 
@@ -228,6 +234,12 @@ npm_stage = false
 
 ### `[packages]` section
 
+`versioning` selects `"semver"` (default) or `"calver"` for all packages. CalVer uses `YYYY.M.MICRO`. If the selected year and month match the current version, increase MICRO by one. A later release month starts at zero. A fixed group shares one version calculated from the highest current version among its non-ignored members. Each linked package gets its own calendar version.
+
+`calver_year_month` sets an optional release line when `versioning = "calver"`. Use `YYYY.M`, for example `2026.7`. The year must be 1000–9999 and the month 1–12, with no leading zero. For example, `calver_year_month = "2026.12"` keeps releases on `2026.12.x` even in January.
+
+With CalVer, `^2026.11.0` accepts later versions in 2026. `~2026.11.0` accepts later versions in November 2026. Pin internal dependencies that release together with `workspace:*` or `=2026.11.0`.
+
 You can ignore certain packages, so they do not appear in the CLI commands, changesets, releases, or publishing steps. This is useful for packages that are not meant to be published or versioned, such as internal tools, examples, or documentation packages. Changesets targeting only ignored packages are left unconsumed.
 
 `ignore_unpublished`: If `true` (default: `false`), ignore every package configured as not publishable. For example, `publish = false` in `Cargo.toml` for Rust crates, `"private": true` in a workspace `package.json` for npm packages, or a `Private :: Do Not Upload` classifier in `pyproject.toml` for Python packages. By default, Sampo still tracks versioning and changelogs for those packages, and tags their releases, but will not attempt to publish them to their registries. To keep their versions and changelogs without tagging them, leave this option off and set `git.tag_unpublished` instead.
@@ -245,13 +257,15 @@ You can ignore certain packages, so they do not appear in the CLI commands, chan
 > [!NOTE]
 > Canonical identifiers follow the `<ecosystem>/<name>` format (e.g., `cargo/my-crate` for a Rust package, `npm/web-app` for a JavaScript package, `packagist/vendor/package` for a PHP package). Sampo continues to accept plain names, but you'll be prompted to disambiguate if a name appears in multiple ecosystems.
 
-Sampo detects packages within the same monorepo (even one mixing ecosystems) that depend on each other, and automatically manages their versions. By default, dependent packages are automatically patched when a workspace dependency is updated. The cascade is transitive, so indirect dependents are bumped too. For example: if `a@0.1.0` depends on `b@0.1.0` and `b` is updated to `0.2.0`, then `a` will be automatically bumped to `0.1.1` (patch). If `a` needs a major or minor change due to `b`'s update, it should be explicitly specified in a changeset. Some options allow customizing this behavior:
+When a workspace dependency gets a release, Sampo gives its dependents at least a patch changeset level by default. This also applies to indirect dependents. For example, under SemVer, if `a@0.1.0` depends on `b@0.1.0` and `b` advances to `0.2.0`, `a` advances to `0.1.1`. Add a changeset for `a` if the change needs a higher level.
 
-`bump_dependents`: Which dependents the cascade bumps. With `"always"` (default), every dependent gets at least a patch bump. With `"out-of-range"`, a dependent is only bumped when its requirement no longer covers the new version, so one requiring `b` through `^1.0` is left as is when `b` is released as `1.1.0`, and the cascade stops there. Pinned versions (including a bare Cargo version such as `1.0.0`), which Sampo rewrites, and requirements it cannot check (such as `workspace:*` or pre-releases) are still bumped.
+`bump_dependents`: Which dependents the cascade bumps. With `"always"` (default), every dependent gets at least a patch changeset level. With `"out-of-range"`, a dependent is only bumped when its requirement no longer covers the new version, so under SemVer a package requiring `b` through `^1.0` is left as is when `b` is released as `1.1.0`, and the cascade stops there. Pinned versions (including a bare Cargo version such as `1.0.0`), which Sampo rewrites, and requirements it cannot check (such as `workspace:*` or pre-releases) are still bumped.
 
-`fixed`: An array of dependency groups (default: `[]`) where packages in each group are bumped together with the same version level. Each group is an array of packages and can mix ecosystems. When any package in a group is updated, all other packages in the same group receive the same version bump, regardless of actual dependencies. For example: if `fixed = [["cargo/a", "cargo/b"], ["cargo/c", "cargo/d"]]` and `cargo/a` is updated to `2.0.0` (major), then `cargo/b` will also be bumped to `2.0.0`, but `cargo/c` and `cargo/d` remain unchanged.
+`fixed` lists groups of packages that release together (default `[]`). Each group can span ecosystems. All non-ignored members receive the highest changeset level in the group. Under SemVer, each member applies that level to its own version. Under CalVer, all members get the same calendar version.
 
-`linked`: An array of dependency groups (default: `[]`) where affected packages and their dependents are bumped together using the highest bump level in the group. Each group is an array of packages and may include multiple ecosystems. When any package in a group is updated, all packages in the same group that are affected or have workspace dependencies within the group receive the highest version bump level from the group. For example: if `linked = [["cargo/a", "cargo/b"]]` where `cargo/a` depends on `cargo/b`, when `cargo/b` is updated to `2.0.0` (major), then `cargo/a` will also be bumped to `2.0.0`. If `cargo/a` is later updated to `2.1.0` (minor), `cargo/b` remains at `2.0.0` since it's not affected. Finally, if `cargo/b` has a patch update, both `cargo/a` and `cargo/b` will be bumped with patch level since it's the highest bump in the group.
+> In Rust (Cargo) projects, crates that inherit `workspace.package.version` share one version. Group those crates with `fixed` or give independent crates explicit versions. To keep an ignored crate at its current version, set that version explicitly in its `Cargo.toml`.
+
+`linked` lists groups that share the highest changeset level among members already scheduled for release (default `[]`). Each member calculates its own version. For example, if `cargo/a` depends on `cargo/b`, a major change to `b` gives both members the major level. A change to `a` alone leaves `b` at its current version.
 
 > [!WARNING]
 > Packages cannot appear in both `fixed` and `linked` configurations.
